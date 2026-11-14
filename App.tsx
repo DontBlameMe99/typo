@@ -42,6 +42,9 @@ import {
 } from 'react-native'
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
 import Reanimated, {
+  Easing,
+  type EasingFunction,
+  type EasingFunctionFactory,
   Extrapolation,
   interpolate,
   interpolateColor,
@@ -208,6 +211,12 @@ const libraryItemLayout = (_: unknown, index: number) => ({
   index,
 })
 const SHEET_SPRING = { damping: 34, mass: 0.8, overshootClamping: true, stiffness: 340 }
+// Sheets rise into place with a short travel, a fade, and a touch of blur.
+const SHEET_REVEAL_EASE = Easing.bezier(0.22, 1, 0.36, 1)
+const SHEET_OPEN_DURATION = 400
+const SHEET_CLOSE_DURATION = 350
+const SHEET_REVEAL_TRAVEL = 160
+const SHEET_REVEAL_BLUR = 2
 const SCREEN_SPRING = { damping: 34, mass: 0.82, overshootClamping: true, stiffness: 320 }
 const PILL_SPRING = { damping: 30, mass: 0.6, overshootClamping: true, stiffness: 300 }
 // The AMOLED track is 52 wide and the 24 thumb sits 4 from each edge.
@@ -250,7 +259,11 @@ function spring(
   return withSpring(toValue, { ...config, reduceMotion: ReduceMotion.System }, callback)
 }
 
-function timing(toValue: number, config: { duration: number }, callback?: MotionCallback): number {
+function timing(
+  toValue: number,
+  config: { duration: number; easing?: EasingFunction | EasingFunctionFactory },
+  callback?: MotionCallback
+): number {
   'worklet'
   return withTiming(toValue, { ...config, reduceMotion: ReduceMotion.System }, callback)
 }
@@ -571,7 +584,8 @@ function BottomSheet({
   const { height } = useWindowDimensions()
   const { bottom, top } = useSafeAreaInsets()
   const [keyboardHeight, setKeyboardHeight] = useState(0)
-  const offset = useSharedValue(height)
+  const offset = useSharedValue(SHEET_REVEAL_TRAVEL)
+  const reveal = useSharedValue(0)
   const start = useSharedValue(height)
   const dragging = useSharedValue(false)
   const dismissing = useSharedValue(false)
@@ -601,19 +615,25 @@ function BottomSheet({
       dismissing.value = true
       after.current = done ?? null
       Keyboard.dismiss()
-      offset.value = timing(height, { duration: 220 }, (finished) => {
-        'worklet'
-        if (finished) runOnJS(finish)()
-      })
+      reveal.value = timing(0, { duration: SHEET_CLOSE_DURATION, easing: SHEET_REVEAL_EASE })
+      offset.value = timing(
+        height,
+        { duration: SHEET_CLOSE_DURATION, easing: SHEET_REVEAL_EASE },
+        (finished) => {
+          'worklet'
+          if (finished) runOnJS(finish)()
+        }
+      )
     },
-    [busy, dismissing, finish, height, offset]
+    [busy, dismissing, finish, height, offset, reveal]
   )
   useLayoutEffect(() => {
     if (dismissRef) dismissRef.current = dismiss
   }, [dismiss, dismissRef])
   useEffect(() => {
-    offset.value = timing(0, { duration: 200 })
-  }, [offset])
+    reveal.value = timing(1, { duration: SHEET_OPEN_DURATION, easing: SHEET_REVEAL_EASE })
+    offset.value = timing(0, { duration: SHEET_OPEN_DURATION, easing: SHEET_REVEAL_EASE })
+  }, [offset, reveal])
   useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', (event) =>
       setKeyboardHeight(event.endCoordinates.height)
@@ -682,10 +702,16 @@ function BottomSheet({
     [busy, commit, dismissing, dragging, height, offset, start]
   )
   const backdrop = useAnimatedStyle(() => ({
-    opacity: interpolate(offset.value, [0, Math.max(height * 0.5, 1)], [1, 0], Extrapolation.CLAMP),
+    // Fade in with the reveal, then follow the card while it is dragged down.
+    opacity: Math.min(
+      reveal.value,
+      interpolate(offset.value, [0, Math.max(height * 0.5, 1)], [1, 0], Extrapolation.CLAMP)
+    ),
   }))
   const cardMotion = useAnimatedStyle(() => ({
     transform: [{ translateY: offset.value }],
+    opacity: reveal.value,
+    filter: [{ blur: (1 - reveal.value) * SHEET_REVEAL_BLUR }],
   }))
   const header = (
     <View>
