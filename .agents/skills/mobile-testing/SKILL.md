@@ -1,6 +1,6 @@
 ---
 name: mobile-testing
-description: Use when wanting to test the app via expo go. This may be the user asking, or you needing to use this.
+description: Use when wanting to test the app.
 ---
 
 ## Goal
