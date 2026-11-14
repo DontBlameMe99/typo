@@ -23,6 +23,7 @@ const path = FileSystem.documentDirectory
 // The file is small and local, so the first render reads it instead of waiting
 // for an effect. That keeps the saved theme out of a second render pass.
 function readTheme(): { settings: ThemeSettings; error: string | null } {
+  markStartup('theme')
   try {
     if (!path) throw new Error('Appearance storage is unavailable.')
     const file = new File(path)
@@ -35,11 +36,12 @@ function readTheme(): { settings: ThemeSettings; error: string | null } {
     }
   }
 }
-const initialTheme = readTheme()
-markStartup('theme')
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemDark = useColorScheme() === 'dark'
+  // Read on each mount: the quick note sheet shares the runtime and must start
+  // from the appearance the main app may have saved since startup.
+  const [initialTheme] = useState(readTheme)
   const [settings, setSettings] = useState(initialTheme.settings)
   const [persistenceError, setPersistenceError] = useState<string | null>(initialTheme.error)
   const writes = useRef(Promise.resolve())
