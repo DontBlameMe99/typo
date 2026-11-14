@@ -16,50 +16,39 @@ type ThemeContextValue = ReturnType<typeof resolveTheme> & {
   persistenceError: string | null
 }
 const ThemeContext = createContext<ThemeContextValue | null>(null)
+const path = FileSystem.documentDirectory
+  ? `${FileSystem.documentDirectory}typo-appearance.json`
+  : null
+
+// The file is small and local, so the first render reads it instead of waiting
+// for an effect. That keeps the saved theme out of a second render pass.
+function readTheme(): { settings: ThemeSettings; error: string | null } {
+  try {
+    if (!path) throw new Error('Appearance storage is unavailable.')
+    const file = new File(path)
+    if (!file.exists) return { settings: defaultThemeSettings, error: null }
+    return { settings: parseThemeSettings(JSON.parse(file.textSync())), error: null }
+  } catch {
+    return {
+      settings: defaultThemeSettings,
+      error: 'Could not restore appearance. Choose your settings again to save them.',
+    }
+  }
+}
+const initialTheme = readTheme()
+markStartup('theme')
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemDark = useColorScheme() === 'dark'
-  const [settings, setSettings] = useState(defaultThemeSettings)
-  const [ready, setReady] = useState(false)
-  const [persistenceError, setPersistenceError] = useState<string | null>(null)
+  const [settings, setSettings] = useState(initialTheme.settings)
+  const [persistenceError, setPersistenceError] = useState<string | null>(initialTheme.error)
   const writes = useRef(Promise.resolve())
-  const path = FileSystem.documentDirectory
-    ? `${FileSystem.documentDirectory}typo-appearance.json`
-    : null
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        if (!path) throw new Error('Appearance storage is unavailable.')
-        const file = new File(path)
-        if (file.exists) {
-          const saved: unknown = JSON.parse(file.textSync())
-          if (!cancelled) setSettings(parseThemeSettings(saved))
-        }
-      } catch {
-        if (!cancelled)
-          setPersistenceError(
-            'Could not restore appearance. Choose your settings again to save them.'
-          )
-      } finally {
-        if (!cancelled) {
-          markStartup('theme')
-          setReady(true)
-        }
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [path])
 
   const updateSettings = useCallback((patch: Partial<ThemeSettings>) => {
     setSettings((previous) => parseThemeSettings({ ...previous, ...patch }))
   }, [])
 
   useEffect(() => {
-    if (!ready) return
     let cancelled = false
     writes.current = writes.current.then(async () => {
       try {
@@ -76,17 +65,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [settings, ready, path])
+  }, [settings])
 
   const value = useMemo(
     () => ({
       ...resolveTheme(settings, systemDark),
       settings,
       updateSettings,
-      ready,
+      ready: true,
       persistenceError,
     }),
-    [settings, systemDark, ready, updateSettings, persistenceError]
+    [settings, systemDark, updateSettings, persistenceError]
   )
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }

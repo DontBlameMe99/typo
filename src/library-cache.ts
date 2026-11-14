@@ -10,14 +10,18 @@ function location(vault: Vault) {
   return { directory, uri: `${directory}${fingerprint(vault.uri)}.json` }
 }
 
-export async function loadVaultIndex(vault: Vault): Promise<VaultIndex | null> {
+// The startup path reads the index synchronously: a bridge round trip costs
+// more than parsing a cache of this size.
+export function loadVaultIndexSync(vault: Vault): VaultIndex | null {
   try {
-    // The startup path reads the index synchronously: a bridge round trip costs
-    // more than parsing a cache of this size.
     return parseVaultIndex(new File(location(vault).uri).textSync(), vault)
   } catch {
     return null
   }
+}
+
+export async function loadVaultIndex(vault: Vault): Promise<VaultIndex | null> {
+  return loadVaultIndexSync(vault)
 }
 
 export async function storeVaultIndex(vault: Vault, library: VaultIndex): Promise<void> {

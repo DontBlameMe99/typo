@@ -9,7 +9,7 @@ function location(vault: Vault) {
   return { directory, uri: `${directory}${fingerprint(vault.uri)}.json` }
 }
 
-export async function loadFavorites(vault: Vault): Promise<string[]> {
+export function loadFavoritesSync(vault: Vault): string[] {
   try {
     const value = JSON.parse(new File(location(vault).uri).textSync())
     if (value.version !== 1 || value.vault !== vault.uri || !Array.isArray(value.favorites))
@@ -18,6 +18,10 @@ export async function loadFavorites(vault: Vault): Promise<string[]> {
   } catch {
     return []
   }
+}
+
+export async function loadFavorites(vault: Vault): Promise<string[]> {
+  return loadFavoritesSync(vault)
 }
 
 export async function storeFavorites(vault: Vault, favorites: string[]): Promise<void> {
