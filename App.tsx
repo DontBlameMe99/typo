@@ -2445,6 +2445,9 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   }, [])
   const noteVisible = !!selected
   const libraryVisible = !noteVisible && !creating && !moving && !appearanceOpen && !aboutOpen
+  // The sort sheet is a sibling overlay, so the library has to ignore input
+  // itself or row gestures fire through it.
+  const libraryInteractive = libraryVisible && !setup && !sortOpen
   useLayoutEffect(() => {
     libraryVisibleRef.current = libraryVisible
   }, [libraryVisible])
@@ -2483,9 +2486,9 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
             paddingLeft: left,
           },
         ]}
-        pointerEvents={libraryVisible && !setup ? 'auto' : 'none'}
-        accessibilityElementsHidden={!libraryVisible || !!setup}
-        importantForAccessibility={libraryVisible && !setup ? 'auto' : 'no-hide-descendants'}
+        pointerEvents={libraryInteractive ? 'auto' : 'none'}
+        accessibilityElementsHidden={!libraryInteractive}
+        importantForAccessibility={libraryInteractive ? 'auto' : 'no-hide-descendants'}
       >
         {!vault ? (
           <ScrollView contentContainerStyle={s.onboarding} keyboardShouldPersistTaps="handled">
