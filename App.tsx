@@ -5012,8 +5012,9 @@ function TemplateEditor({
                 onPress={() => editor.current?.insert('{{title}}')}
                 style={({ pressed }) => [s.templatePill, pressed && s.pressed]}
               >
-                <Icon name="plus" size={22} color={colors.accent} />
-                <Text style={s.templatePillText}>{'{{title}}'}</Text>
+                <Text numberOfLines={1} style={s.templatePillText}>
+                  {'{{title}}'}
+                </Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
@@ -5022,8 +5023,9 @@ function TemplateEditor({
                 onPress={() => editor.current?.insert('{{body}}')}
                 style={({ pressed }) => [s.templatePill, pressed && s.pressed]}
               >
-                <Icon name="plus" size={22} color={colors.accent} />
-                <Text style={s.templatePillText}>{'{{body}}'}</Text>
+                <Text numberOfLines={1} style={s.templatePillText}>
+                  {'{{body}}'}
+                </Text>
               </Pressable>
             </View>
             <Pressable
@@ -6697,17 +6699,19 @@ function makeStyles(colors: ThemeColors) {
     },
     templatePill: {
       flex: 1,
+      minWidth: 0,
       height: BAR_HEIGHT - 8,
+      paddingHorizontal: 4,
       borderRadius: (BAR_HEIGHT - 8) / 2,
       backgroundColor: colors.paper,
-      flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: 6,
+      overflow: 'hidden',
     },
     templatePillText: {
+      flexShrink: 1,
       fontFamily: 'JetBrainsMono_400Regular',
-      fontSize: 14,
+      fontSize: 13,
       color: colors.accent,
     },
     moveButtonDisabled: { backgroundColor: colors.surface },
