@@ -3,9 +3,10 @@ export const MAX_CANVAS_SIDE = 4096
 export const MAX_PDF_BYTES = 100 * 1024 * 1024
 export const MIN_ZOOM = 0.5
 export const MAX_ZOOM = 4
-// Recently rendered pages kept outside the viewport, bounded by canvas pixels to cap memory.
+// Recently rendered pages kept outside the viewport, bounded by the pixels they hold
+// so a scroll back is cheap without keeping more canvases than a phone can afford.
 export const MAX_CACHED_PAGES = 4
-export const MAX_CACHED_PAGE_PIXELS = 1_500_000
+export const MAX_CACHED_PIXELS = 6_000_000
 
 export function clampPage(page: number, count: number): number {
   return Math.min(Math.max(1, Math.round(Number.isFinite(page) ? page : 1)), count)
@@ -25,27 +26,78 @@ export function viewportPages(firstVisible: number, lastVisible: number, count: 
   return { first, last, order }
 }
 
-// Splits published pages into the visible range plus the newest cached pages that are still
-// valid, so a small scroll back does not raster the same page again.
+// Splits published pages into the visible range plus the newest cached pages that
+// still fit the cache, so a small scroll back does not raster the same page again.
+// A page reports the pixels it would cost to keep, or 0 when it cannot be kept.
 export function retainPages(
   published: number[],
   first: number,
   last: number,
-  usable: (index: number) => boolean,
-  extra = MAX_CACHED_PAGES
+  cached: (index: number) => number,
+  extra = MAX_CACHED_PAGES,
+  budget = MAX_CACHED_PIXELS
 ) {
   const keep: number[] = []
-  const cached: number[] = []
+  const candidates: number[] = []
   const drop: number[] = []
   for (const index of published) {
     if (index >= first && index <= last) keep.push(index)
-    else if (usable(index)) cached.push(index)
+    else if (cached(index) > 0) candidates.push(index)
     else drop.push(index)
   }
-  const released = cached.slice(0, Math.max(0, cached.length - Math.max(0, extra)))
-  keep.push(...cached.slice(released.length))
-  drop.push(...released)
+  // The newest pages win, and the first one is always kept so a scroll back is never empty.
+  const kept = new Set<number>()
+  let total = 0
+  for (let position = candidates.length - 1; position >= 0 && kept.size < extra; position--) {
+    const index = candidates[position]
+    const pixels = cached(index)
+    if (kept.size > 0 && total + pixels > budget) continue
+    kept.add(index)
+    total += pixels
+  }
+  for (const index of candidates) {
+    if (kept.has(index)) keep.push(index)
+    else drop.push(index)
+  }
   return { keep, drop }
+}
+
+// Pages stack with a fixed gap inside the padded page column, so their offsets
+// follow from the sizes PDF.js reports. Reading offsetTop would force a reflow of
+// every page during a scroll, which is what this geometry replaces.
+export const PAGE_GAP = 16
+export const PAGE_PADDING = 24
+
+export type PageGeometry = { tops: number[]; bottoms: number[] }
+
+export function pageGeometry(ratios: number[], pageWidth: number): PageGeometry {
+  const tops: number[] = []
+  const bottoms: number[] = []
+  let top = PAGE_PADDING
+  for (const ratio of ratios) {
+    const height = pageWidth * ratio
+    tops.push(top)
+    bottoms.push(top + height)
+    top += height + PAGE_GAP
+  }
+  return { tops, bottoms }
+}
+
+// The first page whose bottom is at or below the point, which is the page under it.
+export function pageAtOffset(geometry: PageGeometry, y: number): number {
+  const { bottoms } = geometry
+  let low = 0
+  let high = bottoms.length - 1
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (bottoms[mid] < y) low = mid + 1
+    else high = mid
+  }
+  return low
+}
+
+export function pageLeft(viewport: number, pageWidth: number): number {
+  return (Math.max(viewport, pageWidth + 2 * PAGE_PADDING) - pageWidth) / 2
 }
 
 export function pageLayout(

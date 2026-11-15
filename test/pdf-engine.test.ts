@@ -69,7 +69,7 @@ test('offline build includes the PDF worker and licenses without PDF.js resource
   process.env.TYPO_WEB_OUT = output
   try {
     await import('../scripts/build-web')
-    for (const kind of ['pdf', 'pdf-worker']) {
+    for (const kind of ['pdf', 'pdf-worker', 'pdf-renderer']) {
       const bundle = await Bun.file(`${output}/${kind}.bundle.txt`).text()
       expect(bundle.length).toBeGreaterThan(100_000)
       expect(bundle).toContain('Apache License')

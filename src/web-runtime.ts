@@ -11,6 +11,7 @@ const resources = {
   pdf: {
     'pdf.bundle.js': require('../dist/pdf.bundle.txt'),
     'pdf-worker.bundle.js': require('../dist/pdf-worker.bundle.txt'),
+    'pdf-renderer.bundle.js': require('../dist/pdf-renderer.bundle.txt'),
   },
   editor: {
     'editor.bundle.js': require('../dist/editor.bundle.txt'),
