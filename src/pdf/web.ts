@@ -120,10 +120,16 @@ function prepare(): Promise<void> {
       if (session) fail(session, new Error('The offline PDF worker sent an invalid response.'))
     }
     GlobalWorkerOptions.workerPort = worker
-    if (typeof OffscreenCanvas === 'undefined' || !document.fonts) return
-    rendererUrl ??= workerScript('pdf-renderer.bundle.js')
-    renderer ??= new Worker(await rendererUrl)
-    GlobalWorkerOptions.rendererPorts = [renderer]
+    // Drawing beside the viewer is an optimization, so any failure here leaves
+    // PDF.js on the main thread instead of failing the document.
+    try {
+      if (typeof OffscreenCanvas === 'undefined' || !document.fonts) return
+      rendererUrl ??= workerScript('pdf-renderer.bundle.js')
+      renderer ??= new Worker(await rendererUrl)
+      GlobalWorkerOptions.rendererPorts = [renderer]
+    } catch {
+      GlobalWorkerOptions.rendererPorts = []
+    }
   })().catch((cause: unknown) => {
     prepared = null
     throw cause
@@ -533,6 +539,8 @@ async function load(uri: string) {
   }
   cancelPinch()
   session = current
+  // Offsets cached for the previous document mean nothing for this one.
+  geometryKey = ''
   watchProgress(current)
   old?.abort.abort()
   status.textContent = ''
@@ -571,6 +579,8 @@ async function load(uri: string) {
           const target = current.pages[index]
           if (target.rendered === request.key) continue
           const page = await warmPage(current, pdf, index)
+          let buffer: HTMLCanvasElement | null = null
+          let shown = false
           try {
             if (signal.aborted) return
             current.rasterizing = index
@@ -582,7 +592,7 @@ async function load(uri: string) {
               request.zoom,
               window.devicePixelRatio
             )
-            const buffer = takeCanvas(layout.width, layout.height)
+            buffer = takeCanvas(layout.width, layout.height)
             const task = page.render({
               canvas: buffer,
               viewport: page.getViewport({ scale: layout.scale }),
@@ -604,6 +614,7 @@ async function load(uri: string) {
               ...(target.links ? [target.links] : [])
             )
             target.canvas = buffer
+            shown = true
             target.rendered = request.key
             target.element.style.setProperty('--scale-factor', String(layout.scale))
             current.published = current.published.filter((value) => value !== index)
@@ -615,6 +626,7 @@ async function load(uri: string) {
             if (index >= range.first && index <= range.last) requestLayers(current, index)
           } finally {
             current.rasterizing = null
+            if (buffer && !shown) parkCanvas(buffer)
           }
         }
         if (current.timeout) clearTimeout(current.timeout)
@@ -624,6 +636,8 @@ async function load(uri: string) {
     // The first page is rastered while the rest of the pages are still being measured,
     // so a long document does not wait for its whole layout before it shows anything.
     for (let start = 1; start <= pdf.numPages; start += LAYOUT_BATCH) {
+      // A render pass ends the watchdog, and this loop keeps reading pages after it.
+      watchProgress(current)
       const numbers: number[] = []
       for (let number = start; number <= Math.min(start + LAYOUT_BATCH - 1, pdf.numPages); number++)
         numbers.push(number)

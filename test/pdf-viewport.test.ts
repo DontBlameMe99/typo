@@ -138,12 +138,14 @@ async function viewer(count = 120) {
   let maxInFlight = 0
   let holdNextRaster = false
   let releaseRaster = () => {}
+  // Documents differ in page shape, so a reload can keep the page count but not the heights.
+  let wide = false
   const pdfTask = {
     promise: Promise.resolve({
       numPages: count,
       async getPage(number: number) {
         // Alternate portrait and landscape pages to exercise per-page geometry.
-        const [width, height] = number % 2 ? [600, 800] : [800, 400]
+        const [width, height] = wide ? [600, 400] : number % 2 ? [600, 800] : [800, 400]
         fetches.set(number, (fetches.get(number) ?? 0) + 1)
         inFlight++
         maxInFlight = Math.max(maxInFlight, inFlight)
@@ -238,6 +240,9 @@ async function viewer(count = 120) {
     fetches,
     cleanups,
     load: (uri: string) => window.typoPdf.load(uri),
+    setWidePages: () => {
+      wide = true
+    },
     holdNextRaster: () => {
       holdNextRaster = true
     },
@@ -387,6 +392,29 @@ test('zooming redraws a cached page without parsing it again', async () => {
     expect(view.renders).toContain(1)
     expect(view.fetches.get(1)).toBe(fetches)
     expect(view.cleanups.get(1)).toBe(1)
+  } finally {
+    await view.close()
+  }
+})
+
+test('another document with the same page count gets its own page offsets', async () => {
+  const view = await viewer(4)
+  try {
+    expect(view.pages.children[1].offsetTop).toBe(24 + 448 + 16)
+    view.setWidePages()
+    view.load('file:///second.pdf')
+    for (let turn = 0; turn < 64 && view.pages.children.length !== 4; turn++) await settle()
+    await settle()
+    expect(view.pages.children[1].properties.get('--page-ratio')).toBe(String(400 / 600))
+    // A wide page is 224 CSS pixels tall, so the second page starts much higher.
+    expect(view.pages.children[1].offsetTop).toBe(24 + 224 + 16)
+    // With these heights the fourth page already crosses the viewport bottom, which
+    // the old geometry would have put far below it.
+    view.renders.length = 0
+    view.scroll.scrollTop = view.pages.children[1].offsetTop
+    view.scroll.dispatch('scroll')
+    await view.frame()
+    expect(view.renders).toEqual([4])
   } finally {
     await view.close()
   }
