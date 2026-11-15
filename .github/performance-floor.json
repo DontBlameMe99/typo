@@ -2,12 +2,12 @@
   "version": 1,
   "metrics": {
     "compiler/1-pages/cold": {
-      "sha": "1d26f77ae95005cb3c3c942c61267131fbabc336",
+      "sha": "8a6ef10c033f9f8eab0d5dbc0d3e2a4ca29f5be5",
       "method": 2,
-      "medianMs": 2.865853999999672,
-      "worstMedianMs": 2.8885270000000673,
+      "medianMs": 2.144473000000289,
+      "worstMedianMs": 2.192633999999998,
       "budgetMs": 100,
-      "updatedAt": "2026-11-10T19:38:12.410Z"
+      "updatedAt": "2026-11-15T23:02:23.055Z"
     },
     "compiler/1-pages/warm": {
       "sha": "07720764e9c46f1580267f9eda207626fe661b80",
@@ -106,12 +106,12 @@
       "updatedAt": "2026-11-10T14:22:02.498Z"
     },
     "search/1000/fuzzy": {
-      "sha": "66766879dc0ddc0a9bebd7d6b3eae28548bd7ebb",
+      "sha": "8a6ef10c033f9f8eab0d5dbc0d3e2a4ca29f5be5",
       "method": 2,
-      "medianMs": 8.349989999999934,
-      "worstMedianMs": 8.499311000000034,
+      "medianMs": 8.415040999999746,
+      "worstMedianMs": 8.423886999999922,
       "budgetMs": 33.4,
-      "updatedAt": "2026-11-07T15:52:29.983Z"
+      "updatedAt": "2026-11-15T23:02:23.055Z"
     },
     "search/1000/literal": {
       "sha": "82b5ec4e6b77715a1f1615c48c645f2311df386e",
@@ -250,12 +250,12 @@
       "updatedAt": "2026-11-09T12:44:16.375Z"
     },
     "library/1000/sort-name-desc": {
-      "sha": "3c71121a4f6dccc2df2b4eeaa64e9051b673218d",
+      "sha": "8a6ef10c033f9f8eab0d5dbc0d3e2a4ca29f5be5",
       "method": 2,
-      "medianMs": 0.19700899999998,
-      "worstMedianMs": 0.20148899999958303,
+      "medianMs": 0.12082999999984168,
+      "worstMedianMs": 0.14691799999991417,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-10T20:44:58.000Z"
+      "updatedAt": "2026-11-15T23:02:23.055Z"
     },
     "library/5000/sort-modified-desc": {
       "sha": "3c71121a4f6dccc2df2b4eeaa64e9051b673218d",
