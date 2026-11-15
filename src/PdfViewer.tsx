@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy'
 import { useEffect, useRef, useState } from 'react'
 import {
+  AccessibilityInfo,
   Animated,
   Easing,
   Linking,
@@ -71,6 +72,8 @@ export default function PdfViewer(props: Props) {
   const fade = useRef(new Animated.Value(0)).current
   const shade = useRef(new Animated.Value(1)).current
   const headline = useRef(new Animated.Value(1)).current
+  // Animated.timing has no reduce-motion switch of its own.
+  const reducedMotion = useRef(false)
   const requested = useRef<string | null>(null)
   const theme = inlineJson({
     background: palette.crust,
@@ -158,6 +161,20 @@ export default function PdfViewer(props: Props) {
   }, [loading, spin])
 
   useEffect(() => {
+    let alive = true
+    void AccessibilityInfo.isReduceMotionEnabled().then((on) => {
+      if (alive) reducedMotion.current = on
+    })
+    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', (on) => {
+      reducedMotion.current = on
+    })
+    return () => {
+      alive = false
+      subscription.remove()
+    }
+  }, [])
+
+  useEffect(() => {
     if (!trouble) {
       fade.setValue(0)
       return
@@ -171,7 +188,7 @@ export default function PdfViewer(props: Props) {
   useEffect(() => {
     Animated.timing(shade, {
       toValue: showing ? 0 : 1,
-      duration: showing ? 180 : 0,
+      duration: showing && !reducedMotion.current ? 180 : 0,
       useNativeDriver: true,
     }).start()
   }, [shade, showing])
@@ -183,6 +200,10 @@ export default function PdfViewer(props: Props) {
   useEffect(() => {
     if (shownHeadline.current === headlineText) return
     shownHeadline.current = headlineText
+    if (reducedMotion.current) {
+      headline.setValue(1)
+      return
+    }
     headline.setValue(0.35)
     Animated.timing(headline, { toValue: 1, duration: 260, useNativeDriver: true }).start()
   }, [headline, headlineText])

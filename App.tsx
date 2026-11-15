@@ -1144,7 +1144,7 @@ function IconFade({
 
 // A counter that ticks like an odometer: every digit is its own column, so only
 // the digits that changed roll, and the rest hold still.
-const TICKER_ROLL = 16
+const TICKER_LINE = 16
 
 function Ticker({
   current,
@@ -1156,6 +1156,10 @@ function Ticker({
   style?: StyleProp<TextStyle>
 }) {
   const s = useStyles()
+  const { fontScale } = useWindowDimensions()
+  // The slot follows the scaled line box, so enlarged digits are not clipped.
+  const slot = Math.round(TICKER_LINE * fontScale)
+  const text: StyleProp<TextStyle> = [style, { lineHeight: slot }]
   return (
     <View
       accessible
@@ -1164,14 +1168,22 @@ function Ticker({
       accessibilityLabel={`${current}/${total}`}
       style={s.ticker}
     >
-      <TickerNumber value={current} style={style} />
-      <Text style={style}>/</Text>
-      <TickerNumber value={total} style={style} />
+      <TickerNumber value={current} slot={slot} style={text} />
+      <Text style={text}>/</Text>
+      <TickerNumber value={total} slot={slot} style={text} />
     </View>
   )
 }
 
-function TickerNumber({ value, style }: { value: number; style?: StyleProp<TextStyle> }) {
+function TickerNumber({
+  value,
+  slot,
+  style,
+}: {
+  value: number
+  slot: number
+  style?: StyleProp<TextStyle>
+}) {
   const s = useStyles()
   const digits = [...String(value)].map((digit, at, all) => ({
     digit,
@@ -1181,13 +1193,21 @@ function TickerNumber({ value, style }: { value: number; style?: StyleProp<TextS
   return (
     <View style={s.tickerDigits}>
       {digits.map((column) => (
-        <TickerDigit key={column.place} digit={column.digit} style={style} />
+        <TickerDigit key={column.place} digit={column.digit} slot={slot} style={style} />
       ))}
     </View>
   )
 }
 
-function TickerDigit({ digit, style }: { digit: string; style?: StyleProp<TextStyle> }) {
+function TickerDigit({
+  digit,
+  slot,
+  style,
+}: {
+  digit: string
+  slot: number
+  style?: StyleProp<TextStyle>
+}) {
   const s = useStyles()
   const [shown, setShown] = useState(digit)
   const [previous, setPrevious] = useState<string | null>(null)
@@ -1200,14 +1220,14 @@ function TickerDigit({ digit, style }: { digit: string; style?: StyleProp<TextSt
     roll.value = timing(1, { duration: 200 })
   }, [digit, roll, shown])
   const incoming = useAnimatedStyle(() => ({
-    transform: [{ translateY: (1 - roll.value) * TICKER_ROLL }],
+    transform: [{ translateY: (1 - roll.value) * slot }],
   }))
   const outgoing = useAnimatedStyle(() => ({
     opacity: 1 - roll.value,
-    transform: [{ translateY: -roll.value * TICKER_ROLL }],
+    transform: [{ translateY: -roll.value * slot }],
   }))
   return (
-    <View style={s.tickerDigit}>
+    <View style={[s.tickerDigit, { height: slot }]}>
       <Text style={[style, s.tickerSizer]}>0</Text>
       {previous === null ? null : (
         <Reanimated.Text style={[style, s.tickerGlyph, outgoing]}>{previous}</Reanimated.Text>
@@ -6751,12 +6771,11 @@ function makeStyles(colors: ThemeColors) {
     findDockCount: {
       fontFamily: 'JetBrainsMono_400Regular',
       fontSize: 12,
-      lineHeight: 16,
       color: colors.muted,
     },
     ticker: { flexDirection: 'row', paddingHorizontal: 4 },
     tickerDigits: { flexDirection: 'row' },
-    tickerDigit: { height: TICKER_ROLL, overflow: 'hidden' },
+    tickerDigit: { overflow: 'hidden' },
     tickerSizer: { opacity: 0 },
     tickerGlyph: { position: 'absolute', top: 0, left: 0, right: 0, textAlign: 'center' },
     noteSegments: {
