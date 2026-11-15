@@ -3,7 +3,6 @@ import type { Note, SearchResult } from './types'
 
 export type NoteRowItem = { kind: 'note'; result: SearchResult }
 export type FolderRowItem = { kind: 'folder'; path: string; name: string }
-export type LibraryItem = NoteRowItem | FolderRowItem
 
 const noteResults = new WeakMap<Note, SearchResult>()
 const noteRows = new WeakMap<SearchResult, NoteRowItem>()

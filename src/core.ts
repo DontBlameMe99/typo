@@ -77,6 +77,104 @@ export function foldersFromNotes(notes: readonly Note[]): string[] {
   return [...folders].sort((a, b) => a.localeCompare(b))
 }
 
+// Card previews keep the note's prose and drop the Typst scaffolding: the
+// title call, set/show/import rules, comments, and markup punctuation.
+const DIRECTIVE = /^\s*#(?:set|show|import|include|let|title)\b/u
+const COMMENT = /^\s*\/\//u
+const HEADING = /^\s*=+\s*/u
+const BULLET = /^\s*[-+]\s+/u
+const previews = new WeakMap<Note, { source: string; limit: number; text: string }>()
+
+export function notePreview(note: Note, limit = 220): string {
+  const cached = previews.get(note)
+  if (cached?.source === note.source && cached.limit === limit) return cached.text
+  const lines: string[] = []
+  let directiveDepth = 0
+  let fenced = false
+  let blockComment = false
+  for (const line of note.source.split('\n')) {
+    const trimmed = line.trim()
+    if (directiveDepth > 0) {
+      directiveDepth +=
+        (trimmed.match(/[[{(]/gu)?.length ?? 0) - (trimmed.match(/[\])}]/gu)?.length ?? 0)
+      continue
+    }
+    if (fenced) {
+      if (trimmed.startsWith('```')) fenced = false
+      continue
+    }
+    if (blockComment) {
+      if (trimmed.includes('*/')) blockComment = false
+      continue
+    }
+    if (trimmed.startsWith('```')) {
+      fenced = true
+      continue
+    }
+    if (trimmed.startsWith('/*')) {
+      if (!trimmed.includes('*/')) blockComment = true
+      continue
+    }
+    if (!trimmed || COMMENT.test(trimmed)) continue
+    if (DIRECTIVE.test(trimmed)) {
+      directiveDepth = Math.max(
+        0,
+        (trimmed.match(/[[{(]/gu)?.length ?? 0) - (trimmed.match(/[\])}]/gu)?.length ?? 0)
+      )
+      continue
+    }
+    const text = trimmed
+      .replace(HEADING, '')
+      .replace(BULLET, '')
+      .replace(/#[A-Za-z][\w-]*(?:\([^)]*\))?\[/gu, '')
+      .replace(/\\/gu, '')
+      .replace(/[*_`#$[\]]/gu, '')
+      .replace(/\s+/gu, ' ')
+      .trim()
+    if (text) lines.push(text)
+    if (lines.join(' ').length > limit) break
+  }
+  const joined = lines.join(' ').trim()
+  const cut = joined.lastIndexOf(' ', limit)
+  const text =
+    joined.length > limit ? `${joined.slice(0, cut > 0 ? cut : limit).trimEnd()}…` : joined
+  previews.set(note, { source: note.source, limit, text })
+  return text
+}
+
+const WEEKDAY = { weekday: 'short' } as const
+const MONTH_DAY = { month: 'short', day: 'numeric' } as const
+const MONTH_DAY_YEAR = { month: 'short', day: 'numeric', year: 'numeric' } as const
+
+function startOfDay(time: number): number {
+  const date = new Date(time)
+  date.setHours(0, 0, 0, 0)
+  return date.getTime()
+}
+
+// Calendar days, not milliseconds: a DST change makes yesterday 23 or 25
+// hours long.
+function dayDistance(from: number, to: number): number {
+  return Math.round((startOfDay(from) - startOfDay(to)) / 86_400_000)
+}
+
+// Library cards answer "when did I last touch this" at a glance instead of
+// spelling out a timestamp.
+export function noteTime(modifiedAt: number | null, now = Date.now()): string {
+  if (modifiedAt === null) return ''
+  const elapsed = now - modifiedAt
+  if (elapsed < 60_000) return 'Just now'
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`
+  const days = dayDistance(now, modifiedAt)
+  const date = new Date(modifiedAt)
+  if (days === 1) return 'Yesterday'
+  if (days < 6) return date.toLocaleDateString(undefined, WEEKDAY)
+  if (date.getFullYear() === new Date(now).getFullYear())
+    return date.toLocaleDateString(undefined, MONTH_DAY)
+  return date.toLocaleDateString(undefined, MONTH_DAY_YEAR)
+}
+
 export function extractTitle(source: string, fallback: string): string {
   if (fallback.toLowerCase() === 'template.typ') return 'Template'
   const start = /#title\s*\[/u.exec(source)
@@ -372,12 +470,34 @@ function lineText(entry: ContentEntry, line: number, left: number, right: number
     : trimmedLine(entry.text, line)
 }
 
+function lineHit(entry: ContentEntry, term: string): { line: number; snippet: string } | null {
+  const at = entry.folded.indexOf(term)
+  if (at < 0) return null
+  const starts = lineOffsets(entry)
+  let line = 0
+  while (line + 1 < starts.length && starts[line + 1] <= at) line++
+  const lineStart = starts[line]
+  const end = line + 1 < starts.length ? starts[line + 1] - 1 : entry.folded.length
+  let left = lineStart
+  while (left < end && isSpace(entry.folded.charCodeAt(left))) left++
+  let right = end
+  while (right > left && isSpace(entry.folded.charCodeAt(right - 1))) right--
+  const text = lineText(entry, line, left, right)
+  const index = Math.max(0, text.toLocaleLowerCase().indexOf(term))
+  const from = Math.max(0, index - 50)
+  return {
+    line: line + 1,
+    snippet: `${from ? '…' : ''}${text.slice(from, from + 180)}${text.length > from + 180 ? '…' : ''}`,
+  }
+}
+
 export type NoteSearch = ((
   query: string,
   mode: SearchMode,
   cancelled?: () => boolean
 ) => Promise<SearchResult[]>) & {
   update(notes: readonly Note[]): void
+  warm(): Promise<void>
 }
 
 export function createNoteSearch(initial: readonly Note[]): NoteSearch {
@@ -454,7 +574,59 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     // A query made only of combining marks folds to nothing, and an empty pattern
     // would match every position. Treat it as no query rather than matching all.
     if (!folded) return []
+
+    const searchTerms = async (terms: string[]): Promise<SearchResult[]> => {
+      if (!content) content = indexContent(notes, version)
+      const currentEntries = await content
+      const namesOnly = mode === 'names'
+      const contentOnly = mode === 'content'
+      const hits: { result: SearchResult; matched: number; titleHits: number; score: number }[] = []
+      for (const entry of currentEntries) {
+        if (current !== request || cancelled()) return []
+        const note = entry.note
+        const title = foldSearchText(note.title)
+        const path = foldSearchText(note.path)
+        let matched = 0
+        let titleHits = 0
+        let score = 0
+        let snippetTerm = ''
+        for (const term of terms) {
+          const inTitle = !contentOnly && title.includes(term)
+          const inPath = !contentOnly && path.includes(term)
+          const inContent = !namesOnly && entry.folded.includes(term)
+          if (!inTitle && !inPath && !inContent) continue
+          matched++
+          if (inTitle) {
+            titleHits++
+            score += 1000 + (title.startsWith(term) ? 200 : 0)
+          } else if (inPath) score += 400
+          else {
+            score += 100
+            if (!snippetTerm) snippetTerm = term
+          }
+        }
+        if (matched === 0) continue
+        score += matched * 5000 + (titleHits === terms.length ? 3000 : 0)
+        score += Math.max(0, 100 - Math.min(title.length, 100))
+        const result: SearchResult = { note }
+        if (snippetTerm) {
+          const hit = lineHit(entry, snippetTerm)
+          if (hit) {
+            result.line = hit.line
+            result.snippet = hit.snippet
+          }
+        }
+        hits.push({ result, matched, titleHits, score })
+        await pause()
+      }
+      return hits
+        .sort((a, b) => b.matched - a.matched || b.titleHits - a.titleHits || b.score - a.score)
+        .map(({ result }) => result)
+    }
+
     const lower = value.toLowerCase()
+    const terms = folded.split(/\s+/u).filter(Boolean)
+    if (terms.length > 1) return searchTerms(terms)
     const found = new Map<string, RankedResult>()
     const add = (
       note: Note,
@@ -579,6 +751,11 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     return [...found.values()]
       .sort((a, b) => a.rank - b.rank || b.score - a.score || a.length - b.length)
       .map(({ result }) => result)
+  }
+
+  search.warm = async () => {
+    if (!content) content = indexContent(notes, version)
+    await content
   }
 
   search.update = (next: readonly Note[]) => {
