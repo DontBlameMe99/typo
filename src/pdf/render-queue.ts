@@ -10,6 +10,11 @@ export class RenderQueue<T> {
     private onError: (cause: unknown) => void
   ) {}
 
+  // True from the moment a request starts a pass until the last queued value is drawn.
+  get busy(): boolean {
+    return this.running !== null
+  }
+
   request(value: T, interrupt = true): void {
     if (this.stopped) return
     this.next = { value }

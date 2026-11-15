@@ -123,6 +123,26 @@ describe('PDF page retention', () => {
 })
 
 describe('PDF render queue', () => {
+  test('reports whether a pass is still pending or running', async () => {
+    const release = deferred()
+    const started = deferred()
+    const queue = new RenderQueue<number>(
+      async () => {
+        started.resolve()
+        await release.promise
+      },
+      () => {}
+    )
+    expect(queue.busy).toBe(false)
+    queue.request(1)
+    expect(queue.busy).toBe(true)
+    await started.promise
+    expect(queue.busy).toBe(true)
+    release.resolve()
+    await queue.dispose()
+    expect(queue.busy).toBe(false)
+  })
+
   test('coalesces rapid input and cancels before reusing the canvas', async () => {
     const release = deferred()
     const started = deferred()

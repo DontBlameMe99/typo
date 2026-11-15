@@ -178,8 +178,13 @@ function fail(current: Session, cause: unknown) {
   send({ type: 'error', message: status.textContent })
 }
 
-function watchProgress(current: Session) {
+function stopWatchdog(current: Session) {
   if (current.timeout) clearTimeout(current.timeout)
+  current.timeout = null
+}
+
+function watchProgress(current: Session) {
+  stopWatchdog(current)
   current.timeout = setTimeout(
     () => fail(current, new Error('Displaying this PDF took too long. Try a smaller document.')),
     60_000
@@ -629,7 +634,7 @@ async function load(uri: string) {
             if (buffer && !shown) parkCanvas(buffer)
           }
         }
-        if (current.timeout) clearTimeout(current.timeout)
+        stopWatchdog(current)
       },
       (cause) => fail(current, cause)
     )
@@ -676,6 +681,9 @@ async function load(uri: string) {
     }
     clearSelection()
     requestRender()
+    // The last batch arms the watchdog, and a pass that already finished will not
+    // clear it. Once nothing is left to draw, a loaded document needs no watchdog.
+    if (!current.queue?.busy) stopWatchdog(current)
   } catch (cause) {
     fail(current, cause)
   }

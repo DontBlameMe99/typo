@@ -119,7 +119,7 @@ const touches = (distance: number, x = 180, y = 200) => [
   { clientX: x + distance / 2, clientY: y },
 ]
 
-async function viewer(count = 120) {
+async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
   const scroll = new Node('scroll')
   const pages = new Node('pages')
   const status = new Node('status')
@@ -140,12 +140,20 @@ async function viewer(count = 120) {
   let releaseRaster = () => {}
   // Documents differ in page shape, so a reload can keep the page count but not the heights.
   let wide = false
+  // Holding the later size batches lets one render pass finish before the layout does.
+  let releaseLayout = () => {}
+  let layoutGate: Promise<void> | null = options.holdLayout
+    ? new Promise<void>((resolve) => {
+        releaseLayout = resolve
+      })
+    : null
   const pdfTask = {
     promise: Promise.resolve({
       numPages: count,
       async getPage(number: number) {
         // Alternate portrait and landscape pages to exercise per-page geometry.
         const [width, height] = wide ? [600, 400] : number % 2 ? [600, 800] : [800, 400]
+        if (layoutGate && number > 16) await layoutGate
         fetches.set(number, (fetches.get(number) ?? 0) + 1)
         inFlight++
         maxInFlight = Math.max(maxInFlight, inFlight)
@@ -249,6 +257,16 @@ async function viewer(count = 120) {
     release: async () => {
       releaseRaster()
       await settle()
+    },
+    releaseLayout: async () => {
+      releaseLayout()
+      layoutGate = null
+      await settle()
+    },
+    fireTimers: () => {
+      const pending = [...timers.values()]
+      timers.clear()
+      for (const callback of pending) callback()
     },
     async close() {
       releaseRaster()
@@ -392,6 +410,23 @@ test('zooming redraws a cached page without parsing it again', async () => {
     expect(view.renders).toContain(1)
     expect(view.fetches.get(1)).toBe(fetches)
     expect(view.cleanups.get(1)).toBe(1)
+  } finally {
+    await view.close()
+  }
+})
+
+test('a loaded document does not trip the load watchdog', async () => {
+  const view = await viewer(40, { holdLayout: true })
+  try {
+    // The first pages are drawn while the rest of the sizes are still being read, so
+    // a render pass finishes before the last batch arms the watchdog.
+    for (let turn = 0; turn < 8; turn++) await settle()
+    expect(view.pages.children).toHaveLength(16)
+    await view.releaseLayout()
+    for (let turn = 0; turn < 64 && view.pages.children.length !== 40; turn++) await settle()
+    await settle()
+    view.fireTimers()
+    expect(view.messages.filter((message) => message.type === 'error')).toEqual([])
   } finally {
     await view.close()
   }
