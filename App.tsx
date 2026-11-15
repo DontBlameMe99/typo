@@ -21,6 +21,7 @@ import {
   useState,
 } from 'react'
 import {
+  AccessibilityInfo,
   AppState,
   BackHandler,
   FlatList,
@@ -229,7 +230,7 @@ const SCREEN_SPRING = { damping: 34, mass: 0.82, overshootClamping: true, stiffn
 const SLIDE_TIMING = { duration: 250, easing: Easing.bezier(0.22, 1, 0.36, 1) }
 const ICON_SWAP_TIMING = { duration: 250, easing: Easing.bezier(0.42, 0, 0.58, 1) }
 const NOTE_DOCK_TOP = 12
-const NOTE_BAR_CLEARANCE = 8
+const NOTE_BAR_HEIGHT = 48
 // The AMOLED track is 52 wide and the 24 thumb sits 4 from each edge.
 const TOGGLE_TRAVEL = 20
 const NOTE_MODE_OPTIONS = [
@@ -4055,10 +4056,7 @@ function NoteDetail({
   const [findOpen, setFindOpen] = useState(!!initialQuery || !!initialLine)
   const [focusFind, setFocusFind] = useState(false)
   const findInput = useRef<React.ComponentRef<typeof TextInput>>(null)
-  const [findArea, setFindArea] = useState(0)
-  const [dockWidth, setDockWidth] = useState(0)
-  const [dockActionX, setDockActionX] = useState(0)
-  const [modeBarWidth, setModeBarWidth] = useState(0)
+  const [barArea, setBarArea] = useState(0)
   const [contentWidth, setContentWidth] = useState(0)
   const page = useSharedValue(mode === 'pdf' ? 1 : 0)
   const sourceSlide = useAnimatedStyle(() => ({
@@ -4071,17 +4069,8 @@ function NoteDetail({
     page.value = timing(mode === 'pdf' ? 1 : 0, SLIDE_TIMING)
   }, [mode, page])
   const findProgress = useSharedValue(findOpen ? 1 : 0)
-  const findTrackStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: -findProgress.value * findArea }],
-  }))
-  // The slide alone leaves a slice of the bar on narrow screens.
-  const barShift =
-    dockWidth && modeBarWidth && dockActionX
-      ? Math.min(0, dockActionX - NOTE_BAR_CLEARANCE - (dockWidth + modeBarWidth) / 2)
-      : 0
-  const noteBarStyle = useAnimatedStyle(() => ({
-    opacity: 1 - findProgress.value,
-    transform: [{ translateX: -findProgress.value * findArea + barShift }],
+  const barTrackStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: -findProgress.value * barArea }],
   }))
   useEffect(() => {
     findProgress.value = timing(findOpen ? 1 : 0, { duration: 220 })
@@ -4102,6 +4091,9 @@ function NoteDetail({
   const pendingSave = useRef<ReturnType<typeof setTimeout> | null>(null)
   const writing = useRef<Promise<string | null> | null>(null)
   const closing = useRef(false)
+  // The bar carries no title, so the note is named for screen readers once per
+  // open rather than on every title-changing autosave.
+  const announced = useRef<string | null>(null)
   const dismiss = useRef<(after?: () => void) => void>(() => {})
   const editState = useRef({ documentId, source, savedNote, active, opening })
   editState.current = { documentId, source, savedNote, active, opening }
@@ -4118,6 +4110,17 @@ function NoteDetail({
     }
   }, [note])
   const autoPdf = useAutoPdf({ note: savedNote, source, workspace, enabled: active })
+  useEffect(() => {
+    if (!active) {
+      announced.current = null
+      return
+    }
+    // The cached title can be stale until the opening read lands.
+    if (opening) return
+    if (announced.current === documentId) return
+    announced.current = documentId
+    AccessibilityInfo.announceForAccessibility(note.title)
+  }, [active, documentId, note.title, opening])
   useEffect(() => {
     if (autoPdf.preview?.uri) setPdfError(null)
   }, [autoPdf.preview?.uri])
@@ -4311,6 +4314,12 @@ function NoteDetail({
       if (current()) setOpeningPdf(false)
     }
   }
+  function closeFind() {
+    setFindOpen(false)
+    setFocusFind(false)
+    Keyboard.dismiss()
+    editor.current?.blur()
+  }
   function changeFind(value: string) {
     setFind(value)
     setMatchIndex(0)
@@ -4400,23 +4409,6 @@ function NoteDetail({
           behavior={keyboardBehavior}
           keyboardVerticalOffset={top}
         >
-          <View style={s.detailToolbar}>
-            <IconButton name="close" label="Close note" onPress={() => dismiss.current()} />
-            <View style={s.toolbarTitle}>
-              <Text numberOfLines={1} style={s.toolbarHeading}>
-                {savedNote.title}
-              </Text>
-              <Text numberOfLines={1} style={s.notePath}>
-                {savedNote.path}
-              </Text>
-            </View>
-            <IconButton
-              name="share"
-              label={mode === 'source' ? 'Share Typst source' : 'Share PDF'}
-              onPress={() => void share()}
-              disabled={opening || sharing || (mode === 'pdf' && (!!autoPdf.error || !!pdfError))}
-            />
-          </View>
           {(error || openError || autoPdf.storageError) && (
             <View style={s.errorInset}>
               <ErrorBanner
@@ -4519,15 +4511,94 @@ function NoteDetail({
           </View>
           <View style={s.noteDockShell}>
             <View style={s.noteDock}>
-              <View
-                style={s.noteFindArea}
-                onLayout={(event) => setFindArea(event.nativeEvent.layout.width)}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={findOpen ? 'Close find' : 'Close note'}
+                onPress={() => (findOpen ? closeFind() : dismiss.current())}
+                style={({ pressed }) => [s.noteDockButton, pressed && s.pressed]}
               >
-                <Reanimated.View style={[s.noteFindTrack, findTrackStyle]}>
-                  <View style={[s.noteFindPanel, { width: findArea || '100%' }]} />
+                <Icon name="close" size={24} color={colors.ink} />
+              </Pressable>
+              {/* One track, two bars: the mode bar and the find field, so the
+                  field slides in over the buttons instead of squeezing them. */}
+              <View
+                style={s.noteBarArea}
+                onLayout={(event) => setBarArea(event.nativeEvent.layout.width)}
+              >
+                <Reanimated.View style={[s.noteBarTrack, barTrackStyle]}>
                   <View
-                    style={[s.noteFindPanel, { width: findArea || '100%' }]}
+                    style={[s.noteBarPanel, { width: barArea || '100%' }]}
+                    pointerEvents={findOpen ? 'none' : 'auto'}
+                    accessibilityElementsHidden={findOpen}
+                    importantForAccessibility={findOpen ? 'no-hide-descendants' : 'auto'}
+                  >
+                    <PillTabs
+                      options={NOTE_MODE_OPTIONS}
+                      value={mode}
+                      onSelect={switchMode}
+                      style={s.noteSegments}
+                      itemStyle={s.noteSegment}
+                      textStyle={s.noteSegmentText}
+                      pillStyle={{ backgroundColor: colors.accent, borderRadius: 19 }}
+                      inset={5}
+                      activeColor={colors.onAccent}
+                      idleColor={colors.ink}
+                    />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        mode === 'pdf' ? 'Open PDF in the device viewer' : 'Find in note'
+                      }
+                      disabled={mode === 'pdf' && (openingPdf || !!autoPdf.error || !!pdfError)}
+                      onPress={() => {
+                        if (mode === 'pdf') {
+                          void openNativePdf()
+                          return
+                        }
+                        editor.current?.blur()
+                        setFocusFind(true)
+                        setFindOpen(true)
+                      }}
+                      style={({ pressed }) => [
+                        s.noteDockButton,
+                        pressed && s.pressed,
+                        mode === 'pdf' &&
+                          (openingPdf || !!autoPdf.error || !!pdfError) &&
+                          s.disabled,
+                      ]}
+                    >
+                      <IconFade
+                        from="search"
+                        to="maximize"
+                        swapped={mode === 'pdf'}
+                        size={24}
+                        color={colors.ink}
+                      />
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={mode === 'source' ? 'Share Typst source' : 'Share PDF'}
+                      disabled={
+                        opening || sharing || (mode === 'pdf' && (!!autoPdf.error || !!pdfError))
+                      }
+                      onPress={() => void share()}
+                      style={({ pressed }) => [
+                        s.noteDockButton,
+                        pressed && s.pressed,
+                        (opening ||
+                          sharing ||
+                          (mode === 'pdf' && (!!autoPdf.error || !!pdfError))) &&
+                          s.disabled,
+                      ]}
+                    >
+                      <Icon name="share" size={22} color={colors.ink} />
+                    </Pressable>
+                  </View>
+                  <View
+                    style={[s.noteBarPanel, { width: barArea || '100%' }]}
                     pointerEvents={findOpen ? 'auto' : 'none'}
+                    accessibilityElementsHidden={!findOpen}
+                    importantForAccessibility={findOpen ? 'auto' : 'no-hide-descendants'}
                   >
                     <View style={s.findDock}>
                       <Icon name="search" size={20} color={colors.accent} />
@@ -4567,69 +4638,6 @@ function NoteDetail({
                   </View>
                 </Reanimated.View>
               </View>
-              <Reanimated.View
-                style={[s.noteModeBar, noteBarStyle]}
-                onLayout={(event) => setDockWidth(event.nativeEvent.layout.width)}
-                pointerEvents={findOpen ? 'none' : 'auto'}
-                accessibilityElementsHidden={findOpen}
-                importantForAccessibility={findOpen ? 'no-hide-descendants' : 'auto'}
-              >
-                <View onLayout={(event) => setModeBarWidth(event.nativeEvent.layout.width)}>
-                  <PillTabs
-                    options={NOTE_MODE_OPTIONS}
-                    value={mode}
-                    onSelect={switchMode}
-                    style={s.noteSegments}
-                    itemStyle={s.noteSegment}
-                    textStyle={s.noteSegmentText}
-                    pillStyle={{ backgroundColor: colors.accent, borderRadius: 24 }}
-                    inset={6}
-                    activeColor={colors.onAccent}
-                    idleColor={colors.ink}
-                  />
-                </View>
-              </Reanimated.View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={
-                  mode === 'pdf'
-                    ? 'Open PDF in the device viewer'
-                    : findOpen
-                      ? 'Close find'
-                      : 'Find in note'
-                }
-                onLayout={(event) => setDockActionX(event.nativeEvent.layout.x)}
-                disabled={mode === 'pdf' && (openingPdf || !!autoPdf.error || !!pdfError)}
-                onPress={() => {
-                  if (mode === 'pdf') {
-                    void openNativePdf()
-                    return
-                  }
-                  if (findOpen) {
-                    setFindOpen(false)
-                    setFocusFind(false)
-                    Keyboard.dismiss()
-                    editor.current?.blur()
-                    return
-                  }
-                  editor.current?.blur()
-                  setFocusFind(true)
-                  setFindOpen(true)
-                }}
-                style={({ pressed }) => [
-                  s.noteDockButton,
-                  pressed && s.pressed,
-                  mode === 'pdf' && (openingPdf || !!autoPdf.error || !!pdfError) && s.disabled,
-                ]}
-              >
-                <IconFade
-                  from={findOpen ? 'close' : 'search'}
-                  to="maximize"
-                  swapped={mode === 'pdf'}
-                  size={26}
-                  color={colors.ink}
-                />
-              </Pressable>
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -5935,13 +5943,6 @@ function makeStyles(colors: ThemeColors) {
       color: colors.muted,
       marginTop: 1,
     },
-    notePath: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 12,
-      color: colors.muted,
-      lineHeight: 16,
-      marginTop: 1,
-    },
     fab: {
       width: 60,
       height: 60,
@@ -6031,23 +6032,6 @@ function makeStyles(colors: ThemeColors) {
     },
     textLink: { padding: 12 },
     linkText: { fontFamily: 'DMSans_600SemiBold', color: colors.accent, fontSize: 16 },
-    detailToolbar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingHorizontal: 12,
-      paddingTop: 14,
-      paddingBottom: 10,
-      gap: 4,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.line,
-    },
-    toolbarTitle: { flex: 1, gap: 1 },
-    toolbarHeading: {
-      fontFamily: 'DMSans_600SemiBold',
-      color: colors.ink,
-      fontSize: 18,
-      lineHeight: 24,
-    },
     pdf: { flex: 1, width: '100%', backgroundColor: colors.crust },
     templateHint: {
       marginHorizontal: 20,
@@ -6710,43 +6694,35 @@ function makeStyles(colors: ThemeColors) {
       zIndex: 2,
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 12,
+      gap: 8,
       paddingHorizontal: 16,
       paddingTop: NOTE_DOCK_TOP,
       paddingBottom: 28,
     },
-    noteFindArea: {
+    noteBarArea: {
       flex: 1,
-      height: 60,
+      height: NOTE_BAR_HEIGHT,
       minWidth: 0,
-      borderRadius: 30,
+      borderRadius: NOTE_BAR_HEIGHT / 2,
       overflow: 'hidden',
     },
-    noteFindTrack: { flexDirection: 'row', height: 60 },
-    noteFindPanel: { height: 60, justifyContent: 'center' },
-    // Absolute so it can center on the screen instead of the find field's width,
-    // and shifted by the same slide the find field uses.
-    noteModeBar: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      top: NOTE_DOCK_TOP,
+    noteBarTrack: { flexDirection: 'row', height: NOTE_BAR_HEIGHT },
+    noteBarPanel: {
+      height: NOTE_BAR_HEIGHT,
+      flexDirection: 'row',
       alignItems: 'center',
+      gap: 8,
     },
     findDock: {
-      height: 60,
+      flex: 1,
+      height: NOTE_BAR_HEIGHT,
       flexDirection: 'row',
       alignItems: 'center',
       gap: 4,
       paddingLeft: 16,
       paddingRight: 6,
-      borderRadius: 30,
+      borderRadius: NOTE_BAR_HEIGHT / 2,
       backgroundColor: colors.surface,
-      elevation: 8,
-      shadowColor: '#000000',
-      shadowOpacity: 0.4,
-      shadowRadius: 24,
-      shadowOffset: { width: 0, height: 8 },
     },
     findDockInput: {
       flex: 1,
@@ -6764,22 +6740,18 @@ function makeStyles(colors: ThemeColors) {
       paddingHorizontal: 4,
     },
     noteSegments: {
+      flex: 1,
       flexDirection: 'row',
       gap: 4,
-      height: 60,
-      paddingHorizontal: 8,
-      paddingVertical: 6,
-      borderRadius: 30,
+      height: NOTE_BAR_HEIGHT,
+      paddingHorizontal: 5,
+      paddingVertical: 5,
+      borderRadius: NOTE_BAR_HEIGHT / 2,
       backgroundColor: colors.surface,
-      elevation: 8,
-      shadowColor: '#000000',
-      shadowOpacity: 0.4,
-      shadowRadius: 24,
-      shadowOffset: { width: 0, height: 8 },
     },
     noteSegment: {
-      height: 48,
-      paddingHorizontal: 22,
+      flex: 1,
+      height: 38,
       alignItems: 'center',
       justifyContent: 'center',
     },
@@ -6789,17 +6761,12 @@ function makeStyles(colors: ThemeColors) {
       color: colors.ink,
     },
     noteDockButton: {
-      width: 60,
-      height: 60,
-      borderRadius: 30,
+      width: NOTE_BAR_HEIGHT,
+      height: NOTE_BAR_HEIGHT,
+      borderRadius: NOTE_BAR_HEIGHT / 2,
       backgroundColor: colors.surface,
       alignItems: 'center',
       justifyContent: 'center',
-      elevation: 8,
-      shadowColor: '#000000',
-      shadowOpacity: 0.4,
-      shadowRadius: 24,
-      shadowOffset: { width: 0, height: 8 },
     },
     templateToolbar: {
       flexDirection: 'row',
