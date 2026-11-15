@@ -21,17 +21,16 @@ import {
   useState,
 } from 'react'
 import {
-  Animated,
   AppState,
   BackHandler,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
   Linking,
-  PanResponder,
   Platform,
   Pressable,
   ScrollView,
+  type ScrollViewInstance,
   StatusBar,
   type StyleProp,
   StyleSheet,
@@ -44,6 +43,7 @@ import {
 } from 'react-native'
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
 import Reanimated, {
+  cancelAnimation,
   Easing,
   type EasingFunction,
   type EasingFunctionFactory,
@@ -57,6 +57,7 @@ import Reanimated, {
   SlideOutRight,
   useAnimatedStyle,
   useSharedValue,
+  withDelay,
   withSpring,
   withTiming,
 } from 'react-native-reanimated'
@@ -71,18 +72,20 @@ import { BackGate } from './src/back-gate'
 import { type CompilerHandle, CompilerHost } from './src/CompilerHost'
 import { contrastRatio, hexToHsl, hslToHex, parseHex, rgba } from './src/color'
 import type { PdfWorkspace } from './src/compiler/workspace'
-import { DEFAULT_TEMPLATE, isRootTemplate, type NoteSort, reconcileNotes } from './src/core'
+import {
+  DEFAULT_TEMPLATE,
+  isRootTemplate,
+  type NoteSort,
+  notePreview,
+  noteTime,
+  reconcileNotes,
+} from './src/core'
 import { ErrorBanner } from './src/ErrorBanner'
 import { loadFavorites, loadFavoritesSync, storeFavorites } from './src/favorites'
 import { Icon, type IconName } from './src/icons'
 import { loadVaultIndex, loadVaultIndexSync, storeVaultIndex } from './src/library-cache'
 import type { VaultIndex } from './src/library-index'
-import {
-  type FolderRowItem,
-  type FolderRowsCache,
-  type LibraryItem,
-  sortedNoteRows,
-} from './src/library-rows'
+import { type FolderRowItem, type FolderRowsCache, sortedNoteRows } from './src/library-rows'
 import { TypoMark } from './src/Mark'
 import { NoteSearch } from './src/NoteSearch'
 import Pdf from './src/PdfViewer'
@@ -155,9 +158,6 @@ type LibraryNotice = {
   body?: string
 }
 type MovingItem = { kind: 'note'; result: SearchResult } | { kind: 'folder'; entry: FolderEntry }
-type SearchRow =
-  | { kind: 'header'; title: string; key: string }
-  | { kind: 'result'; result: SearchResult }
 type TrashUndo = {
   noticeId: number
   item: MovingItem
@@ -167,6 +167,11 @@ type TrashUndo = {
   result: Promise<TrashedNote | null>
 }
 type RowAction = 'favorite' | 'trash'
+type LibraryRow =
+  | { kind: 'space'; key: string; height: number }
+  | { kind: 'folders'; key: string; items: FolderRowItem[] }
+  | { kind: 'note'; key: string; result: SearchResult }
+type RowLayout = { length: number; offset: number }
 const warmNote: Note = { uri: '', path: '', title: '', source: '', modifiedAt: null }
 const EMPTY_NOTES: Note[] = []
 const EMPTY_FOLDERS: FolderRowItem[] = []
@@ -201,20 +206,16 @@ const noteSorts = [
   descValue: NoteSort
   defaultValue: NoteSort
 }[]
-const SWIPE_ACTION_WIDTH = 120
-const SWIPE_TRASH_DISTANCE = SWIPE_ACTION_WIDTH + 36
-const SWIPE_FAVORITE_DISTANCE = SWIPE_ACTION_WIDTH + 36
-const SWIPE_TOSS = 0.05
+const SWIPE_CHIP_REVEAL = 96
+const SWIPE_CARD_REVEAL = 120
 const SWIPE_SPRING = { damping: 26, mass: 0.7, overshootClamping: true, stiffness: 330 }
-// Rows are a fixed 71 plus the 1 point divider, so the list can place them
-// without measuring. Without this a fling outruns the mounted rows and the
-// scroll stops at the end of what is rendered instead of where the fling goes.
-const LIBRARY_ROW_HEIGHT = 72
-const libraryItemLayout = (_: unknown, index: number) => ({
-  length: LIBRARY_ROW_HEIGHT,
-  offset: LIBRARY_ROW_HEIGHT * index,
-  index,
-})
+// The pane tucks this far under the row so its colour fills the rounded
+// corner notch instead of leaving a plain strip of the row surface.
+const PANE_OVERLAP = 16
+const PANE_FADE = 30 + PANE_OVERLAP
+const CHIP_HEIGHT = 54
+const CARD_HEIGHT = 96
+const ROW_GAP = 8
 const SHEET_SPRING = { damping: 34, mass: 0.8, overshootClamping: true, stiffness: 340 }
 // Sheets rise into place with a short travel, a fade, and a touch of blur.
 const SHEET_REVEAL_EASE = Easing.bezier(0.22, 1, 0.36, 1)
@@ -280,6 +281,29 @@ function parentFolder(path: string): string {
 
 function folderName(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1)
+}
+
+function folderPathLabel(path: string, vaultName: string): string {
+  if (!path) return vaultName
+  const parts = path.split('/')
+  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : path
+}
+
+function rowLength(row: LibraryRow): number {
+  if (row.kind === 'space') return row.height
+  if (row.kind === 'folders') return CHIP_HEIGHT + ROW_GAP
+  return CARD_HEIGHT + ROW_GAP
+}
+
+function layoutRows(rows: LibraryRow[]): RowLayout[] {
+  const layout: RowLayout[] = []
+  let offset = 0
+  for (const row of rows) {
+    const length = rowLength(row)
+    layout.push({ length, offset })
+    offset += length
+  }
+  return layout
 }
 
 function sameList<T>(a: readonly T[], b: readonly T[]): boolean {
@@ -595,20 +619,24 @@ function Screen({
 function BottomSheet({
   title,
   leading,
+  trailing,
   onClose,
   onRequestClose,
   busy = false,
   dismissRef,
   cardHeight,
+  cardStyle,
   children,
 }: {
   title: string
   leading?: React.ReactNode
+  trailing?: React.ReactNode
   onClose: () => void
   onRequestClose?: () => boolean
   busy?: boolean
   dismissRef?: React.MutableRefObject<(after?: () => void) => void>
   cardHeight?: number
+  cardStyle?: StyleProp<ViewStyle>
   children: React.ReactNode
 }) {
   const s = useStyles()
@@ -756,6 +784,7 @@ function BottomSheet({
             {title}
           </Text>
         </View>
+        {trailing}
       </View>
     </View>
   )
@@ -766,6 +795,7 @@ function BottomSheet({
         { paddingBottom: Math.max(bottom, 24) },
         cardHeight !== undefined && { height: cardHeight },
         keyboardMaxHeight !== undefined && { maxHeight: keyboardMaxHeight },
+        cardStyle,
         cardMotion,
       ]}
     >
@@ -1061,47 +1091,6 @@ function SwapIcon({
   )
 }
 
-function SwapLabel({
-  idle,
-  activeLabel,
-  active,
-  style,
-}: {
-  idle: string
-  activeLabel: string
-  active: boolean
-  style?: React.ComponentProps<typeof Text>['style']
-}) {
-  const s = useStyles()
-  const progress = useSharedValue(active ? 1 : 0)
-  useEffect(() => {
-    progress.value = spring(active ? 1 : 0, {
-      damping: 15,
-      mass: 0.45,
-      stiffness: 260,
-      overshootClamping: false,
-    })
-  }, [active, progress])
-  const outgoing = useAnimatedStyle(() => ({
-    opacity: interpolate(progress.value, [0, 1], [1, 0], Extrapolation.CLAMP),
-    transform: [{ translateY: interpolate(progress.value, [0, 1], [0, -3], Extrapolation.CLAMP) }],
-  }))
-  const incoming = useAnimatedStyle(() => ({
-    opacity: interpolate(progress.value, [0, 1], [0, 1], Extrapolation.CLAMP),
-    transform: [{ translateY: interpolate(progress.value, [0, 1], [3, 0], Extrapolation.CLAMP) }],
-  }))
-  return (
-    <View style={s.swapLabel}>
-      <Reanimated.Text numberOfLines={1} style={[style, s.swapLabelLayer, outgoing]}>
-        {idle}
-      </Reanimated.Text>
-      <Reanimated.Text numberOfLines={1} style={[style, s.swapLabelLayer, incoming]}>
-        {activeLabel}
-      </Reanimated.Text>
-    </View>
-  )
-}
-
 function PillTabs<T extends string>({
   options,
   value,
@@ -1191,6 +1180,9 @@ function PillLabel({
   return <Reanimated.Text style={[style, color]}>{children}</Reanimated.Text>
 }
 
+const ESCAPE_PATTERN = /[.*+?^${}()|[\]\\]/gu
+const escapePattern = (value: string) => value.replace(ESCAPE_PATTERN, '\\$&')
+
 function commonPrefixLength(value: string, needle: string): number {
   let index = 0
   while (index < value.length && index < needle.length && value[index] === needle[index]) index++
@@ -1221,25 +1213,40 @@ function HighlightedText({
     )
   }
   const haystack = text.toLocaleLowerCase()
+  const terms = needle.split(/\s+/u).filter(Boolean)
   let parts: { text: string; hit: boolean }[] = []
-  let offset = 0
-  for (;;) {
-    const at = haystack.indexOf(needle, offset)
-    if (at < 0) break
-    if (at > offset) parts.push({ text: text.slice(offset, at), hit: false })
-    parts.push({ text: text.slice(at, at + needle.length), hit: true })
-    offset = at + needle.length
-  }
-  if (offset < text.length) parts.push({ text: text.slice(offset), hit: false })
-  if (fuzzy && !parts.some((part) => part.hit)) {
-    // Fuzzy matches still need a visible anchor. Highlight the shared prefix,
-    // so a search like "tesg" lights up "Tes" in "Test".
-    const prefix = commonPrefixLength(haystack, needle)
-    if (prefix > 0) {
-      parts = [
-        { text: text.slice(0, prefix), hit: true },
-        ...(prefix < text.length ? [{ text: text.slice(prefix), hit: false }] : []),
-      ]
+  if (terms.length > 1) {
+    // Multi-term snippets rarely contain the whole query in one run, so light
+    // up every term that made the note a hit.
+    const pattern = new RegExp(terms.map(escapePattern).join('|'), 'giu')
+    let offset = 0
+    for (const match of text.matchAll(pattern)) {
+      const at = match.index ?? 0
+      if (at > offset) parts.push({ text: text.slice(offset, at), hit: false })
+      parts.push({ text: match[0], hit: true })
+      offset = at + match[0].length
+    }
+    if (offset < text.length) parts.push({ text: text.slice(offset), hit: false })
+  } else {
+    let offset = 0
+    for (;;) {
+      const at = haystack.indexOf(needle, offset)
+      if (at < 0) break
+      if (at > offset) parts.push({ text: text.slice(offset, at), hit: false })
+      parts.push({ text: text.slice(at, at + needle.length), hit: true })
+      offset = at + needle.length
+    }
+    if (offset < text.length) parts.push({ text: text.slice(offset), hit: false })
+    if (fuzzy && !parts.some((part) => part.hit)) {
+      // Fuzzy matches still need a visible anchor. Highlight the shared prefix,
+      // so a search like "tesg" lights up "Tes" in "Test".
+      const prefix = commonPrefixLength(haystack, needle)
+      if (prefix > 0) {
+        parts = [
+          { text: text.slice(0, prefix), hit: true },
+          ...(prefix < text.length ? [{ text: text.slice(prefix), hit: false }] : []),
+        ]
+      }
     }
   }
   let cursor = 0
@@ -1283,19 +1290,16 @@ const SearchResultRow = memo(
     result,
     query,
     favorite,
-    swipePath,
-    swipePane,
-    swipeArmed,
-    swipeTranslation,
-    onRowTouch,
+    vaultName,
     onPress,
     onLongPress,
     onToggleFavorite,
     onTrash,
-  }: RowSwipeProps & {
+  }: {
     result: SearchResult
     query: string
     favorite: boolean
+    vaultName: string
     onPress: (result: SearchResult) => void
     onLongPress: (result: SearchResult) => void
     onToggleFavorite: (result: SearchResult) => void
@@ -1305,47 +1309,46 @@ const SearchResultRow = memo(
     const { colors } = useTheme()
     const parent = parentFolder(result.note.path)
     const needle = query.trim().toLocaleLowerCase()
+    const terms = needle.split(/\s+/u).filter(Boolean)
     const preview = result.snippet ?? searchPreview(result.note, query)
-    // A fuzzy content hit may have no literal query to highlight. Do not show
-    // an unhighlighted body excerpt in that case.
+    // A fuzzy single-term hit may have no literal query to highlight, so hide
+    // that excerpt. Multi-term snippets are always from real term hits.
     const snippet =
-      preview && needle && preview.toLocaleLowerCase().includes(needle) ? preview : undefined
+      preview && (terms.length > 1 || (needle && preview.toLocaleLowerCase().includes(needle)))
+        ? preview
+        : undefined
     return (
       <SwipeRow
         favorite={favorite}
         noun="note"
         label={`${result.note.title}, ${result.note.path}`}
-        path={result.note.path}
-        rowStyle={s.searchRow}
-        swipePath={swipePath}
-        swipePane={swipePane}
-        swipeArmed={swipeArmed}
-        swipeTranslation={swipeTranslation}
-        onRowTouch={onRowTouch}
+        reveal={SWIPE_CARD_REVEAL}
+        shellStyle={s.cardShell}
+        rowStyle={s.cardRow}
         onPress={() => onPress(result)}
         onLongPress={() => onLongPress(result)}
         onToggleFavorite={() => onToggleFavorite(result)}
         onTrash={() => onTrash(result)}
       >
-        <View style={s.searchTitleRow}>
+        <View style={s.cardHead}>
           <HighlightedText
             text={result.note.title}
             query={query}
             numberOfLines={1}
             fuzzy
-            style={s.searchTitle}
+            style={s.cardTitle}
           />
-          <Text numberOfLines={1} style={s.searchPath}>
-            {parent ? `${parent}/` : 'root'}
-          </Text>
-          {favorite ? (
-            <View style={s.searchStar}>
-              <Icon name="star" size={16} color={colors.accent} fill={colors.accent} />
-            </View>
-          ) : null}
+          <View style={s.cardMeta}>
+            {favorite ? (
+              <Icon name="star" size={14} color={colors.accent} fill={colors.accent} />
+            ) : null}
+            <Text numberOfLines={1} style={s.cardTime}>
+              {folderPathLabel(parent, vaultName)}
+            </Text>
+          </View>
         </View>
         {snippet ? (
-          <HighlightedText text={snippet} query={query} numberOfLines={2} style={s.snippet} />
+          <HighlightedText text={snippet} query={query} numberOfLines={2} style={s.cardPreview} />
         ) : null}
       </SwipeRow>
     )
@@ -1355,11 +1358,7 @@ const SearchResultRow = memo(
     previous.result.snippet === next.result.snippet &&
     previous.query === next.query &&
     previous.favorite === next.favorite &&
-    previous.swipePath === next.swipePath &&
-    previous.swipePane === next.swipePane &&
-    previous.swipeArmed === next.swipeArmed &&
-    previous.swipeTranslation === next.swipeTranslation &&
-    previous.onRowTouch === next.onRowTouch &&
+    previous.vaultName === next.vaultName &&
     previous.onPress === next.onPress &&
     previous.onLongPress === next.onLongPress &&
     previous.onToggleFavorite === next.onToggleFavorite &&
@@ -1762,20 +1761,6 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
     const listener = Keyboard.addListener('keyboardDidHide', () => searchInput.current?.blur())
     return () => listener.remove()
   }, [])
-  const searchRows = useMemo(() => {
-    const rows: SearchRow[] = []
-    const names = results.filter((result) => !result.snippet)
-    const contents = results.filter((result) => !!result.snippet)
-    if (names.length > 0) {
-      rows.push({ kind: 'header', title: 'IN THE NAME', key: 'name-header' })
-      for (const result of names) rows.push({ kind: 'result', result })
-    }
-    if (contents.length > 0) {
-      rows.push({ kind: 'header', title: 'IN YOUR NOTES', key: 'content-header' })
-      for (const result of contents) rows.push({ kind: 'result', result })
-    }
-    return rows
-  }, [results])
   const notesByFolder = useMemo(() => {
     const map = new Map<string, Note[]>()
     for (const note of notes) {
@@ -1799,21 +1784,70 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
     return map
   }, [folders])
   const favoritePaths = useMemo(() => new Set(favorites), [favorites])
+  const noteCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const note of notes) {
+      // A folder counts everything below it, not just its direct notes.
+      let path = parentFolder(note.path)
+      while (true) {
+        counts.set(path, (counts.get(path) ?? 0) + 1)
+        if (!path) break
+        path = parentFolder(path)
+      }
+    }
+    return counts
+  }, [notes])
   const folderRows = useRef<FolderRowsCache>(new Map())
   const folderViews = useMemo(() => {
     return folderStack.map((path) => {
       const current = path === folder
       const childFolders = foldersByParent.get(path) ?? EMPTY_FOLDERS
-      const items: LibraryItem[] = [
-        ...childFolders,
-        ...sortedNoteRows(folderRows.current, path, notesByFolder.get(path) ?? EMPTY_NOTES, sort),
-      ]
-      const isFavorite = (item: LibraryItem) =>
-        favoritePaths.has(item.kind === 'folder' ? item.path : item.result.note.path)
+      const favoriteFolders = childFolders.filter((entry) => favoritePaths.has(entry.path))
+      const restFolders = childFolders.filter((entry) => !favoritePaths.has(entry.path))
+      const sorted = sortedNoteRows(
+        folderRows.current,
+        path,
+        notesByFolder.get(path) ?? EMPTY_NOTES,
+        sort
+      )
+      const pinned = sorted.filter((row) => favoritePaths.has(row.result.note.path))
+      const notes = sorted.filter((row) => !favoritePaths.has(row.result.note.path))
+      const rows: LibraryRow[] = []
+      const orderedFolders = [...favoriteFolders, ...restFolders]
+      if (orderedFolders.length > 0 || sorted.length > 0) {
+        rows.push({ kind: 'space', key: 'space:top', height: 6 })
+      }
+      let separated = false
+      if (orderedFolders.length > 0) {
+        for (let index = 0; index < orderedFolders.length; index += 2) {
+          rows.push({
+            kind: 'folders',
+            key: `folders:${path}:${index}`,
+            items: orderedFolders.slice(index, index + 2),
+          })
+        }
+        separated = true
+      }
+      if (pinned.length > 0) {
+        if (separated) rows.push({ kind: 'space', key: 'space:pinned', height: 14 })
+        for (const row of pinned) {
+          rows.push({ kind: 'note', key: `pinned:${row.result.note.uri}`, result: row.result })
+        }
+        separated = true
+      }
+      if (notes.length > 0) {
+        if (separated) rows.push({ kind: 'space', key: 'space:notes', height: 14 })
+        for (const row of notes) {
+          rows.push({ kind: 'note', key: `note:${row.result.note.uri}`, result: row.result })
+        }
+      }
+      const layout = layoutRows(rows)
       return {
         path,
         current,
-        items: [...items.filter(isFavorite), ...items.filter((item) => !isFavorite(item))],
+        rows,
+        getItemLayout: (_: unknown, index: number) => ({ ...layout[index], index }),
+        empty: orderedFolders.length === 0 && sorted.length === 0,
       }
     })
   }, [favoritePaths, folder, folderStack, foldersByParent, notesByFolder, sort])
@@ -2263,139 +2297,30 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
     (entry: FolderEntry) => toggleFavorite(entry.path),
     [toggleFavorite]
   )
-  const keyExtractor = useCallback(
-    (item: LibraryItem) =>
-      item.kind === 'folder' ? `folder:${item.path}` : `note:${item.result.note.uri}`,
-    []
-  )
-  // One pan for the whole list. Rows stay plain views so a fast scroll does not
-  // pay for a gesture handler and a press responder per row.
-  const swipeTranslation = useRef(new Animated.Value(0)).current
-  const swipeTouch = useRef<RowTouch | null>(null)
-  const swipeActive = useRef<RowTouch | null>(null)
-  const [swipePath, setSwipePath] = useState<string | null>(null)
-  const [swipePane, setSwipePane] = useState<RowAction | null>(null)
-  const [swipeArmed, setSwipeArmed] = useState(false)
-  const swipeSide = useRef<RowAction | null>(null)
-  const swipePosition = useRef(0)
-  const onRowTouch = useCallback((touch: RowTouch | null) => {
-    swipeTouch.current = touch
-  }, [])
-  const settleSwipe = useCallback(
-    (removed = false) => {
-      swipeSide.current = null
-      swipePosition.current = 0
-      swipeActive.current = null
-      setSwipeArmed(false)
-      // A trashed row leaves the list, so its spring would be stopped by the
-      // unmount and leave the swipe open when undo brings the row back.
-      if (removed) {
-        swipeTranslation.setValue(0)
-        setSwipePath(null)
-        setSwipePane(null)
-        return
-      }
-      Animated.spring(swipeTranslation, {
-        toValue: 0,
-        damping: SWIPE_SPRING.damping,
-        mass: SWIPE_SPRING.mass,
-        stiffness: SWIPE_SPRING.stiffness,
-        overshootClamping: SWIPE_SPRING.overshootClamping,
-        useNativeDriver: false,
-      }).start(({ finished }) => {
-        if (!finished) return
-        setSwipePath(null)
-        setSwipePane(null)
-      })
-    },
-    [swipeTranslation]
-  )
-  const swipe = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
-          Math.abs(gesture.dx) > 4 &&
-          Math.abs(gesture.dx) > Math.abs(gesture.dy) &&
-          !!swipeTouch.current &&
-          !swipeTouch.current.held(),
-        onPanResponderGrant: () => {
-          const touch = swipeTouch.current
-          if (!touch) return
-          swipeSide.current = null
-          swipeActive.current = touch
-          touch.start()
-          setSwipePath(touch.path)
-        },
-        onPanResponderMove: (_event, gesture) => {
-          const touch = swipeActive.current
-          if (!touch || touch.held()) return
-          if (!swipeSide.current) {
-            if (gesture.dx === 0) return
-            swipeSide.current = gesture.dx < 0 ? 'trash' : 'favorite'
-            setSwipePane(swipeSide.current)
-          }
-          const raw = gesture.dx
-          const next =
-            swipeSide.current === 'favorite'
-              ? raw > SWIPE_FAVORITE_DISTANCE
-                ? SWIPE_FAVORITE_DISTANCE + Math.min(14, (raw - SWIPE_FAVORITE_DISTANCE) * 0.12)
-                : raw < 0
-                  ? raw * 0.12
-                  : raw
-              : raw < -SWIPE_TRASH_DISTANCE
-                ? -SWIPE_TRASH_DISTANCE + Math.max(-14, (raw + SWIPE_TRASH_DISTANCE) * 0.12)
-                : raw > 0
-                  ? raw * 0.12
-                  : raw
-          swipePosition.current = next
-          swipeTranslation.setValue(next)
-          const nextArmed =
-            swipeSide.current === 'favorite'
-              ? next >= SWIPE_FAVORITE_DISTANCE
-              : next <= -SWIPE_TRASH_DISTANCE
-          setSwipeArmed((previous) => {
-            if (previous === nextArmed) return previous
-            if (nextArmed) Vibration.vibrate(10)
-            return nextArmed
-          })
-        },
-        onPanResponderRelease: (_event, gesture) => {
-          const touch = swipeActive.current
-          const side = swipeSide.current
-          let trashed = false
-          if (touch && side && !touch.held()) {
-            const projected = gesture.dx + gesture.vx * 1000 * SWIPE_TOSS
-            if (side === 'trash' && projected <= -SWIPE_TRASH_DISTANCE) {
-              trashed = true
-              touch.favorite(side)
-            } else if (side === 'favorite' && projected >= SWIPE_FAVORITE_DISTANCE)
-              touch.favorite(side)
-          }
-          settleSwipe(trashed)
-        },
-        onPanResponderTerminate: () => settleSwipe(),
-      }),
-    [settleSwipe, swipeTranslation]
-  )
-
+  const keyExtractor = useCallback((item: LibraryRow) => item.key, [])
   const renderLibraryItem = useCallback(
-    ({ item }: { item: LibraryItem }) =>
-      item.kind === 'folder' ? (
-        <FolderRow
-          entry={item}
-          favorite={favoritePaths.has(item.path)}
-          onPress={goToFolder}
-          onLongPress={startMoveFolder}
-          onToggleFavorite={favoriteFolderItem}
-          onTrash={trashFolderItem}
-          swipePath={swipePath}
-          swipePane={swipePane}
-          swipeArmed={swipeArmed}
-          swipeTranslation={swipeTranslation}
-          onRowTouch={onRowTouch}
-        />
-      ) : (
-        <NoteRow
+    ({ item }: { item: LibraryRow }) => {
+      if (item.kind === 'space') return <View style={{ height: item.height }} />
+      if (item.kind === 'folders')
+        return (
+          <View style={s.chipGrid}>
+            {item.items.map((entry) => (
+              <FolderChip
+                key={entry.path}
+                entry={entry}
+                count={noteCounts.get(entry.path) ?? 0}
+                favorite={favoritePaths.has(entry.path)}
+                onPress={goToFolder}
+                onLongPress={startMoveFolder}
+                onToggleFavorite={favoriteFolderItem}
+                onTrash={trashFolderItem}
+              />
+            ))}
+            {item.items.length === 1 ? <View style={s.chipSpacer} /> : null}
+          </View>
+        )
+      return (
+        <NoteCard
           result={item.result}
           favorite={favoritePaths.has(item.result.note.path)}
           onPressIn={prepareNote}
@@ -2403,27 +2328,20 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
           onLongPress={startMoveNote}
           onToggleFavorite={favoriteNoteItem}
           onTrash={trashNoteItem}
-          swipePath={swipePath}
-          swipePane={swipePane}
-          swipeArmed={swipeArmed}
-          swipeTranslation={swipeTranslation}
-          onRowTouch={onRowTouch}
         />
-      ),
+      )
+    },
     [
       favoriteFolderItem,
       favoriteNoteItem,
       favoritePaths,
       goToFolder,
-      onRowTouch,
+      noteCounts,
       openNote,
       prepareNote,
+      s,
       startMoveFolder,
       startMoveNote,
-      swipeArmed,
-      swipePane,
-      swipePath,
-      swipeTranslation,
       trashFolderItem,
       trashNoteItem,
     ]
@@ -2620,38 +2538,26 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
             )}
             <View style={s.flex}>
               {isSearching ? (
-                <View style={s.flex} {...swipe.panHandlers}>
+                <View style={s.flex}>
                   <FlatList
                     style={s.flex}
-                    data={searchRows}
-                    keyExtractor={(item) =>
-                      item.kind === 'header' ? item.key : `result:${item.result.note.uri}`
-                    }
+                    data={results}
+                    keyExtractor={(result) => `result:${result.note.uri}`}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="on-drag"
-                    contentContainerStyle={[s.searchList, searchRows.length === 0 && s.emptyList]}
-                    renderItem={({ item }) =>
-                      item.kind === 'header' ? (
-                        <Text accessibilityRole="header" style={s.searchGroup}>
-                          {item.title}
-                        </Text>
-                      ) : (
-                        <SearchResultRow
-                          result={item.result}
-                          query={query}
-                          favorite={favoritePaths.has(item.result.note.path)}
-                          swipePath={swipePath}
-                          swipePane={swipePane}
-                          swipeArmed={swipeArmed}
-                          swipeTranslation={swipeTranslation}
-                          onRowTouch={onRowTouch}
-                          onPress={openResult}
-                          onLongPress={startMoveNote}
-                          onToggleFavorite={favoriteNoteItem}
-                          onTrash={trashNoteItem}
-                        />
-                      )
-                    }
+                    contentContainerStyle={[s.searchList, results.length === 0 && s.emptyList]}
+                    renderItem={({ item }) => (
+                      <SearchResultRow
+                        result={item}
+                        query={query}
+                        favorite={favoritePaths.has(item.note.path)}
+                        vaultName={vault.name}
+                        onPress={openResult}
+                        onLongPress={startMoveNote}
+                        onToggleFavorite={favoriteNoteItem}
+                        onTrash={trashNoteItem}
+                      />
+                    )}
                     ListEmptyComponent={
                       searchBusy ? (
                         <View style={s.empty}>
@@ -2727,7 +2633,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
                       </ScrollView>
                     </View>
                   )}
-                  <View style={s.flex} {...swipe.panHandlers}>
+                  <View style={s.flex}>
                     {folderViews.map((view, index) => (
                       <Reanimated.View
                         key={`folder:${view.path}`}
@@ -2749,15 +2655,15 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
                           maxToRenderPerBatch={16}
                           updateCellsBatchingPeriod={16}
                           windowSize={5}
-                          data={view.items}
-                          getItemLayout={libraryItemLayout}
+                          data={view.rows}
+                          getItemLayout={view.getItemLayout}
                           keyExtractor={keyExtractor}
                           keyboardShouldPersistTaps="handled"
                           keyboardDismissMode="on-drag"
-                          contentContainerStyle={[s.list, view.items.length === 0 && s.emptyList]}
+                          contentContainerStyle={[s.list, view.empty && s.emptyList]}
                           renderItem={renderLibraryItem}
                           ListEmptyComponent={
-                            startupReady && !scanning ? (
+                            view.empty && startupReady && !scanning ? (
                               <View style={s.empty}>
                                 <View style={s.emptyIcon}>
                                   <Icon
@@ -2971,18 +2877,19 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
           folders={folders}
           vault={vault}
           initial={null}
-          exclude={moving.kind === 'folder' ? parentFolder(moving.entry.path) : undefined}
           excludeTree={moving.kind === 'folder' ? moving.entry.path : undefined}
-          defaultParent={moving.kind === 'folder' ? parentFolder(moving.entry.path) : folder}
-          title={moving.kind === 'folder' ? 'Move folder' : 'Move note'}
+          defaultParent={parentFolder(
+            moving.kind === 'folder' ? moving.entry.path : moving.result.note.path
+          )}
+          title="Move"
           mode="move"
+          counts={noteCounts}
           itemName={
             moving.kind === 'note'
               ? moving.result.note.path.slice(moving.result.note.path.lastIndexOf('/') + 1)
               : moving.entry.name
           }
           itemIcon={moving.kind === 'note' ? 'file' : 'folder'}
-          confirmLabel="Move here"
           busyLabel="Moving…"
           onConfirm={moveTo}
           onFolderCreated={folderCreated}
@@ -3025,128 +2932,107 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   )
 }
 
-// The pane is only visible during a swipe, so its animation and glyphs mount
-// with it instead of with every row in the library.
+// A row owns its pan so the translation, pane, and spring run on the UI
+// thread. React only hears about the chosen side and the arm threshold, never
+// about individual frames.
+let paneEdgeSequence = 0
+
 function SwipePane({
   pane,
-  translation,
+  translateX,
   armed,
   favorite,
+  reveal,
 }: {
   pane: RowAction
-  translation: Animated.Value
+  translateX: SharedValue<number>
   armed: boolean
   favorite: boolean
+  reveal: number
 }) {
   const s = useStyles()
   const { colors } = useTheme()
-  const contentStyle = {
-    opacity: translation.interpolate({
-      inputRange:
-        pane === 'favorite'
-          ? [0, SWIPE_ACTION_WIDTH * 0.2, SWIPE_ACTION_WIDTH]
-          : [-SWIPE_ACTION_WIDTH, -SWIPE_ACTION_WIDTH * 0.2, 0],
-      outputRange: pane === 'favorite' ? [0, 0.35, 1] : [1, 0.35, 0],
-      extrapolate: 'clamp' as const,
-    }),
-    transform: [
-      {
-        scale: translation.interpolate({
-          inputRange:
-            pane === 'favorite'
-              ? [0, SWIPE_ACTION_WIDTH, SWIPE_FAVORITE_DISTANCE]
-              : [-SWIPE_TRASH_DISTANCE, -SWIPE_ACTION_WIDTH, 0],
-          outputRange: pane === 'favorite' ? [0.86, 1, 1.12] : [1.12, 1, 0.86],
-          extrapolate: 'clamp' as const,
-        }),
-      },
-    ],
-  }
+  const [edgeId] = useState(() => `pane-edge-${++paneEdgeSequence}`)
+  const label = pane === 'favorite' ? (favorite ? 'Unpin' : 'Pin') : 'Trash'
+  const tint =
+    pane === 'favorite' ? colors.onAccent : luminance(colors.coral) > 0.179 ? '#000000' : '#ffffff'
+  const contentStyle = useAnimatedStyle(() => {
+    const progress = Math.min(Math.abs(translateX.value) / reveal, 1)
+    return {
+      opacity: progress,
+      transform: [{ scale: 0.9 + 0.16 * progress }],
+    }
+  })
+  const paneStyle = useAnimatedStyle(() => ({ width: Math.abs(translateX.value) + PANE_OVERLAP }))
   return (
-    <Animated.View
-      renderToHardwareTextureAndroid
+    <Reanimated.View
       pointerEvents="none"
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
-      style={[s.swipeAction, pane === 'favorite' ? s.swipeFavoritePane : s.swipeTrashPane]}
+      style={[
+        s.swipePane,
+        pane === 'favorite' ? s.swipePaneFavorite : s.swipePaneTrash,
+        { backgroundColor: pane === 'favorite' ? colors.accent : colors.coral },
+        paneStyle,
+      ]}
     >
-      <Animated.View style={[s.swipeActionContent, contentStyle]}>
+      <Reanimated.View style={[s.swipePaneContent, contentStyle]}>
         {pane === 'favorite' ? (
           <>
-            <View style={s.swipeConfirm}>
-              <SwapIcon
-                from="star"
-                to="star"
-                active={armed}
-                size={21}
-                color={colors.accent}
-                fromFill="none"
-                toFill={colors.accent}
-              />
-            </View>
-            <SwapLabel
-              idle={favorite ? 'UNFAVORITE' : 'FAVORITE'}
-              activeLabel="RELEASE"
-              active={armed}
-              style={[s.swipeActionLabel, { color: colors.onAccent }]}
-            />
+            <Icon name="star" size={18} color={tint} fill={armed ? tint : 'none'} />
+            <Text style={[s.swipePaneLabel, { color: tint }]}>{armed ? 'Release' : label}</Text>
           </>
         ) : (
           <>
-            <View style={s.swipeConfirm}>
-              <SwapIcon from="trash" to="trashOpen" active={armed} size={20} color={colors.ink} />
-            </View>
-            <SwapLabel
-              idle="TRASH"
-              activeLabel="RELEASE"
-              active={armed}
-              style={[s.swipeActionLabel, { color: colors.paper }]}
-            />
+            <Text style={[s.swipePaneLabel, { color: tint }]}>{armed ? 'Release' : label}</Text>
+            <Icon name="trash" size={18} color={tint} fill={armed ? tint : 'none'} />
           </>
         )}
-      </Animated.View>
-    </Animated.View>
+      </Reanimated.View>
+      <View
+        pointerEvents="none"
+        style={[s.paneEdge, pane === 'favorite' ? s.paneEdgeRight : s.paneEdgeLeft]}
+      >
+        <Svg width="100%" height="100%">
+          <Defs>
+            <LinearGradient
+              id={edgeId}
+              x1={pane === 'favorite' ? '1' : '0'}
+              y1="0"
+              x2={pane === 'favorite' ? '0' : '1'}
+              y2="0"
+            >
+              <Stop offset="0" stopColor={colors.soft} stopOpacity={1} />
+              <Stop offset="1" stopColor={colors.soft} stopOpacity={0} />
+            </LinearGradient>
+          </Defs>
+          <Rect width="100%" height="100%" fill={`url(#${edgeId})`} />
+        </Svg>
+      </View>
+    </Reanimated.View>
   )
-}
-
-type RowTouch = {
-  path: string
-  favorite(side: RowAction): void
-  held(): boolean
-  start(): void
-}
-
-type RowSwipeProps = {
-  swipePath: string | null
-  swipePane: RowAction | null
-  swipeArmed: boolean
-  swipeTranslation: Animated.Value
-  onRowTouch: (touch: RowTouch | null) => void
 }
 
 function SwipeRow({
   favorite,
   noun,
   label,
-  path,
+  reveal,
+  shellStyle,
   rowStyle,
-  swipePath,
-  swipePane,
-  swipeArmed,
-  swipeTranslation,
-  onRowTouch,
   onPressIn,
   onPress,
   onLongPress,
   onToggleFavorite,
   onTrash,
   children,
-}: RowSwipeProps & {
+}: {
   favorite: boolean
   noun: 'note' | 'folder'
   label: string
-  path: string
-  rowStyle?: StyleProp<ViewStyle>
+  reveal: number
+  shellStyle: StyleProp<ViewStyle>
+  rowStyle: StyleProp<ViewStyle>
   onPressIn?: () => void
   onPress: () => void
   onLongPress: () => void
@@ -3155,222 +3041,191 @@ function SwipeRow({
   children: React.ReactNode
 }) {
   const s = useStyles()
-  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const swiped = useRef(false)
-  const longPressed = useRef(false)
-  const held = useRef(false)
-  const [pressed, setPressed] = useState(false)
-  const live = useRef({
-    onPressIn,
-    onPress,
-    onLongPress,
-    onToggleFavorite,
-    onTrash,
-  })
-  live.current = {
-    onPressIn,
-    onPress,
-    onLongPress,
-    onToggleFavorite,
-    onTrash,
-  }
-  const commit = useCallback((side: RowAction) => {
-    if (held.current) return
-    if (side === 'favorite') live.current.onToggleFavorite()
-    else live.current.onTrash()
+  const { colors } = useTheme()
+  const translateX = useSharedValue(0)
+  const pressed = useSharedValue(0)
+  const side = useSharedValue(0)
+  const armedValue = useSharedValue(false)
+  const [pane, setPane] = useState<RowAction | null>(null)
+  const [armed, setArmed] = useState(false)
+  const live = useRef({ onPressIn, onPress, onLongPress, onToggleFavorite, onTrash })
+  live.current = { onPressIn, onPress, onLongPress, onToggleFavorite, onTrash }
+  const showPane = useCallback((next: number) => {
+    setPane(next === 1 ? 'favorite' : 'trash')
   }, [])
-  const endTouch = useCallback(() => {
-    if (pressTimer.current) {
-      clearTimeout(pressTimer.current)
-      pressTimer.current = null
+  const hidePane = useCallback(() => {
+    setPane(null)
+    setArmed(false)
+  }, [])
+  const changeArmed = useCallback((next: boolean) => {
+    if (next) Vibration.vibrate(10)
+    setArmed(next)
+  }, [])
+  const invokePress = useCallback(() => live.current.onPress(), [])
+  const invokeLongPress = useCallback(() => live.current.onLongPress(), [])
+  const invokePressIn = useCallback(() => live.current.onPressIn?.(), [])
+  const invokeFavorite = useCallback(() => live.current.onToggleFavorite(), [])
+  const invokeTrash = useCallback(() => live.current.onTrash(), [])
+  const gesture = useMemo(() => {
+    const settle = () => {
+      'worklet'
+      translateX.value = withSpring(
+        0,
+        { ...SWIPE_SPRING, reduceMotion: ReduceMotion.System },
+        (finished) => {
+          if (finished) runOnJS(hidePane)()
+        }
+      )
     }
-    setPressed(false)
-  }, [])
-  const isHeld = useCallback(() => held.current, [])
-  const startSwipe = useCallback(() => {
-    swiped.current = true
-    endTouch()
-  }, [endTouch])
-
-  useEffect(() => () => endTouch(), [endTouch])
-  const active = swipePath === path
-  const target = useRef({ path, favorite: commit, held: isHeld, start: startSwipe })
-  target.current = { path, favorite: commit, held: isHeld, start: startSwipe }
-  const hint = `Swipe right and release to favorite this ${noun}, or swipe left and release to move it to trash.`
+    const pan = Gesture.Pan()
+      .activeOffsetX([-8, 8])
+      .failOffsetY([-12, 12])
+      .onStart(() => {
+        cancelAnimation(pressed)
+        pressed.value = withTiming(0, { duration: 80, reduceMotion: ReduceMotion.System })
+      })
+      .onUpdate((event) => {
+        if (side.value === 0) {
+          if (event.translationX > 6) {
+            side.value = 1
+            runOnJS(showPane)(1)
+          } else if (event.translationX < -6) {
+            side.value = -1
+            runOnJS(showPane)(-1)
+          } else return
+        }
+        const raw = event.translationX
+        // Clamp at the origin so crossing back never reveals the other
+        // action's color on the wrong edge.
+        const travel = side.value === 1 ? Math.max(raw, 0) : Math.min(raw, 0)
+        let next = travel
+        if (side.value === 1 && travel > reveal)
+          next = reveal + Math.min(14, (travel - reveal) * 0.12)
+        else if (side.value === -1 && travel < -reveal)
+          next = -reveal - Math.min(14, (-travel - reveal) * 0.12)
+        translateX.value = next
+        const nextArmed = side.value === 1 ? next >= reveal : next <= -reveal
+        if (nextArmed !== armedValue.value) {
+          armedValue.value = nextArmed
+          runOnJS(changeArmed)(nextArmed)
+        }
+      })
+      .onEnd(() => {
+        const current = side.value
+        // The label is the contract: commit only while it reads Release, so a
+        // quick flick back below the threshold cannot trigger the action.
+        if (current === 0 || !armedValue.value) return
+        translateX.value = 0
+        side.value = 0
+        armedValue.value = false
+        if (current === 1) runOnJS(invokeFavorite)()
+        else runOnJS(invokeTrash)()
+      })
+      .onFinalize(() => {
+        cancelAnimation(pressed)
+        pressed.value = withTiming(0, { duration: 120, reduceMotion: ReduceMotion.System })
+        if (translateX.value !== 0) settle()
+        else runOnJS(hidePane)()
+        side.value = 0
+        armedValue.value = false
+      })
+    const tap = Gesture.Tap()
+      .maxDistance(10)
+      .onBegin(() => {
+        runOnJS(invokePressIn)()
+        // Show the hold affordance after a short delay, so a swipe never
+        // flashes it and a quick tap stays quiet.
+        cancelAnimation(pressed)
+        pressed.value = withDelay(
+          180,
+          withTiming(1, { duration: 90, reduceMotion: ReduceMotion.System })
+        )
+      })
+      .onEnd((_event, success) => {
+        if (success) runOnJS(invokePress)()
+      })
+      .onFinalize(() => {
+        cancelAnimation(pressed)
+        pressed.value = withTiming(0, { duration: 120, reduceMotion: ReduceMotion.System })
+      })
+    const hold = Gesture.LongPress()
+      .minDuration(350)
+      .maxDistance(12)
+      .onStart(() => runOnJS(invokeLongPress)())
+    return Gesture.Race(pan, hold, tap)
+  }, [
+    armedValue,
+    changeArmed,
+    hidePane,
+    invokeFavorite,
+    invokeLongPress,
+    invokePress,
+    invokePressIn,
+    invokeTrash,
+    pressed,
+    reveal,
+    showPane,
+    side,
+    translateX,
+  ])
+  const translateStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }))
+  const pressedStyle = useAnimatedStyle(() => ({
+    backgroundColor: interpolateColor(pressed.value, [0, 1], [colors.soft, colors.surfaceHi]),
+  }))
+  const hint = `Swipe right and release to ${favorite ? 'unpin' : 'pin'} this ${noun}, or swipe left and release to move it to trash.`
   return (
-    <View style={[s.swipeShell, active && s.swipeClipped]}>
-      <Animated.View
-        style={[
-          s.swipeForeground,
-          active ? { transform: [{ translateX: swipeTranslation }] } : null,
-        ]}
-        renderToHardwareTextureAndroid
-      >
-        <View
-          accessible
-          accessibilityRole="button"
-          accessibilityLabel={label}
-          accessibilityHint={`${hint} Long press to move this ${noun}.`}
-          accessibilityActions={[
-            { name: 'favorite', label: favorite ? 'Remove from favorites' : 'Add to favorites' },
-            { name: 'trash', label: 'Move to trash' },
-            { name: 'move', label: 'Move to folder' },
-          ]}
-          onAccessibilityAction={(event) => {
-            const action = event.nativeEvent.actionName
-            if (action === 'favorite') live.current.onToggleFavorite()
-            else if (action === 'trash') live.current.onTrash()
-            else if (action === 'move') live.current.onLongPress()
-          }}
-          onTouchStart={() => {
-            swiped.current = false
-            longPressed.current = false
-            held.current = false
-            setPressed(true)
-            onRowTouch(target.current)
-            live.current.onPressIn?.()
-            if (pressTimer.current) clearTimeout(pressTimer.current)
-            pressTimer.current = setTimeout(() => {
-              pressTimer.current = null
-              longPressed.current = true
-              held.current = true
-              setPressed(false)
-              live.current.onLongPress()
-            }, 350)
-          }}
-          onTouchEnd={() => {
-            endTouch()
-            onRowTouch(null)
-            if (longPressed.current) {
-              longPressed.current = false
-              return
-            }
-            if (swiped.current) {
-              swiped.current = false
-              return
-            }
-            live.current.onPress()
-          }}
-          onTouchCancel={() => {
-            endTouch()
-            onRowTouch(null)
-            longPressed.current = false
-          }}
-          style={[rowStyle ?? s.noteRow, pressed && s.rowPressed]}
-        >
-          {children}
-        </View>
-      </Animated.View>
-      {active && swipePane !== null ? (
+    <View style={[s.swipeShell, shellStyle]}>
+      <GestureDetector gesture={gesture}>
+        <Reanimated.View style={[s.swipeForeground, translateStyle]} renderToHardwareTextureAndroid>
+          <Reanimated.View
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={label}
+            accessibilityHint={`${hint} Long press to move this ${noun}.`}
+            accessibilityActions={[
+              { name: 'favorite', label: favorite ? 'Remove from favorites' : 'Add to favorites' },
+              { name: 'trash', label: 'Move to trash' },
+              { name: 'move', label: 'Move to folder' },
+            ]}
+            onAccessibilityAction={(event) => {
+              const action = event.nativeEvent.actionName
+              if (action === 'favorite') live.current.onToggleFavorite()
+              else if (action === 'trash') live.current.onTrash()
+              else if (action === 'move') live.current.onLongPress()
+            }}
+            style={[s.swipeFill, rowStyle, pressedStyle]}
+          >
+            {children}
+          </Reanimated.View>
+        </Reanimated.View>
+      </GestureDetector>
+      {pane !== null ? (
         <SwipePane
-          pane={swipePane}
-          translation={swipeTranslation}
-          armed={swipeArmed}
+          pane={pane}
+          translateX={translateX}
+          armed={armed}
           favorite={favorite}
+          reveal={reveal}
         />
       ) : null}
     </View>
   )
 }
 
-const NoteRow = memo(
-  function NoteRow({
-    result,
-    favorite,
-    swipePath,
-    swipePane,
-    swipeArmed,
-    swipeTranslation,
-    onRowTouch,
-    onPressIn,
-    onPress,
-    onLongPress,
-    onToggleFavorite,
-    onTrash,
-  }: RowSwipeProps & {
-    result: SearchResult
-    favorite: boolean
-    onPressIn: (result: SearchResult) => void
-    onPress: (result: SearchResult) => void
-    onLongPress: (result: SearchResult) => void
-    onToggleFavorite: (result: SearchResult) => void
-    onTrash: (result: SearchResult) => void
-  }) {
-    const s = useStyles()
-    const { colors } = useTheme()
-    const { note, snippet } = result
-    return (
-      <SwipeRow
-        favorite={favorite}
-        noun="note"
-        label={`${note.title}, ${note.path}`}
-        path={note.path}
-        swipePath={swipePath}
-        swipePane={swipePane}
-        swipeArmed={swipeArmed}
-        swipeTranslation={swipeTranslation}
-        onRowTouch={onRowTouch}
-        onPressIn={() => onPressIn(result)}
-        onPress={() => onPress(result)}
-        onLongPress={() => onLongPress(result)}
-        onToggleFavorite={() => onToggleFavorite(result)}
-        onTrash={() => onTrash(result)}
-      >
-        <View style={s.noteGlyph}>
-          <Icon name="file" size={22} />
-        </View>
-        <View style={s.noteInfo}>
-          <Text numberOfLines={1} style={s.noteTitle}>
-            {note.title}
-          </Text>
-          <Text numberOfLines={1} style={s.rowPath}>
-            {note.path}
-          </Text>
-          {snippet ? (
-            <Text numberOfLines={2} style={s.snippet}>
-              {snippet.trim()}
-            </Text>
-          ) : null}
-        </View>
-        {favorite ? (
-          <Icon name="star" size={18} color={colors.accent} fill={colors.accent} />
-        ) : null}
-        <Icon name="chevronRight" size={20} color={colors.muted} />
-      </SwipeRow>
-    )
-  },
-  (previous, next) =>
-    previous.result.note === next.result.note &&
-    previous.result.snippet === next.result.snippet &&
-    previous.result.line === next.result.line &&
-    previous.favorite === next.favorite &&
-    previous.swipePath === next.swipePath &&
-    previous.swipePane === next.swipePane &&
-    previous.swipeArmed === next.swipeArmed &&
-    previous.swipeTranslation === next.swipeTranslation &&
-    previous.onRowTouch === next.onRowTouch &&
-    previous.onPressIn === next.onPressIn &&
-    previous.onPress === next.onPress &&
-    previous.onLongPress === next.onLongPress &&
-    previous.onToggleFavorite === next.onToggleFavorite &&
-    previous.onTrash === next.onTrash
-)
-
-const FolderRow = memo(
-  function FolderRow({
+const FolderChip = memo(
+  function FolderChip({
     entry,
+    count,
     favorite,
-    swipePath,
-    swipePane,
-    swipeArmed,
-    swipeTranslation,
-    onRowTouch,
     onPress,
     onLongPress,
     onToggleFavorite,
     onTrash,
-  }: RowSwipeProps & {
+  }: {
     entry: FolderEntry
+    count: number
     favorite: boolean
     onPress: (path: string) => void
     onLongPress: (entry: FolderEntry) => void
@@ -3383,48 +3238,104 @@ const FolderRow = memo(
       <SwipeRow
         favorite={favorite}
         noun="folder"
-        label={`Folder ${entry.name}`}
-        path={entry.path}
-        swipePath={swipePath}
-        swipePane={swipePane}
-        swipeArmed={swipeArmed}
-        swipeTranslation={swipeTranslation}
-        onRowTouch={onRowTouch}
+        label={`Folder ${entry.name}, ${count} note${count === 1 ? '' : 's'}`}
+        reveal={SWIPE_CHIP_REVEAL}
+        shellStyle={s.chipShell}
+        rowStyle={s.chipRow}
         onPress={() => onPress(entry.path)}
         onLongPress={() => onLongPress(entry)}
         onToggleFavorite={() => onToggleFavorite(entry)}
         onTrash={() => onTrash(entry)}
       >
-        <View style={s.folderGlyph}>
-          <Icon name="folder" size={22} color={colors.accent} />
-        </View>
-        <View style={s.noteInfo}>
-          <Text numberOfLines={1} style={s.noteTitle}>
-            {entry.name}
-          </Text>
-        </View>
+        <Icon name="folder" size={20} color={colors.accent} />
+        <Text numberOfLines={1} style={s.chipName}>
+          {entry.name}
+        </Text>
         {favorite ? (
-          <Icon name="star" size={18} color={colors.accent} fill={colors.accent} />
+          <Icon name="star" size={14} color={colors.accent} fill={colors.accent} />
         ) : null}
-        <Icon name="chevronRight" size={20} color={colors.muted} />
+        <Text style={s.chipCount}>{count}</Text>
       </SwipeRow>
     )
   },
   (previous, next) =>
     previous.entry.path === next.entry.path &&
     previous.entry.name === next.entry.name &&
+    previous.count === next.count &&
     previous.favorite === next.favorite &&
-    previous.swipePath === next.swipePath &&
-    previous.swipePane === next.swipePane &&
-    previous.swipeArmed === next.swipeArmed &&
-    previous.swipeTranslation === next.swipeTranslation &&
-    previous.onRowTouch === next.onRowTouch &&
     previous.onPress === next.onPress &&
     previous.onLongPress === next.onLongPress &&
     previous.onToggleFavorite === next.onToggleFavorite &&
     previous.onTrash === next.onTrash
 )
 
+const NoteCard = memo(
+  function NoteCard({
+    result,
+    favorite,
+    onPressIn,
+    onPress,
+    onLongPress,
+    onToggleFavorite,
+    onTrash,
+  }: {
+    result: SearchResult
+    favorite: boolean
+    onPressIn: (result: SearchResult) => void
+    onPress: (result: SearchResult) => void
+    onLongPress: (result: SearchResult) => void
+    onToggleFavorite: (result: SearchResult) => void
+    onTrash: (result: SearchResult) => void
+  }) {
+    const s = useStyles()
+    const { colors } = useTheme()
+    const { note } = result
+    const time = noteTime(note.modifiedAt)
+    const preview = notePreview(note)
+    return (
+      <SwipeRow
+        favorite={favorite}
+        noun="note"
+        label={`${note.title}, ${note.path}`}
+        reveal={SWIPE_CARD_REVEAL}
+        shellStyle={s.cardShell}
+        rowStyle={s.cardRow}
+        onPressIn={() => onPressIn(result)}
+        onPress={() => onPress(result)}
+        onLongPress={() => onLongPress(result)}
+        onToggleFavorite={() => onToggleFavorite(result)}
+        onTrash={() => onTrash(result)}
+      >
+        <View style={s.cardHead}>
+          <Text numberOfLines={1} style={s.cardTitle}>
+            {note.title}
+          </Text>
+          {time || favorite ? (
+            <View style={s.cardMeta}>
+              {favorite ? (
+                <Icon name="star" size={14} color={colors.accent} fill={colors.accent} />
+              ) : null}
+              {time ? <Text style={s.cardTime}>{time}</Text> : null}
+            </View>
+          ) : null}
+        </View>
+        {preview ? (
+          <Text numberOfLines={2} style={s.cardPreview}>
+            {preview}
+          </Text>
+        ) : null}
+      </SwipeRow>
+    )
+  },
+  (previous, next) =>
+    previous.result.note === next.result.note &&
+    previous.favorite === next.favorite &&
+    previous.onPressIn === next.onPressIn &&
+    previous.onPress === next.onPress &&
+    previous.onLongPress === next.onLongPress &&
+    previous.onToggleFavorite === next.onToggleFavorite &&
+    previous.onTrash === next.onTrash
+)
 function useNoticeMotion(onDone: () => void, duration = 3200) {
   const opacity = useSharedValue(0)
   const done = useRef(onDone)
@@ -3516,21 +3427,18 @@ function TrashNotice({
   )
 }
 
-type FolderNode = { path: string; name: string; children: FolderNode[] }
-
 function FolderSheet({
   folders,
   vault,
   initial,
-  exclude,
   excludeTree,
   defaultParent,
-  mode = 'browse',
+  mode,
   title,
-  confirmLabel,
   busyLabel,
   itemName,
   itemIcon = 'file',
+  counts,
   onConfirm,
   onClose,
   onFolderCreated,
@@ -3538,15 +3446,14 @@ function FolderSheet({
   folders: string[]
   vault: Vault
   initial: string | null
-  exclude?: string
   excludeTree?: string
   defaultParent?: string
-  mode?: 'browse' | 'move' | 'create-in'
+  mode: 'move' | 'create-in'
   title: string
-  confirmLabel: string
   busyLabel?: string
   itemName?: string
   itemIcon?: IconName
+  counts?: Map<string, number>
   onConfirm: (destination: string) => Promise<void>
   onClose: () => void
   onFolderCreated: (folder: NoteFolder) => void
@@ -3554,12 +3461,29 @@ function FolderSheet({
   const s = useStyles()
   const { colors } = useTheme()
   const vaultName = vault.name
-  const [destination, setDestination] = useState<string | null>(initial)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const allowed = useMemo(
+    () =>
+      folders.filter(
+        (path) =>
+          excludeTree === undefined || (path !== excludeTree && !path.startsWith(`${excludeTree}/`))
+      ),
+    [folders, excludeTree]
+  )
+  const allowedSet = useMemo(() => new Set(allowed), [allowed])
+  const [current, setCurrent] = useState(() => {
+    const start = initial ?? defaultParent ?? ''
+    return allowedSet.has(start) ? start : ''
+  })
   const [newFolderOpen, setNewFolderOpen] = useState(false)
-  const [newPath, setNewPath] = useState<string | null>(null)
+  const [newName, setNewName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const scroll = useRef<ScrollViewInstance>(null)
+  const crumbScroll = useRef<ScrollViewInstance>(null)
+  const [error, setError] = useState<string | null>(null)
+  // Segments this sheet created, so a retry after a failed move reuses them
+  // instead of failing on its own work. Anything else that already exists is
+  // a real conflict.
+  const createdHere = useRef(new Set<string>())
   const alive = useRef(true)
   useEffect(() => {
     alive.current = true
@@ -3567,71 +3491,135 @@ function FolderSheet({
       alive.current = false
     }
   }, [])
-  const allowed = useMemo(
+  useEffect(() => {
+    if (!allowedSet.has(current)) setCurrent('')
+  }, [allowedSet, current])
+  const children = useMemo(
     () =>
-      folders.filter(
-        (path) =>
-          (exclude === undefined || path !== exclude) &&
-          (excludeTree === undefined ||
-            (path !== excludeTree && !path.startsWith(`${excludeTree}/`)))
-      ),
-    [folders, exclude, excludeTree]
+      allowed
+        .filter((path) => path !== '' && parentFolder(path) === current)
+        .map((path) => ({ path, name: folderName(path) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [allowed, current]
   )
-  const tree = useMemo(() => {
-    const nodes = new Map<string, FolderNode>()
-    const root: FolderNode = { path: '', name: vaultName, children: [] }
-    nodes.set('', root)
-    const ensure = (path: string): FolderNode => {
-      const existing = nodes.get(path)
-      if (existing) return existing
-      const node: FolderNode = { path, name: folderName(path), children: [] }
-      nodes.set(path, node)
-      const parent = ensure(parentFolder(path))
-      parent.children.push(node)
-      return node
-    }
-    for (const path of allowed) {
-      if (!path) continue
-      ensure(path)
-    }
-    for (const node of nodes.values()) node.children.sort((a, b) => a.name.localeCompare(b.name))
-    return root
-  }, [allowed, vaultName])
-  const rows = useMemo(() => {
-    const list: { node: FolderNode; level: number }[] = []
-    const walk = (node: FolderNode, level: number, isRoot: boolean) => {
-      list.push({ node, level })
-      if (!isRoot && collapsed.has(node.path)) return
-      for (const child of node.children) walk(child, isRoot ? 0 : level + 1, false)
-    }
-    walk(tree, 0, true)
-    return list
-  }, [collapsed, tree])
-  const chosenName = destination === null ? '' : destination ? folderName(destination) : vaultName
+  const crumbs = useMemo(() => {
+    let path = ''
+    return current
+      ? current.split('/').map((name) => {
+          path = path ? `${path}/${name}` : name
+          return { name, path }
+        })
+      : []
+  }, [current])
   const move = mode === 'move'
-  const createIn = mode === 'create-in'
-  const actionLabel =
-    busy && busyLabel
-      ? busyLabel
-      : move && chosenName
-        ? `Move to ${chosenName}`
-        : createIn && chosenName
-          ? `Create in ${chosenName}`
-          : confirmLabel
-  const toggle = (path: string) => {
-    setCollapsed((previous) => {
-      const next = new Set(previous)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
+  const sameFolder =
+    !newFolderOpen && move && defaultParent !== undefined && current === defaultParent
+  const chosenName = current ? folderName(current) : vaultName
+  const parts = newName
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const canCreate = !busy && parts.length > 0
+  const actionLabel = busy
+    ? (busyLabel ?? (move ? 'Moving…' : 'Working…'))
+    : newFolderOpen
+      ? move
+        ? 'Create and move here'
+        : 'Create here'
+      : move
+        ? sameFolder
+          ? current
+            ? `Already in ${chosenName}`
+            : 'Already at the vault root'
+          : `Move to ${chosenName}`
+        : `Create in ${chosenName}`
+  const preview = current ? [...current.split('/'), ...parts] : parts
+  const openNewFolder = () => {
+    if (busy) return
+    setNewFolderOpen(true)
+    setNewName('')
+    setError(null)
+  }
+  const closeNewFolder = () => {
+    Keyboard.dismiss()
+    setNewFolderOpen(false)
+    setNewName('')
+    setError(null)
+    createdHere.current.clear()
+  }
+  const revealInput = useCallback(() => {
+    scroll.current?.scrollToEnd({ animated: true })
+  }, [])
+  useEffect(() => {
+    if (!newFolderOpen) return
+    const early = setTimeout(revealInput, 120)
+    const settled = setTimeout(revealInput, 420)
+    return () => {
+      clearTimeout(early)
+      clearTimeout(settled)
+    }
+  }, [newFolderOpen, revealInput])
+  useEffect(() => {
+    if (!error) return
+    const timer = setTimeout(revealInput, 80)
+    return () => clearTimeout(timer)
+  }, [error, revealInput])
+  const navigate = (path: string) => {
+    if (busy || path === current) return
+    setCurrent(path)
+    setNewFolderOpen(false)
+    setNewName('')
+    setError(null)
+    createdHere.current.clear()
   }
   async function confirm() {
-    if (destination === null || busy) return
+    if (busy) return
+    if (newFolderOpen) {
+      if (!canCreate) return
+      setBusy(true)
+      setError(null)
+      let parent = current
+      let createdPath = current
+      try {
+        for (const [index, name] of parts.entries()) {
+          const path = parent ? `${parent}/${name}` : name
+          if (createdHere.current.has(path)) {
+            parent = path
+            createdPath = path
+            continue
+          }
+          if (allowedSet.has(path)) {
+            // An existing intermediate folder is the path to nest into. Only
+            // the final name is the folder this action was asked to create.
+            // Excluded paths never descend: creating them would write inside
+            // the tree that is being moved.
+            if (index < parts.length - 1) {
+              parent = path
+              createdPath = path
+              continue
+            }
+            throw new Error(`A folder named "${name}" already exists in "${parent || vault.name}".`)
+          }
+          const created = await createFolder(vault, name, parent)
+          createdHere.current.add(path)
+          createdHere.current.add(created.path)
+          onFolderCreated(created)
+          parent = created.path
+          createdPath = created.path
+        }
+        await onConfirm(createdPath)
+      } catch (cause) {
+        if (alive.current) {
+          setError(errorText(cause))
+          setBusy(false)
+        }
+      }
+      return
+    }
     setBusy(true)
     setError(null)
     try {
-      await onConfirm(destination)
+      await onConfirm(current)
     } catch (cause) {
       if (alive.current) {
         setError(errorText(cause))
@@ -3640,550 +3628,192 @@ function FolderSheet({
     }
   }
   return (
-    <>
-      <BottomSheet title={title} busy={busy} onClose={onClose}>
-        {itemName ? (
-          <View style={s.folderFileRow}>
+    <BottomSheet
+      title={title}
+      busy={busy}
+      onClose={onClose}
+      onRequestClose={() => {
+        if (!newFolderOpen) return false
+        closeNewFolder()
+        return true
+      }}
+      cardStyle={{ backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line }}
+      trailing={
+        itemName ? (
+          <View style={s.moveFilePill}>
             <Icon name={itemIcon} size={16} color={colors.muted} />
-            <Text numberOfLines={1} style={s.folderFileName}>
+            <Text numberOfLines={1} style={s.moveFilePillText}>
               {itemName}
             </Text>
           </View>
-        ) : null}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Create a new folder in ${(destination ?? defaultParent) || vaultName}`}
-          disabled={busy}
-          onPress={() => setNewFolderOpen(true)}
-          style={({ pressed }) => [s.folderNewRow, pressed && s.pressed, busy && s.disabled]}
-        >
-          <Icon name="plus" size={22} color={colors.accent} />
-          <Text style={s.folderNewText}>New folder</Text>
-        </Pressable>
-        <View style={s.folderDivider} />
-        <ScrollView style={s.folderTree} contentContainerStyle={s.folderTreeContent}>
-          {rows.map(({ node, level }) => {
-            const current = defaultParent !== undefined && node.path === defaultParent
-            const selected = destination === node.path
-            const hasChildren = node.children.length > 0
-            const open = !collapsed.has(node.path)
-            return (
-              <View
-                key={node.path || 'root'}
-                style={[
-                  s.folderTreeRow,
-                  { paddingLeft: 8 + level * 28 },
-                  selected && s.folderTreeRowSelected,
-                ]}
-              >
-                {node.path === '' ? (
-                  <View style={s.folderChevron} />
-                ) : hasChildren ? (
+        ) : undefined
+      }
+    >
+      <ScrollView
+        ref={scroll}
+        style={s.moveScroll}
+        contentContainerStyle={s.moveScrollContent}
+        keyboardShouldPersistTaps="handled"
+        onContentSizeChange={() => {
+          if (newFolderOpen || error) revealInput()
+        }}
+      >
+        <View style={s.moveCrumbs}>
+          <Icon name={current ? 'folder' : 'home'} size={18} color={colors.muted} />
+          <ScrollView
+            ref={crumbScroll}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={s.moveCrumbScroll}
+            contentContainerStyle={s.moveCrumbRow}
+            onContentSizeChange={() => crumbScroll.current?.scrollToEnd({ animated: false })}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Go to ${vaultName} root`}
+              disabled={busy}
+              onPress={() => navigate('')}
+            >
+              <Text style={[s.moveCrumb, current === '' && s.moveCrumbCurrent]}>{vaultName}</Text>
+            </Pressable>
+            {crumbs.map((crumb, index) => {
+              const last = index === crumbs.length - 1
+              return (
+                <Fragment key={crumb.path}>
+                  <Icon name="chevronRight" size={16} color={colors.muted} />
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`${open ? 'Collapse' : 'Expand'} ${node.name}`}
-                    hitSlop={12}
-                    onPress={() => toggle(node.path)}
-                    style={s.folderChevron}
+                    accessibilityLabel={`Go to ${crumb.path}`}
+                    disabled={busy || last}
+                    onPress={() => navigate(crumb.path)}
                   >
-                    <Icon
-                      name={open ? 'chevronDown' : 'chevronRight'}
-                      size={20}
-                      color={colors.muted}
-                    />
+                    <Text style={[s.moveCrumb, last && s.moveCrumbCurrent]}>{crumb.name}</Text>
                   </Pressable>
-                ) : (
-                  <View style={s.folderChevron} />
-                )}
-                <Pressable
-                  accessibilityRole="radio"
-                  accessibilityLabel={`${node.name}${current ? ', current' : ''}`}
-                  accessibilityState={{ checked: selected }}
-                  disabled={busy || current}
-                  onPress={() => {
-                    setDestination(node.path)
-                    setError(null)
-                  }}
-                  style={({ pressed }) => [s.folderTreeButton, pressed && s.pressed]}
-                >
-                  <Icon
-                    name={node.path === '' ? 'home' : 'folder'}
-                    size={22}
-                    color={selected ? colors.accent : colors.muted}
-                  />
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      s.folderTreeName,
-                      selected && s.folderTreeNameSelected,
-                      current && s.folderTreeNameCurrent,
-                    ]}
-                  >
-                    {node.name}
-                  </Text>
-                  {current ? <Text style={s.folderCurrent}>Current</Text> : null}
-                  {newPath === node.path ? <Text style={s.folderNewTag}>New</Text> : null}
-                  {selected ? <Icon name="check" size={22} color={colors.accent} /> : null}
-                </Pressable>
+                </Fragment>
+              )
+            })}
+          </ScrollView>
+        </View>
+        {children.map((child) => {
+          const count = counts ? (counts.get(child.path) ?? 0) : undefined
+          return (
+            <Pressable
+              key={child.path}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${child.name}`}
+              disabled={busy}
+              onPress={() => navigate(child.path)}
+              style={({ pressed }) => [s.moveRow, pressed && s.pressed]}
+            >
+              <View style={s.moveRowIcon}>
+                <Icon name="folder" size={20} color={colors.accent} />
               </View>
-            )
-          })}
-        </ScrollView>
+              <Text numberOfLines={1} style={s.moveRowName}>
+                {child.name}
+              </Text>
+              {count !== undefined ? <Text style={s.moveRowCount}>{count}</Text> : null}
+              <Icon name="chevronRight" size={18} color={colors.muted} />
+            </Pressable>
+          )
+        })}
+        {children.length === 0 ? <Text style={s.moveEmpty}>No folders in here.</Text> : null}
+        {newFolderOpen ? (
+          <>
+            <View style={s.moveNewInputRow}>
+              <Icon name="folder" size={20} color={colors.accent} />
+              <TextInput
+                accessibilityLabel="New folder name"
+                value={newName}
+                onChangeText={(value) => {
+                  setNewName(value)
+                  setError(null)
+                }}
+                editable={!busy}
+                autoFocus
+                autoCapitalize="none"
+                autoCorrect={false}
+                maxLength={200}
+                placeholder="Folder name"
+                placeholderTextColor={colors.muted}
+                returnKeyType="done"
+                onSubmitEditing={() => void confirm()}
+                cursorColor={colors.accent}
+                style={s.moveNewInput}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel new folder"
+                hitSlop={10}
+                disabled={busy}
+                onPress={closeNewFolder}
+                style={s.moveNewClose}
+              >
+                <Icon name="close" size={18} color={colors.muted} />
+              </Pressable>
+            </View>
+            {parts.length > 0 ? (
+              <View style={s.movePreview}>
+                <Text style={s.movePreviewLabel}>Will create</Text>
+                {preview.map((part, index) => (
+                  <Fragment key={preview.slice(0, index + 1).join('/')}>
+                    {index > 0 ? <Icon name="chevronRight" size={14} color={colors.muted} /> : null}
+                    <Text style={s.movePreviewPart}>{part}</Text>
+                  </Fragment>
+                ))}
+              </View>
+            ) : null}
+            <Text style={s.moveHint}>
+              {parts.length === 0
+                ? 'Type a name. Use a / to nest folders.'
+                : 'Type a / to nest folders.'}
+            </Text>
+          </>
+        ) : null}
         {error ? (
           <View style={s.sheetError}>
             <ErrorBanner message={error} onDismiss={() => setError(null)} />
           </View>
         ) : null}
+      </ScrollView>
+      {!newFolderOpen ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={actionLabel}
-          disabled={destination === null || busy}
-          onPress={() => void confirm()}
-          style={({ pressed }) => [
-            s.moveButton,
-            pressed && s.pressed,
-            (destination === null || busy) && s.disabled,
+          accessibilityLabel={`Create a new folder in ${current || vaultName}`}
+          disabled={busy}
+          onPress={openNewFolder}
+          style={({ pressed }) => [s.moveRow, pressed && s.pressed, busy && s.disabled]}
+        >
+          <View style={s.moveRowIcon}>
+            <Icon name="plus" size={20} color={colors.accent} />
+          </View>
+          <Text numberOfLines={1} style={s.moveNewText}>
+            New folder here
+          </Text>
+        </Pressable>
+      ) : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={actionLabel}
+        disabled={busy || sameFolder || (newFolderOpen && !canCreate)}
+        onPress={() => void confirm()}
+        style={({ pressed }) => [
+          s.moveButton,
+          pressed && s.pressed,
+          (busy || sameFolder || (newFolderOpen && !canCreate)) && s.moveButtonDisabled,
+        ]}
+      >
+        <Text
+          style={[
+            s.moveButtonText,
+            (busy || sameFolder || (newFolderOpen && !canCreate)) && s.moveButtonTextDisabled,
           ]}
         >
-          <Text style={s.moveButtonText}>{actionLabel}</Text>
-        </Pressable>
-      </BottomSheet>
-      {newFolderOpen && (
-        <NewFolderSheet
-          vault={vault}
-          folders={folders}
-          initialParent={destination ?? defaultParent ?? ''}
-          onClose={() => setNewFolderOpen(false)}
-          onFolderCreated={onFolderCreated}
-          onCreated={(folder) => {
-            setDestination(folder.path)
-            setNewPath(folder.path)
-            setNewFolderOpen(false)
-          }}
-          onOpenFolder={(path) => {
-            setDestination(path)
-            setNewFolderOpen(false)
-          }}
-        />
-      )}
-    </>
-  )
-}
-
-type NewFolderProblem =
-  | { kind: 'slash'; index: number; name: string; sub: string }
-  | { kind: 'exists'; index: number; name: string; path: string }
-
-function NewFolderSheet({
-  vault,
-  folders,
-  initialParent,
-  onClose,
-  onCreated,
-  onFolderCreated,
-  onOpenFolder,
-}: {
-  vault: Vault
-  folders: string[]
-  initialParent: string
-  onClose: () => void
-  onCreated: (folder: NoteFolder) => void
-  onFolderCreated: (folder: NoteFolder) => void
-  onOpenFolder: (path: string) => void
-}) {
-  const s = useStyles()
-  const { colors } = useTheme()
-  const [parent, setParent] = useState(initialParent)
-  const [segments, setSegments] = useState<{ id: number; value: string }[]>([{ id: 0, value: '' }])
-  const nextSegment = useRef(1)
-  const [focusIndex, setFocusIndex] = useState(0)
-  const [focused, setFocused] = useState<number | null>(0)
-  const segmentRefs = useRef(new Map<number, React.ComponentRef<typeof TextInput>>())
-  const pendingFocus = useRef<number | null>(null)
-  useEffect(() => {
-    const id = pendingFocus.current
-    if (id === null) return
-    pendingFocus.current = null
-    const input = segmentRefs.current.get(id)
-    if (!input) return
-    input.focus()
-    setFocused(segments.findIndex((segment) => segment.id === id))
-  }, [segments])
-  const [choosingParent, setChoosingParent] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [problem, setProblem] = useState<NewFolderProblem | null>(null)
-  const [failure, setFailure] = useState<string | null>(null)
-  const alive = useRef(true)
-  useEffect(() => {
-    alive.current = true
-    return () => {
-      alive.current = false
-    }
-  }, [])
-  const names = segments.map((segment) => segment.value.trim())
-  const slashIndex = segments.findIndex((segment) => segment.value.includes('/'))
-  const liveProblem: NewFolderProblem | null =
-    slashIndex >= 0
-      ? {
-          kind: 'slash',
-          index: slashIndex,
-          name: segments[slashIndex].value,
-          sub: segments[slashIndex].value.split('/').filter(Boolean).at(-1) ?? '',
-        }
-      : problem
-  const allFolders = useMemo(
-    () => [
-      { path: '', name: vault.name, depth: 0 },
-      ...folders.filter(Boolean).map((path) => ({
-        path,
-        name: folderName(path),
-        depth: path.split('/').length - 1,
-      })),
-    ],
-    [folders, vault.name]
-  )
-  const parentParts = parent ? parent.split('/').filter(Boolean) : []
-  const pathParts = [...parentParts, ...names.filter(Boolean)]
-  const totalFolders = pathParts.length - parentParts.length
-  const canCreate =
-    !busy && !failure && !liveProblem && names.length > 0 && names.every((name) => name.length > 0)
-  const actionLabel = totalFolders > 1 ? `Create ${totalFolders} folders` : 'Create folder'
-  const parentPath = parent ? [vault.name, ...parentParts].join(' / ') : 'Vault root'
-  const closeOrBack = () => {
-    if (choosingParent) setChoosingParent(false)
-    else onClose()
-  }
-  const updateSegment = (index: number, value: string) => {
-    setSegments((previous) =>
-      previous.map((segment, at) => (at === index ? { ...segment, value } : segment))
-    )
-    setProblem(null)
-    setFailure(null)
-  }
-  const addSubfolder = () => {
-    const id = nextSegment.current++
-    setSegments((previous) => [...previous, { id, value: '' }])
-    setFocusIndex(segments.length)
-    pendingFocus.current = id
-    setProblem(null)
-  }
-  const removeSegment = (index: number) => {
-    const target = segments[Math.max(0, index - 1)]
-    setSegments((previous) => previous.filter((_, at) => at !== index))
-    setFocusIndex(Math.max(0, index - 1))
-    setFocused(index > 0 ? index - 1 : 0)
-    if (target) pendingFocus.current = target.id
-    setProblem(null)
-  }
-  const makeSubfolder = () => {
-    if (liveProblem?.kind !== 'slash') return
-    const parts = names[liveProblem.index].split('/').map((part) => part.trim())
-    if (parts.length < 2) return
-    const index = liveProblem.index
-    const [first, ...rest] = parts
-    const subId = nextSegment.current++
-    const added = rest.map((part, at) => ({
-      id: at === 0 ? subId : nextSegment.current++,
-      value: part,
-    }))
-    setSegments((previous) => {
-      const next = [...previous]
-      const original = next[index]
-      next.splice(index, 1, { ...original, value: first }, ...added)
-      return next
-    })
-    setProblem(null)
-    setFocusIndex(index + 1)
-    pendingFocus.current = subId
-  }
-  const applyTwo = () => {
-    if (liveProblem?.kind !== 'exists') return
-    const name = `${liveProblem.name} 2`
-    const segment = segments[liveProblem.index]
-    setSegments((previous) =>
-      previous.map((entry, at) => (at === liveProblem.index ? { ...entry, value: name } : entry))
-    )
-    setProblem(null)
-    setFocusIndex(liveProblem.index)
-    if (segment) pendingFocus.current = segment.id
-  }
-  async function createFolders() {
-    if (!canCreate) return
-    setBusy(true)
-    setFailure(null)
-    setProblem(null)
-    let currentParent = parent
-    let final: NoteFolder | null = null
-    for (const [index, name] of names.entries()) {
-      try {
-        const created = await createFolder(vault, name, currentParent)
-        onFolderCreated(created)
-        currentParent = created.path
-        final = created
-      } catch (cause) {
-        const message = errorText(cause)
-        const existing = /folder named "([^"]+)" already exists/iu.exec(message)
-        if (existing && alive.current) {
-          const path = currentParent ? `${currentParent}/${existing[1]}` : existing[1]
-          setProblem({ kind: 'exists', index, name: existing[1], path })
-        } else if (alive.current) {
-          setFailure(message)
-        }
-        setBusy(false)
-        return
-      }
-    }
-    if (alive.current && final) {
-      setBusy(false)
-      onCreated(final)
-    }
-  }
-  return (
-    <BottomSheet
-      title={choosingParent ? 'Choose parent' : 'New folder'}
-      busy={busy}
-      onClose={onClose}
-      onRequestClose={() => {
-        if (choosingParent) {
-          setChoosingParent(false)
-          return true
-        }
-        return false
-      }}
-      leading={<IconButton name="arrowLeft" label="Back" onPress={closeOrBack} disabled={busy} />}
-    >
-      <ScrollView
-        style={s.folderNewScroll}
-        contentContainerStyle={s.folderNewContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        {choosingParent ? (
-          <>
-            <Text style={s.folderFieldLabel}>CREATE FOLDER IN</Text>
-            <Text style={s.sheetParentHint}>
-              Choose any folder. The new folder is created inside it.
-            </Text>
-            {allFolders.map((item) => {
-              const selected = parent === item.path
-              return (
-                <Pressable
-                  key={item.path || 'root'}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected }}
-                  onPress={() => {
-                    setParent(item.path)
-                    setChoosingParent(false)
-                  }}
-                  style={({ pressed }) => [
-                    s.sheetRow,
-                    { paddingLeft: 20 + item.depth * 16 },
-                    selected && s.sheetRowSelected,
-                    pressed && s.rowPressed,
-                  ]}
-                >
-                  <Icon
-                    name={item.path ? 'folder' : 'home'}
-                    size={20}
-                    color={selected ? colors.accent : colors.muted}
-                  />
-                  <View style={s.sheetRowText}>
-                    <Text numberOfLines={1} style={s.sheetRowTitle}>
-                      {item.name}
-                    </Text>
-                    <Text numberOfLines={1} style={s.sheetRowPath}>
-                      {item.path || 'Vault root'}
-                    </Text>
-                  </View>
-                  <Icon
-                    name={selected ? 'checkCircle' : 'circle'}
-                    size={21}
-                    color={selected ? colors.accent : colors.muted}
-                  />
-                </Pressable>
-              )
-            })}
-          </>
-        ) : (
-          <>
-            <Text style={s.folderFieldLabel}>PARENT FOLDER</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Choose parent. Currently ${parentPath}`}
-              onPress={() => setChoosingParent(true)}
-              style={({ pressed }) => [s.folderParentRow, pressed && s.pressed]}
-            >
-              <Icon name={parent ? 'folder' : 'home'} size={22} color={colors.accent} />
-              <View style={s.flex}>
-                <Text numberOfLines={1} style={s.folderParentName}>
-                  {parent ? folderName(parent) : vault.name}
-                </Text>
-                <Text numberOfLines={1} style={s.folderParentPath}>
-                  {parentPath}
-                </Text>
-              </View>
-              <Icon name="chevronRight" size={20} color={colors.muted} />
-            </Pressable>
-            <Text style={s.folderFieldLabel}>NAME</Text>
-            <View style={s.folderSegments}>
-              {segments.map((segment, index) => {
-                const hasError = liveProblem?.index === index
-                const sub = index > 0
-                return (
-                  <View
-                    key={segment.id}
-                    style={[s.folderSegmentWrap, sub && s.folderSegmentWrapSub]}
-                  >
-                    {sub ? <View style={s.folderSegmentBracket} /> : null}
-                    <View
-                      style={[
-                        s.folderSegmentRow,
-                        focused === index && s.folderSegmentRowFocused,
-                        hasError && s.folderSegmentRowError,
-                      ]}
-                    >
-                      <Icon
-                        name="folder"
-                        size={20}
-                        color={hasError ? colors.coral : colors.accent}
-                      />
-                      <TextInput
-                        ref={(input) => {
-                          if (input) segmentRefs.current.set(segment.id, input)
-                          else segmentRefs.current.delete(segment.id)
-                        }}
-                        accessibilityLabel={`Folder name${sub ? ` part ${index + 1}` : ''}`}
-                        autoFocus={index === focusIndex}
-                        value={segment.value}
-                        onChangeText={(value) => updateSegment(index, value)}
-                        onFocus={() => setFocused(index)}
-                        onBlur={() => setFocused((current) => (current === index ? null : current))}
-                        editable={!busy}
-                        maxLength={120}
-                        placeholder="Folder name"
-                        placeholderTextColor={colors.muted}
-                        returnKeyType="done"
-                        onSubmitEditing={() => void createFolders()}
-                        autoCorrect={false}
-                        autoCapitalize="none"
-                        cursorColor={colors.accent}
-                        style={s.folderSegmentInput}
-                      />
-                      {hasError ? <Icon name="alert" size={20} color={colors.coral} /> : null}
-                      {sub ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Remove subfolder"
-                          hitSlop={10}
-                          disabled={busy}
-                          onPress={() => removeSegment(index)}
-                          style={s.folderSegmentRemove}
-                        >
-                          <Icon name="close" size={20} color={colors.muted} />
-                        </Pressable>
-                      ) : null}
-                    </View>
-                  </View>
-                )
-              })}
-            </View>
-            {liveProblem ? (
-              <View style={s.folderErrorCard} accessibilityRole="alert">
-                <View style={s.folderErrorHeader}>
-                  <Icon name="alert" size={20} color={colors.coral} />
-                  <Text style={s.folderErrorText}>
-                    {liveProblem.kind === 'slash'
-                      ? "Folder names can't contain slashes."
-                      : `A folder named "${liveProblem.name}" already exists here.`}
-                  </Text>
-                </View>
-                <View style={s.folderErrorActions}>
-                  {liveProblem.kind === 'slash' ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      onPress={makeSubfolder}
-                      style={({ pressed }) => [s.folderErrorButton, pressed && s.pressed]}
-                    >
-                      <Text style={s.folderErrorButtonText}>
-                        {`Make "${liveProblem.sub}" a subfolder`}
-                      </Text>
-                    </Pressable>
-                  ) : (
-                    <>
-                      <Pressable
-                        accessibilityRole="button"
-                        onPress={applyTwo}
-                        style={({ pressed }) => [s.folderErrorButton, pressed && s.pressed]}
-                      >
-                        <Text style={s.folderErrorButtonText}>{`Use "${liveProblem.name} 2"`}</Text>
-                      </Pressable>
-                      <Pressable
-                        accessibilityRole="button"
-                        onPress={() => onOpenFolder(liveProblem.path)}
-                        style={({ pressed }) => [s.folderErrorButton, pressed && s.pressed]}
-                      >
-                        <Text style={s.folderErrorButtonText}>{`Open ${liveProblem.name}`}</Text>
-                      </Pressable>
-                    </>
-                  )}
-                </View>
-              </View>
-            ) : null}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Add a subfolder"
-              disabled={busy}
-              onPress={addSubfolder}
-              style={({ pressed }) => [s.folderAddSub, pressed && s.pressed]}
-            >
-              <Icon name="plus" size={22} color={colors.accent} />
-              <Text style={s.folderAddSubText}>Add subfolder</Text>
-            </Pressable>
-            {pathParts.length > 0 ? (
-              <Text style={s.folderPathPreview}>
-                <Text style={{ color: colors.muted }}>Will create </Text>
-                {pathParts.map((part, index) => (
-                  <Text key={pathParts.slice(0, index + 1).join('/')}>
-                    <Text
-                      style={
-                        index === pathParts.length - 1 ? s.folderPathLast : { color: colors.ink }
-                      }
-                    >
-                      {part}
-                    </Text>
-                    {index < pathParts.length - 1 ? (
-                      <Text style={{ color: colors.muted }}>{'  ›  '}</Text>
-                    ) : null}
-                  </Text>
-                ))}
-              </Text>
-            ) : null}
-            {failure ? (
-              <View style={s.sheetError}>
-                <ErrorBanner message={failure} onDismiss={() => setFailure(null)} />
-              </View>
-            ) : null}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={actionLabel}
-              disabled={!canCreate}
-              onPress={() => void createFolders()}
-              style={({ pressed }) => [
-                s.moveButton,
-                pressed && s.pressed,
-                !canCreate && s.moveButtonDisabled,
-              ]}
-            >
-              <Text style={[s.moveButtonText, !canCreate && s.moveButtonTextDisabled]}>
-                {busy ? 'Creating…' : actionLabel}
-              </Text>
-            </Pressable>
-          </>
-        )}
-      </ScrollView>
+          {actionLabel}
+        </Text>
+      </Pressable>
     </BottomSheet>
   )
 }
-
 function SortSheet({
   sort,
   onChange,
@@ -5184,7 +4814,6 @@ function NewNote({
           initial={destination}
           title="Create in"
           mode="create-in"
-          confirmLabel="Use folder"
           onConfirm={async (path) => {
             setDestination(path)
             setPickingFolder(false)
@@ -6043,7 +5672,7 @@ function makeStyles(colors: ThemeColors) {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    list: { paddingTop: 4, paddingBottom: 140 },
+    list: { paddingTop: 0, paddingBottom: 140 },
     emptyList: { flexGrow: 1 },
     listLayer: { backgroundColor: colors.paper },
     hiddenList: {
@@ -6054,56 +5683,106 @@ function makeStyles(colors: ThemeColors) {
       left: 0,
       backgroundColor: colors.paper,
     },
-    swipeShell: {
-      position: 'relative',
-      borderBottomColor: colors.line,
-      borderBottomWidth: 1,
+    chipGrid: {
+      flexDirection: 'row',
+      gap: ROW_GAP,
+      paddingHorizontal: 20,
+      marginBottom: ROW_GAP,
     },
-    swipeClipped: { overflow: 'hidden' },
-    swipeAction: {
+    chipShell: {
+      flex: 1,
+      minWidth: 0,
+      height: CHIP_HEIGHT,
+      borderRadius: 16,
+      backgroundColor: colors.soft,
+    },
+    chipRow: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingHorizontal: 18,
+      borderRadius: 16,
+      backgroundColor: colors.soft,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    chipName: {
+      flexShrink: 1,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 16,
+      color: colors.ink,
+    },
+    chipCount: {
+      marginLeft: 'auto',
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.muted,
+    },
+    chipSpacer: { flex: 1 },
+    cardShell: {
+      height: CARD_HEIGHT,
+      marginHorizontal: 20,
+      marginBottom: ROW_GAP,
+      borderRadius: 18,
+      backgroundColor: colors.soft,
+    },
+    cardRow: {
+      flex: 1,
+      paddingVertical: 14,
+      paddingHorizontal: 20,
+      borderRadius: 18,
+      backgroundColor: colors.soft,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    cardHead: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      height: 24,
+      gap: 12,
+    },
+    cardTitle: {
+      flexShrink: 1,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 18,
+      lineHeight: 24,
+      letterSpacing: -0.3,
+      color: colors.ink,
+    },
+    cardMeta: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
+    cardTime: {
+      maxWidth: 140,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.muted,
+    },
+    cardPreview: {
+      marginTop: 2,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 14,
+      lineHeight: 20,
+      color: colors.subtle,
+    },
+    swipeShell: { position: 'relative', overflow: 'hidden' },
+    swipePane: {
       position: 'absolute',
       top: 0,
       bottom: 0,
-      width: SWIPE_ACTION_WIDTH,
+      flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'center',
+      overflow: 'hidden',
       zIndex: 1,
     },
-    swipeTrashPane: {
-      right: 0,
-      backgroundColor: colors.coral,
-      borderTopLeftRadius: 15,
-      borderBottomLeftRadius: 15,
-      alignItems: 'flex-end',
-      paddingRight: 12,
-    },
-    swipeFavoritePane: {
-      left: 0,
-      backgroundColor: colors.accent,
-      borderTopRightRadius: 15,
-      borderBottomRightRadius: 15,
-      alignItems: 'flex-start',
-      paddingLeft: 12,
-    },
-    swipeActionContent: {
-      width: SWIPE_ACTION_WIDTH - 24,
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 6,
-    },
-    swipeConfirm: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-      backgroundColor: colors.paper,
-      alignItems: 'center',
-      justifyContent: 'center',
-      elevation: 3,
-      shadowColor: colors.ink,
-      shadowOpacity: 0.18,
-      shadowRadius: 8,
-      shadowOffset: { width: 0, height: 3 },
-    },
+    swipePaneFavorite: { left: 0, paddingLeft: 20, justifyContent: 'flex-start' },
+    swipePaneTrash: { right: 0, paddingRight: 20, justifyContent: 'flex-end' },
+    paneEdge: { position: 'absolute', top: 0, bottom: 0, width: PANE_FADE },
+    paneEdgeLeft: { left: 0 },
+    paneEdgeRight: { right: 0 },
+    swipePaneContent: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    swipePaneLabel: { fontFamily: 'DMSans_600SemiBold', fontSize: 14 },
+    swipeFill: { flex: 1 },
     swapIconLayer: {
       position: 'absolute',
       top: 0,
@@ -6113,26 +5792,7 @@ function makeStyles(colors: ThemeColors) {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    swapLabel: { width: '100%', height: 14, alignItems: 'center', justifyContent: 'center' },
-    swapLabelLayer: {
-      position: 'absolute',
-      width: '100%',
-      textAlign: 'center',
-    },
-    swipeActionLabel: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 10,
-      letterSpacing: 1.4,
-      color: colors.paper,
-    },
-    swipeForeground: { backgroundColor: colors.paper, zIndex: 2 },
-    noteRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 16,
-      height: 71,
-      paddingHorizontal: 20,
-    },
+    swipeForeground: { flex: 1, zIndex: 2 },
     rowPressed: { backgroundColor: colors.soft },
     trashNotice: {
       position: 'absolute',
@@ -6172,43 +5832,12 @@ function makeStyles(colors: ThemeColors) {
       color: colors.muted,
       marginTop: 1,
     },
-    noteGlyph: {
-      width: 44,
-      height: 44,
-      borderRadius: 14,
-      backgroundColor: colors.soft,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    folderGlyph: {
-      width: 44,
-      height: 44,
-      borderRadius: 14,
-      backgroundColor: colors.soft,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    noteInfo: { flex: 1, gap: 2, minWidth: 0 },
-    noteTitle: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 18,
-      color: colors.ink,
-      lineHeight: 24,
-      letterSpacing: -0.3,
-    },
     notePath: {
       fontFamily: 'DMSans_400Regular',
       fontSize: 12,
       color: colors.muted,
       lineHeight: 16,
       marginTop: 1,
-    },
-    snippet: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 15,
-      lineHeight: 22,
-      color: colors.subtle,
-      marginTop: 6,
     },
     fab: {
       width: 60,
@@ -6394,7 +6023,7 @@ function makeStyles(colors: ThemeColors) {
     sheetOverlay: { flex: 1, justifyContent: 'flex-end' },
     sheetKeyboard: { flex: 1, justifyContent: 'flex-end' },
     sheetBackdrop: { backgroundColor: 'rgba(0, 0, 0, 0.6)' },
-    sheetGrabber: { alignItems: 'center', marginBottom: 16 },
+    sheetGrabber: { alignItems: 'center', marginBottom: 14 },
     sheetCard: {
       width: '100%',
       maxHeight: '86%',
@@ -6404,7 +6033,7 @@ function makeStyles(colors: ThemeColors) {
       paddingTop: 12,
       paddingHorizontal: 16,
     },
-    sheetHandle: { width: 44, height: 5, borderRadius: 3, backgroundColor: colors.surface2 },
+    sheetHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: colors.surface2 },
     sheetHeader: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -6429,7 +6058,6 @@ function makeStyles(colors: ThemeColors) {
       marginHorizontal: 8,
       borderRadius: 14,
     },
-    sheetRowSelected: { backgroundColor: colors.soft },
     sheetRowText: { flex: 1, gap: 1 },
     sheetRowTitle: {
       fontFamily: 'DMSans_600SemiBold',
@@ -6448,14 +6076,6 @@ function makeStyles(colors: ThemeColors) {
       fontSize: 13,
       color: colors.muted,
       paddingRight: 6,
-    },
-    sheetParentHint: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 12,
-      lineHeight: 18,
-      color: colors.muted,
-      paddingHorizontal: 20,
-      marginBottom: 4,
     },
     sheetError: { paddingHorizontal: 20, paddingTop: 6 },
     dialogCancel: {
@@ -6481,12 +6101,6 @@ function makeStyles(colors: ThemeColors) {
       justifyContent: 'center',
       borderRadius: 14,
     },
-    rowPath: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 13,
-      color: colors.muted,
-      lineHeight: 18,
-    },
     trashUndo: {
       height: 44,
       paddingHorizontal: 16,
@@ -6499,44 +6113,7 @@ function makeStyles(colors: ThemeColors) {
       fontSize: 15,
       color: colors.accent,
     },
-    searchList: { paddingBottom: 140 },
-    searchGroup: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 12,
-      letterSpacing: 1.2,
-      color: colors.muted,
-      paddingTop: 20,
-      paddingHorizontal: 20,
-      paddingBottom: 4,
-    },
-    searchRow: {
-      height: 102,
-      paddingVertical: 14,
-      paddingHorizontal: 20,
-    },
-    searchTitleRow: {
-      flexDirection: 'row',
-      alignItems: 'baseline',
-      gap: 8,
-    },
-    searchStar: {
-      marginLeft: 'auto',
-      paddingLeft: 8,
-      alignSelf: 'center',
-    },
-    searchTitle: {
-      flexShrink: 1,
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 18,
-      lineHeight: 24,
-      letterSpacing: -0.3,
-      color: colors.ink,
-    },
-    searchPath: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 13,
-      color: colors.muted,
-    },
+    searchList: { paddingTop: 12, paddingBottom: 140 },
     highlight: {
       borderRadius: 4,
       paddingHorizontal: 2,
@@ -6565,7 +6142,7 @@ function makeStyles(colors: ThemeColors) {
     },
     crumbText: {
       fontFamily: 'DMSans_400Regular',
-      fontSize: 14,
+      fontSize: 15,
       lineHeight: 20,
       color: colors.muted,
     },
@@ -6597,9 +6174,9 @@ function makeStyles(colors: ThemeColors) {
       left: 0,
       right: 0,
       bottom: 0,
-      height: 110,
+      height: 53,
     },
-    listFadeRamp: { height: 44 },
+    listFadeRamp: { height: 29 },
     listFadeSolid: { flex: 1, backgroundColor: colors.paper },
     dock: {
       flexDirection: 'row',
@@ -6892,74 +6469,114 @@ function makeStyles(colors: ThemeColors) {
       color: colors.muted,
       flex: 1,
     },
-    folderFileRow: {
+    moveFilePill: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 10,
-      paddingHorizontal: 4,
-      paddingBottom: 10,
+      gap: 8,
+      height: 32,
+      maxWidth: '55%',
+      paddingHorizontal: 12,
+      borderRadius: 12,
+      backgroundColor: colors.soft,
     },
-    folderFileName: {
+    moveFilePillText: {
+      flexShrink: 1,
       fontFamily: 'DMSans_400Regular',
-      fontSize: 14,
-      color: colors.muted,
+      fontSize: 13,
+      color: colors.subtle,
     },
-    folderNewRow: {
+    moveCrumbs: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 14,
-      height: 56,
-      paddingHorizontal: 16,
-      borderRadius: 20,
-    },
-    folderNewText: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 17,
-      color: colors.accent,
-    },
-    folderDivider: {
-      height: 1,
-      backgroundColor: colors.line,
-      marginVertical: 6,
-      marginHorizontal: 4,
-    },
-    folderTree: { maxHeight: 372, flexShrink: 1 },
-    folderTreeContent: { paddingBottom: 4 },
-    folderTreeRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      height: 56,
-      marginVertical: 2,
-      borderRadius: 20,
-    },
-    folderTreeRowSelected: { backgroundColor: colors.paper },
-    folderChevron: {
-      width: 20,
+      gap: 6,
       height: 44,
+      marginTop: 6,
+    },
+    moveCrumbScroll: { flex: 1 },
+    moveCrumbRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    moveCrumb: { fontFamily: 'DMSans_400Regular', fontSize: 15, color: colors.muted },
+    moveCrumbCurrent: { fontFamily: 'DMSans_600SemiBold', color: colors.ink },
+    moveScroll: { flexShrink: 1 },
+    moveScrollContent: { paddingBottom: 4 },
+    moveRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      height: 56,
+      borderRadius: 16,
+      paddingHorizontal: 8,
+    },
+    moveRowIcon: {
+      width: 36,
+      height: 36,
+      borderRadius: 12,
+      backgroundColor: colors.soft,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    folderTreeButton: {
-      flex: 1,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      height: 56,
-      paddingRight: 16,
-    },
-    folderTreeName: {
-      flex: 1,
+    moveRowName: {
+      flexShrink: 1,
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 17,
       color: colors.ink,
     },
-    folderTreeNameSelected: { color: colors.accent },
-    folderTreeNameCurrent: { color: colors.ink },
-    folderCurrent: {
+    moveRowCount: {
       marginLeft: 'auto',
       fontFamily: 'DMSans_400Regular',
       fontSize: 13,
       color: colors.muted,
+    },
+    moveEmpty: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 15,
+      color: colors.muted,
+      paddingHorizontal: 8,
+      paddingVertical: 14,
+    },
+    moveNewText: { fontFamily: 'DMSans_600SemiBold', fontSize: 17, color: colors.accent },
+    moveNewInputRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      height: 56,
+      marginTop: 6,
+      paddingHorizontal: 16,
+      borderRadius: 18,
+      backgroundColor: colors.line,
+      borderWidth: 1.5,
+      borderColor: colors.accent,
+    },
+    moveNewInput: {
+      flex: 1,
+      minWidth: 0,
+      paddingVertical: 0,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 17,
+      color: colors.ink,
+    },
+    moveNewClose: {
+      width: 32,
+      height: 32,
+      marginRight: -6,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    movePreview: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: 6,
+      marginTop: 10,
+      paddingHorizontal: 4,
+    },
+    movePreviewLabel: { fontFamily: 'DMSans_400Regular', fontSize: 14, color: colors.muted },
+    movePreviewPart: { fontFamily: 'DMSans_400Regular', fontSize: 14, color: colors.ink },
+    moveHint: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.muted,
+      marginTop: 2,
+      paddingHorizontal: 4,
     },
     moveButton: {
       height: 58,
@@ -7201,140 +6818,6 @@ function makeStyles(colors: ThemeColors) {
     templatePillText: {
       fontFamily: 'JetBrainsMono_400Regular',
       fontSize: 14,
-      color: colors.accent,
-    },
-    folderNewTag: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 12,
-      color: colors.muted,
-      marginRight: 8,
-    },
-    folderNewScroll: { flexShrink: 1 },
-    folderNewContent: { paddingBottom: 8 },
-    folderFieldLabel: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 12,
-      letterSpacing: 1.2,
-      color: colors.muted,
-      paddingHorizontal: 4,
-      marginTop: 14,
-      marginBottom: 8,
-    },
-    folderParentRow: {
-      minHeight: 64,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      paddingHorizontal: 16,
-      borderRadius: 18,
-      backgroundColor: colors.surface,
-    },
-    folderParentName: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 17,
-      color: colors.ink,
-    },
-    folderParentPath: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 13,
-      color: colors.muted,
-      marginTop: 2,
-    },
-    folderSegments: { gap: 8 },
-    folderSegmentWrap: { position: 'relative' },
-    folderSegmentWrapSub: { marginLeft: 14 },
-    folderSegmentBracket: {
-      position: 'absolute',
-      left: -10,
-      top: -10,
-      width: 10,
-      height: 18,
-      borderLeftWidth: 1,
-      borderBottomWidth: 1,
-      borderColor: colors.line,
-      borderBottomLeftRadius: 6,
-    },
-    folderSegmentRow: {
-      height: 56,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      paddingHorizontal: 16,
-      borderRadius: 18,
-      borderWidth: 2,
-      borderColor: colors.line,
-      backgroundColor: colors.paper,
-    },
-    folderSegmentRowFocused: { borderColor: colors.accent },
-    folderSegmentRowError: { borderColor: colors.coral },
-    folderSegmentInput: {
-      flex: 1,
-      minWidth: 0,
-      padding: 0,
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 17,
-      color: colors.ink,
-    },
-    folderSegmentRemove: {
-      width: 28,
-      height: 28,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    folderErrorCard: {
-      marginTop: 12,
-      gap: 10,
-      padding: 14,
-      borderRadius: 18,
-      borderWidth: 1,
-      borderColor: colors.line,
-      backgroundColor: colors.soft,
-    },
-    folderErrorHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-    folderErrorText: {
-      flex: 1,
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 15,
-      lineHeight: 21,
-      color: colors.ink,
-    },
-    folderErrorActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-    folderErrorButton: {
-      minHeight: 40,
-      paddingHorizontal: 14,
-      borderRadius: 14,
-      backgroundColor: colors.surface,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    folderErrorButtonText: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 14,
-      color: colors.ink,
-    },
-    folderAddSub: {
-      height: 52,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 12,
-      paddingHorizontal: 4,
-    },
-    folderAddSubText: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 17,
-      color: colors.accent,
-    },
-    folderPathPreview: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 13,
-      lineHeight: 18,
-      color: colors.muted,
-      paddingHorizontal: 4,
-      marginTop: 8,
-      marginBottom: 4,
-    },
-    folderPathLast: {
-      fontFamily: 'DMSans_600SemiBold',
       color: colors.accent,
     },
     moveButtonDisabled: { backgroundColor: colors.surface },

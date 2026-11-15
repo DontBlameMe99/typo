@@ -7,6 +7,8 @@ import {
   foldersFromNotes,
   isRootTemplate,
   noteFilename,
+  notePreview,
+  noteTime,
   reconcileNotes,
   sortNotes,
 } from '../src/core'
@@ -360,7 +362,7 @@ describe('search', () => {
   })
   test('does not interpret content queries as regular expressions', async () => {
     expect(await searchNotes(notes, '.*', 'content')).toEqual([])
-    expect(await searchNotes(notes, 'no match', 'all')).toEqual([])
+    expect(await searchNotes(notes, 'zzz qqq', 'all')).toEqual([])
   })
   test('trims every kind of line padding before scoring and slicing', async () => {
     const items = [
@@ -388,5 +390,123 @@ describe('search', () => {
     const [result] = await searchNotes(items, 'école', 'content')
     expect(result.line).toBe(3)
     expect(result.snippet).toBe('e\u0301cole here')
+  })
+})
+
+describe('library card copy', () => {
+  test('previews the prose and skips the Typst scaffolding', () => {
+    const entry = note(
+      'card.typ',
+      `#set page(margin: 2.5cm)
+#let title(body) = body
+#title[Card]
+// a comment
+= Heading
+Oat milk, *lemons*, and [basil].
+#align(center)[Still here.]`
+    )
+    expect(notePreview(entry)).toBe('Heading Oat milk, lemons, and basil. Still here.')
+  })
+  test('skips multi-line rules and title calls', () => {
+    const entry = note(
+      'multi.typ',
+      `#title[
+  Multi
+]
+#let title(body) = align(center,
+    text(size: 22pt, weight: "bold", body))
+Body after the rule.`
+    )
+    expect(notePreview(entry)).toBe('Body after the rule.')
+  })
+  test('skips block comments and raw blocks', () => {
+    const entry = note(
+      'code.typ',
+      `#title[Code]
+/* hidden
+comment */
+/* one line */
+\`\`\`typ
+#let a = 1
+\`\`\`
+Real prose.`
+    )
+    expect(notePreview(entry)).toBe('Real prose.')
+  })
+  test('an empty note has no preview', () => {
+    expect(notePreview(note('empty.typ', '#title[Empty]\n#set text(size: 12pt)'))).toBe('')
+  })
+  test('caps the preview without cutting through a line', () => {
+    const entry = note('long.typ', `#title[Long]\n${'word '.repeat(100)}`)
+    const preview = notePreview(entry, 30)
+    expect(preview.length).toBeLessThanOrEqual(31)
+    expect(preview.endsWith('word…')).toBe(true)
+  })
+})
+
+describe('multi-term search', () => {
+  const items = [
+    note('weekly.typ', '#title[Weekly Goals]\nPlan the week ahead.'),
+    note('uni/math/tut_woche_1.typ', '#title[Tut Woche 1]\nTutorial for week one.'),
+    note('brag.typ', '#title[Brag Document]\nA document about trust and utility.'),
+    note('deep.typ', '#title[Deep]\nTutorial and week notes.'),
+    note('noise.typ', '#title[Noise]\nThe quick brown fox jumps over the lazy dog.'),
+  ]
+  test('requires a literal term match and ranks full coverage first', async () => {
+    const results = await createNoteSearch(items)('tut week', 'all')
+    expect(results.map((result) => result.note.title)).toEqual([
+      'Tut Woche 1',
+      'Deep',
+      'Weekly Goals',
+    ])
+  })
+  test('reads the line that matched a content-only term', async () => {
+    const results = await createNoteSearch(items)('tut week', 'all')
+    const deep = results.find((result) => result.note.title === 'Deep')
+    expect(deep?.line).toBe(2)
+    expect(deep?.snippet).toContain('Tutorial and week notes.')
+  })
+  test('does not surface fuzzy-only notes', async () => {
+    const results = await createNoteSearch(items)('tut week', 'all')
+    expect(results.some((result) => result.note.title === 'Noise')).toBe(false)
+    expect(results.some((result) => result.note.title === 'Brag Document')).toBe(false)
+  })
+  test('a warmed index returns the same order', async () => {
+    const search = createNoteSearch(items)
+    await search.warm()
+    expect((await search('tut week', 'all')).map((result) => result.note.title)).toEqual([
+      'Tut Woche 1',
+      'Deep',
+      'Weekly Goals',
+    ])
+  })
+})
+
+describe('relative note time', () => {
+  const now = new Date(2026, 10, 14, 12, 0, 0).getTime()
+  const at = (days: number, hours = 0) => now - days * 86_400_000 - hours * 3_600_000
+  test('counts minutes and hours on the same day', () => {
+    expect(noteTime(null, now)).toBe('')
+    expect(noteTime(now - 20_000, now)).toBe('Just now')
+    expect(noteTime(now - 5 * 60_000, now)).toBe('5m ago')
+    expect(noteTime(now - 3 * 3_600_000, now)).toBe('3h ago')
+  })
+  test('names yesterday, the weekday, and the date', () => {
+    expect(noteTime(at(1), now)).toBe('Yesterday')
+    expect(noteTime(at(3), now)).toBe(
+      new Date(at(3)).toLocaleDateString(undefined, {
+        weekday: 'short',
+      })
+    )
+    expect(noteTime(new Date(2025, 9, 28, 9).getTime(), now)).toBe(
+      new Date(2025, 9, 28).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    )
+  })
+  test('a clock that runs backwards still reads as just now', () => {
+    expect(noteTime(now + 5_000, now)).toBe('Just now')
   })
 })
