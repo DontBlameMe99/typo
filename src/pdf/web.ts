@@ -34,7 +34,8 @@ type Page = {
   text: HTMLElement | null
   links: HTMLElement | null
   textLayer: TextLayer | null
-  // A page keeps its selection layer only while it is on screen.
+  // A page builds its selection layer when it comes on screen and keeps it while
+  // its canvas stays in the cache, so a scroll back does not rebuild it.
   layers: boolean
 }
 type SelectionBox = { left: number; top: number; right: number; bottom: number }
@@ -434,8 +435,8 @@ async function goTo(current: Session, pdf: PDFDocumentProxy, destination: unknow
   }
 }
 
-// The selection layer costs a text pass and a DOM subtree per page, so it is created
-// only for pages the reader can see and dropped again when the page leaves.
+// The selection layer costs a text pass and a DOM subtree per page, so it is built
+// when the page comes on screen and lives as long as the page keeps its canvas.
 function requestLayers(current: Session, index: number) {
   const target = current.pages[index]
   const pdf = current.pdf
