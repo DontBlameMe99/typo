@@ -349,6 +349,7 @@ const {
   pickVault,
   loadSavedVault,
   readSavedVault,
+  readSavedVaultSync,
   forgetVault,
   scanVault,
   scanVaultLibrary,
@@ -374,8 +375,8 @@ const {
 } = await import('../src/vault')
 const { packageArchive } = await import('../src/compiler/packages')
 const { pdfStorage } = await import('../src/compiler/pdf-storage')
-const { loadVaultIndex, storeVaultIndex } = await import('../src/library-cache')
-const { loadFavorites, storeFavorites } = await import('../src/favorites')
+const { loadVaultIndex, loadVaultIndexSync, storeVaultIndex } = await import('../src/library-cache')
+const { loadFavorites, loadFavoritesSync, storeFavorites } = await import('../src/favorites')
 
 beforeEach(() => {
   detailedMetadataReads = 0
@@ -440,6 +441,7 @@ test('launch reads the selection without a provider round trip', async () => {
   await pickVault()
   readDirectoryAsync.mockClear()
   expect(await readSavedVault()).toEqual(vault)
+  expect(readSavedVaultSync()).toEqual(vault)
   expect(readDirectoryAsync).not.toHaveBeenCalled()
 })
 
@@ -723,8 +725,9 @@ test('library snapshots reopen without reading source files and remain isolated 
   const note = noteFor(uri)
   await storeVaultIndex(vault, { notes: [note], folders: ['', 'data'] })
   const reads = syncReads.length
+  expect(loadVaultIndexSync(vault)).toEqual({ notes: [note], folders: ['', 'data'] })
   expect(await loadVaultIndex(vault)).toEqual({ notes: [note], folders: ['', 'data'] })
-  expect(syncReads.length - reads).toBe(1)
+  expect(syncReads.length - reads).toBe(2)
   expect(syncReads.some((path) => path === uri)).toBe(false)
   expect(await loadVaultIndex({ ...vault, uri: `${root}-other` })).toBeNull()
 })
@@ -752,6 +755,7 @@ test('corrupt and foreign library snapshots are ignored', async () => {
 
 test('favorites persist per vault in private documents', async () => {
   await storeFavorites(vault, ['notes/a.typ', 'notes'])
+  expect(loadFavoritesSync(vault)).toEqual(['notes/a.typ', 'notes'])
   expect(await loadFavorites(vault)).toEqual(['notes/a.typ', 'notes'])
   expect(await loadFavorites({ ...vault, uri: `${root}-other` })).toEqual([])
   const uri = [...files.keys()].find((path) => path.includes('typo-favorites/')) ?? ''

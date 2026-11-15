@@ -519,7 +519,7 @@ export async function pickVault(): Promise<Vault | null> {
 // Reading the selection is cheap and local. Checking that the provider still
 // grants access costs a round trip, so launch reads first and lets the index
 // scan surface an access error instead of blocking the first frame on it.
-export async function readSavedVault(): Promise<Vault | null> {
+export function readSavedVaultSync(): Vault | null {
   const path = selectionPath()
   try {
     const selection = new File(path)
@@ -528,6 +528,10 @@ export async function readSavedVault(): Promise<Vault | null> {
   } catch (error) {
     throw new Error(`Cannot load the saved vault: ${message(error)}`)
   }
+}
+
+export async function readSavedVault(): Promise<Vault | null> {
+  return readSavedVaultSync()
 }
 
 export async function loadSavedVault(): Promise<Vault | null> {

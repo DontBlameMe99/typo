@@ -1,6 +1,8 @@
-import { DMSans_400Regular, DMSans_600SemiBold, useFonts } from '@expo-google-fonts/dm-sans'
+import { DMSans_400Regular } from '@expo-google-fonts/dm-sans/400Regular'
+import { DMSans_600SemiBold } from '@expo-google-fonts/dm-sans/600SemiBold'
 import Constants, { ExecutionEnvironment } from 'expo-constants'
 import * as FileSystem from 'expo-file-system/legacy'
+import { loadAsync as loadFontAssets } from 'expo-font'
 import * as IntentLauncher from 'expo-intent-launcher'
 import * as Sharing from 'expo-sharing'
 import * as SplashScreen from 'expo-splash-screen'
@@ -71,9 +73,10 @@ import { contrastRatio, hexToHsl, hslToHex, parseHex, rgba } from './src/color'
 import type { PdfWorkspace } from './src/compiler/workspace'
 import { DEFAULT_TEMPLATE, isRootTemplate, type NoteSort, reconcileNotes } from './src/core'
 import { ErrorBanner } from './src/ErrorBanner'
-import { loadFavorites, storeFavorites } from './src/favorites'
+import { loadFavorites, loadFavoritesSync, storeFavorites } from './src/favorites'
 import { Icon, type IconName } from './src/icons'
-import { loadVaultIndex, storeVaultIndex } from './src/library-cache'
+import { loadVaultIndex, loadVaultIndexSync, storeVaultIndex } from './src/library-cache'
+import type { VaultIndex } from './src/library-index'
 import {
   type FolderRowItem,
   type FolderRowsCache,
@@ -109,7 +112,7 @@ import {
   preparePdf,
   prepareSource,
   readNote,
-  readSavedVault,
+  readSavedVaultSync,
   readTemplate,
   restoreFolder,
   restoreNote,
@@ -128,13 +131,15 @@ const fonts = {
   DMSans_600SemiBold,
   JetBrainsMono_400Regular: require('./assets/fonts/JetBrainsMono-Regular.ttf'),
 }
+// Fonts are files, so start them while the rest of the module graph evaluates.
+const fontLoad = loadFontAssets(fonts).catch(() => {})
 // JS startup baseline for the first library frame, which pairs with the native splash.
 const appStartedAt = performance.now()
-// Keep the native launch screen up until the first themed frame is ready, then fade it out.
-void SplashScreen.preventAutoHideAsync()
-// Expo Go owns its own splash, so only real native builds can set the fade.
+// The splash hides itself when the first content frame appears, so it never
+// waits on a frame that needs the theme or the fonts. Expo Go owns its own
+// splash, so only real native builds can set the exit duration.
 if (Constants.executionEnvironment !== ExecutionEnvironment.StoreClient) {
-  SplashScreen.setOptions({ duration: 250, fade: true })
+  SplashScreen.setOptions({ duration: 0 })
 }
 type NoteSession = SearchResult & {
   session: number
@@ -285,6 +290,32 @@ function sameList<T>(a: readonly T[], b: readonly T[]): boolean {
 
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : 'Something went wrong. Please try again.'
+
+// These are local reads, so the first library render can start with the rows,
+// favorites, and theme already in hand. That removes the empty commit and the
+// second pass the launch path used to need.
+type LaunchLibrary = {
+  vault: Vault | null
+  index: VaultIndex | null
+  favorites: string[]
+  error: string | null
+}
+const readLaunchLibrary = (): LaunchLibrary => {
+  try {
+    const vault = readSavedVaultSync()
+    const library: LaunchLibrary = {
+      vault,
+      index: vault ? loadVaultIndexSync(vault) : null,
+      favorites: vault ? loadFavoritesSync(vault) : [],
+      error: null,
+    }
+    markStartup('library')
+    return library
+  } catch (cause) {
+    markStartup('library')
+    return { vault: null, index: null, favorites: [], error: errorText(cause) }
+  }
+}
 
 function IconButton({
   name,
@@ -900,15 +931,24 @@ function ConfirmDialog({
 }
 
 export default function App() {
-  const [loaded, fontError] = useFonts(fonts)
+  const [loaded, setLoaded] = useState(false)
   useEffect(() => {
-    if (loaded || fontError) markStartup('fonts')
-  }, [loaded, fontError])
+    let cancelled = false
+    const settle = () => {
+      if (cancelled) return
+      markStartup('fonts')
+      setLoaded(true)
+    }
+    void fontLoad.then(settle, settle)
+    return () => {
+      cancelled = true
+    }
+  }, [])
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider>
         <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-          <AppShell loaded={loaded || !!fontError} />
+          <AppShell loaded={loaded} />
         </SafeAreaProvider>
       </ThemeProvider>
     </GestureHandlerRootView>
@@ -923,11 +963,6 @@ function AppShell({ loaded }: { loaded: boolean }) {
   useEffect(() => {
     void SystemUI.setBackgroundColorAsync(colors.paper).catch(() => {})
   }, [colors.paper])
-  useEffect(() => {
-    if (!ready) return
-    const frame = requestAnimationFrame(() => void SplashScreen.hideAsync())
-    return () => cancelAnimationFrame(frame)
-  }, [ready])
   useEffect(() => {
     if (launched && __DEV__)
       console.info(
@@ -949,16 +984,9 @@ function AppShell({ loaded }: { loaded: boolean }) {
 
 function LaunchScreen({ overlay = false }: { overlay?: boolean }) {
   const s = useStyles()
-  const opacity = useSharedValue(0)
-  useEffect(() => {
-    opacity.value = timing(1, { duration: 200 })
-  }, [opacity])
-  const fade = useAnimatedStyle(() => ({ opacity: opacity.value }))
   return (
     <View style={overlay ? [s.launchScreen, s.launchOverlay] : s.launchScreen}>
-      <Reanimated.View style={fade}>
-        <TypoMark size={120} />
-      </Reanimated.View>
+      <TypoMark size={120} />
     </View>
   )
 }
@@ -1342,18 +1370,20 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   const s = useStyles()
   const { top, right, bottom, left } = useSafeAreaInsets()
   const { colors, palette } = useTheme()
-  const [vault, setVault] = useState<Vault | null>(null)
-  const [notes, setNotes] = useState<Note[]>([])
-  const [folders, setFolders] = useState<string[]>([''])
+  const [launch] = useState(readLaunchLibrary)
+  const cachedRows =
+    !!launch.index && (launch.index.notes.length > 0 || launch.index.folders.length > 1)
+  const [vault, setVault] = useState<Vault | null>(launch.vault)
+  const [notes, setNotes] = useState<Note[]>(launch.index?.notes ?? EMPTY_NOTES)
+  const [folders, setFolders] = useState<string[]>(launch.index?.folders ?? [''])
   const [folder, setFolder] = useState('')
   const [folderStack, setFolderStack] = useState<string[]>([''])
-  const [restoring, setRestoring] = useState(true)
-  const [startupReady, setStartupReady] = useState(false)
+  const [startupReady, setStartupReady] = useState(launch.vault === null || cachedRows)
   const [scanning, setScanning] = useState(false)
   const [setup, setSetup] = useState<VaultScanProgress | null>(null)
   const [setupDone, setSetupDone] = useState(false)
   const [picking, setPicking] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(launch.error)
   const [saveError, setSaveError] = useState<{ uri: string; message: string } | null>(null)
   const [query, setQuery] = useState('')
   const queryRef = useRef(query)
@@ -1383,10 +1413,10 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   const [notice, setNotice] = useState<LibraryNotice | null>(null)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
-  const [favorites, setFavorites] = useState<string[]>([])
+  const [favorites, setFavorites] = useState<string[]>(launch.favorites)
   const favoritesRef = useRef(favorites)
   favoritesRef.current = favorites
-  const favoritesReady = useRef(false)
+  const favoritesReady = useRef(launch.vault !== null)
   const [trashNotice, setTrashNotice] = useState<{ id: number; title: string } | null>(null)
   const [trashUndo, setTrashUndo] = useState<TrashUndo | null>(null)
   const undoingTrash = useRef(false)
@@ -1405,19 +1435,21 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   const scanningRef = useRef(false)
   const scanDuration = useRef(0)
   const lastScanEnd = useRef(0)
-  const vaultRef = useRef<Vault | null>(null)
+  const vaultRef = useRef<Vault | null>(launch.vault)
   const busy = useRef(false)
   const modalWasOpen = useRef(false)
   const foreground = useRef(AppState.currentState === 'active')
-  busy.current = restoring || picking
+  busy.current = picking
   // Nothing that needs a WebView or the compiler is mounted before the library
   // is revealed. Three hidden WebViews used to start with the app and push the
   // first frame out by hundreds of milliseconds.
   const [painted, setPainted] = useState(false)
-  const initialScan = useRef<{ vault: Vault; quiet: boolean } | null>(null)
+  const initialScan = useRef<{ vault: Vault; quiet: boolean } | null>(
+    cachedRows && launch.vault ? { vault: launch.vault, quiet: true } : null
+  )
   useLayoutEffect(() => {
-    if (!restoring) markStartup('commit')
-  }, [restoring])
+    markStartup('commit')
+  }, [])
 
   const isTrashing = useCallback((path: string) => {
     for (const target of trashing.current) {
@@ -1544,17 +1576,14 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
     return index(target, { quiet: true })
   }, [index])
 
-  // The launch screen covers the library, so its rows are painted before the
-  // user can see them. Ask for the reveal only once those rows are on screen.
-  const [revealed, setRevealed] = useState(false)
-  useEffect(() => {
-    if (!startupReady || revealed) return
-    return afterPaint(() => {
-      markStartup('reveal')
-      setRevealed(true)
-      onReady()
-    })
-  }, [startupReady, revealed, onReady])
+  // The launch screen covers the first commit, so the library can replace it as
+  // soon as the rows it will show are in that commit. Waiting for extra frames
+  // only delays the reveal.
+  useLayoutEffect(() => {
+    if (!startupReady) return
+    markStartup('reveal')
+    onReady()
+  }, [startupReady, onReady])
 
   useEffect(() => {
     if (visible) markStartup('visible')
@@ -1563,7 +1592,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   // Report and mount only what the user can see: the first frame after the
   // launch screen is gone, which also waits for the fonts it blocked on.
   useEffect(() => {
-    if (!visible || !revealed || painted) return
+    if (!visible || painted) return
     let frame = 0
     const cancel = afterPaint(() => {
       markStartup('paint')
@@ -1576,71 +1605,22 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
       cancel()
       cancelAnimationFrame(frame)
     }
-  }, [visible, revealed, painted])
+  }, [visible, painted])
 
+  // A cache without rows proves nothing about the vault, so wait for the scan
+  // before revealing. Everything else was ready before the first render.
   useEffect(() => {
     mounted.current = true
-    let cancelled = false
-    const started = performance.now()
-    void (async () => {
-      try {
-        const saved = await readSavedVault()
-        markStartup('vault')
-        if (cancelled) return
-        if (!saved) {
-          setStartupReady(true)
-          return
-        }
-        // Read the cache before the first library render so the read is not
-        // queued behind it, then commit the whole first screen at once.
-        const cached = await loadVaultIndex(saved)
-        if (cancelled) return
-        setVault(saved)
-        vaultRef.current = saved
-        if (cached) {
-          setNotes(cached.notes)
-          setFolders(cached.folders)
-          if (__DEV__)
-            console.info(
-              `[performance] Cached library: ${cached.notes.length} notes in ${Math.round(performance.now() - started)} ms`
-            )
-        }
-        markStartup('library')
-        setRestoring(false)
-        // The editor runtime needs no vault, so copy it while the first frame paints.
-        void webRuntime('editor').catch(() => {})
-        // Favorites only decorate rows, so they never delay the first frame.
-        void loadFavorites(saved).then((savedFavorites) => {
-          if (cancelled) return
-          favoritesReady.current = true
-          setFavorites(savedFavorites)
-        })
-        // A root-only cache proves nothing about the vault, so wait for the
-        // scan. Cached notes or folders are already on screen, so the scan
-        // would only compete with the first frame. It starts once the library
-        // is revealed.
-        if (cached && (cached.notes.length > 0 || cached.folders.length > 1)) {
-          initialScan.current = { vault: saved, quiet: true }
-          setStartupReady(true)
-        } else {
-          await index(saved)
-          if (!cancelled) setStartupReady(true)
-        }
-      } catch (cause) {
-        if (!cancelled) {
-          setError(errorText(cause))
-          setStartupReady(true)
-        }
-      } finally {
-        if (!cancelled) setRestoring(false)
-      }
-    })()
+    if (launch.vault && !cachedRows) {
+      void index(launch.vault).finally(() => {
+        if (mounted.current) setStartupReady(true)
+      })
+    }
     return () => {
-      cancelled = true
       mounted.current = false
       generation.current++
     }
-  }, [index])
+  }, [index, launch.vault, cachedRows])
 
   useEffect(() => {
     if (!painted) return
@@ -1697,7 +1677,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   }, [selected, creating, moving, appearanceOpen, aboutOpen, quietScan])
 
   async function chooseVault() {
-    if (picking || restoring || backGate.blockOpening()) return
+    if (picking || backGate.blockOpening()) return
     Keyboard.dismiss()
     setPicking(true)
     setError(null)
@@ -2452,7 +2432,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   const { workspace } = usePdfWorkspace({
     vault,
     notes,
-    enabled: painted && !restoring && !scanning && !picking,
+    enabled: painted && !scanning && !picking,
     compiler,
   })
 
@@ -2466,12 +2446,12 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   }, [vault, painted])
 
   useEffect(() => {
-    if (!vault || restoring || scanning) return
+    if (!vault || scanning) return
     const timer = setTimeout(() => {
       void webRuntime('pdf').catch(() => {})
     }, 1000)
     return () => clearTimeout(timer)
-  }, [vault, restoring, scanning])
+  }, [vault, scanning])
 
   const detail = selected ?? prepared
   detailNoteUri.current = detail?.note.uri ?? ''
@@ -2500,12 +2480,12 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   useEffect(() => {
     // The index is only a launch cache, so keep the editor's autosaves from
     // serializing the whole library behind a note. Write once it is covered.
-    if (!vault || restoring || scanning || picking || !libraryVisible || !painted) return
+    if (!vault || scanning || picking || !libraryVisible || !painted) return
     const timer = setTimeout(() => {
       void storeVaultIndex(vault, { notes, folders }).catch(() => {})
     }, 300)
     return () => clearTimeout(timer)
-  }, [vault, notes, folders, restoring, scanning, picking, libraryVisible, painted])
+  }, [vault, notes, folders, scanning, picking, libraryVisible, painted])
   const openCreate = () => {
     if (backGate.blockOpening()) return
     Keyboard.dismiss()
@@ -2537,59 +2517,51 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
         importantForAccessibility={libraryVisible && !setup ? 'auto' : 'no-hide-descendants'}
       >
         {!vault ? (
-          restoring ? (
-            <View style={s.flex} />
-          ) : (
-            <ScrollView contentContainerStyle={s.onboarding} keyboardShouldPersistTaps="handled">
-              <View style={s.onboardSpacer}>
-                <View style={s.onboardArt}>
-                  <View style={s.onboardPaper}>
-                    <Text style={[s.onboardCode, { color: colors.accent }]}>
-                      {'== Observations'}
-                    </Text>
-                    <View style={s.onboardCodeGap} />
-                    <Text style={s.onboardCode}>Tide in early today.</Text>
-                    <Text style={s.onboardCode}>Light on the water.</Text>
-                    <View style={s.onboardCodeGap} />
-                    <Text style={[s.onboardCode, { color: palette.yellow }]}>
-                      {'$n -> infinity$'}
-                    </Text>
-                    <View style={s.onboardCodeGap} />
-                    <Text style={[s.onboardCode, { color: palette.blue }]}>
-                      {'#align(center)['}
-                    </Text>
-                    <Text style={[s.onboardCode, s.onboardCodeIndent]}>Still here.</Text>
-                    <Text style={[s.onboardCode, { color: palette.blue }]}>{']'}</Text>
-                    <Text style={[s.onboardCode, { color: palette.overlay2 }]}>
-                      {'// begin here'}
-                    </Text>
-                  </View>
-                  <View style={s.onboardPen}>
-                    <Icon name="edit" size={25} color={colors.onAccent} />
-                  </View>
+          <ScrollView contentContainerStyle={s.onboarding} keyboardShouldPersistTaps="handled">
+            <View style={s.onboardSpacer}>
+              <View style={s.onboardArt}>
+                <View style={s.onboardPaper}>
+                  <Text style={[s.onboardCode, { color: colors.accent }]}>{'== Observations'}</Text>
+                  <View style={s.onboardCodeGap} />
+                  <Text style={s.onboardCode}>Tide in early today.</Text>
+                  <Text style={s.onboardCode}>Light on the water.</Text>
+                  <View style={s.onboardCodeGap} />
+                  <Text style={[s.onboardCode, { color: palette.yellow }]}>
+                    {'$n -> infinity$'}
+                  </Text>
+                  <View style={s.onboardCodeGap} />
+                  <Text style={[s.onboardCode, { color: palette.blue }]}>{'#align(center)['}</Text>
+                  <Text style={[s.onboardCode, s.onboardCodeIndent]}>Still here.</Text>
+                  <Text style={[s.onboardCode, { color: palette.blue }]}>{']'}</Text>
+                  <Text style={[s.onboardCode, { color: palette.overlay2 }]}>
+                    {'// begin here'}
+                  </Text>
+                </View>
+                <View style={s.onboardPen}>
+                  <Icon name="edit" size={25} color={colors.onAccent} />
                 </View>
               </View>
-              <Text style={s.onboardTitle}>{'Good things start\nwith a little note.'}</Text>
-              <Text style={s.onboardBody}>
-                Pick a folder to keep your notes in. They stay as plain .typ files you can open
-                anywhere.
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Open a folder"
-                disabled={picking}
-                onPress={() => void chooseVault()}
-                style={({ pressed }) => [
-                  s.onboardButton,
-                  pressed && s.pressed,
-                  picking && s.disabled,
-                ]}
-              >
-                <Icon name="folderOpen" size={22} color={colors.onAccent} />
-                <Text style={s.onboardButtonText}>Open a folder</Text>
-              </Pressable>
-            </ScrollView>
-          )
+            </View>
+            <Text style={s.onboardTitle}>{'Good things start\nwith a little note.'}</Text>
+            <Text style={s.onboardBody}>
+              Pick a folder to keep your notes in. They stay as plain .typ files you can open
+              anywhere.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open a folder"
+              disabled={picking}
+              onPress={() => void chooseVault()}
+              style={({ pressed }) => [
+                s.onboardButton,
+                pressed && s.pressed,
+                picking && s.disabled,
+              ]}
+            >
+              <Icon name="folderOpen" size={22} color={colors.onAccent} />
+              <Text style={s.onboardButtonText}>Open a folder</Text>
+            </Pressable>
+          </ScrollView>
         ) : !setup || setupDone ? (
           <>
             <View style={s.header}>
