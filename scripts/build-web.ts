@@ -33,21 +33,19 @@ for (const name of [
   pdfNotices.push(await Bun.file(`node_modules/pdfjs-dist/wasm/${name}`).text())
 await rm(output, { recursive: true, force: true })
 await mkdir(output, { recursive: true })
-for (const kind of [
-  'editor',
-  'editor-worker',
-  'compiler',
-  'compiler-worker',
-  'pdf',
-  'pdf-worker',
-  'search',
-]) {
+const entries: Record<string, string> = {
+  editor: 'src/editor/web.ts',
+  'editor-worker': 'src/editor/worker.ts',
+  compiler: 'src/compiler/web.ts',
+  'compiler-worker': 'src/compiler/worker.ts',
+  pdf: 'src/pdf/web.ts',
+  'pdf-worker': 'src/pdf/worker.ts',
+  'pdf-renderer': 'src/pdf/renderer.ts',
+  search: 'src/search/web.ts',
+}
+for (const [kind, entry] of Object.entries(entries)) {
   const result = await Bun.build({
-    entrypoints: [
-      kind.endsWith('-worker')
-        ? `src/${kind.replace('-worker', '')}/worker.ts`
-        : `src/${kind}/web.ts`,
-    ],
+    entrypoints: [entry],
     target: 'browser',
     format: 'iife',
     minify: true,

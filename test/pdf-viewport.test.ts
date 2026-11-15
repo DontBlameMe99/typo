@@ -86,16 +86,16 @@ class Node {
     this.listeners.get(type)?.({ touches, preventDefault() {}, ...extra })
   }
   append(...children: Node[]) {
-    for (const child of children) {
-      child.remove()
-      child.parent = this
-      this.children.push(child)
-    }
+    for (const child of children)
+      for (const next of child.tag === 'fragment' ? [...child.children] : [child]) {
+        next.remove()
+        next.parent = this
+        this.children.push(next)
+      }
   }
   replaceChildren(...children: Node[]) {
     for (const previous of [...this.children]) previous.remove()
-    for (const child of children)
-      for (const next of child.tag === 'fragment' ? [...child.children] : [child]) this.append(next)
+    this.append(...children)
   }
   remove() {
     if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1)
@@ -119,7 +119,7 @@ const touches = (distance: number, x = 180, y = 200) => [
   { clientX: x + distance / 2, clientY: y },
 ]
 
-async function viewer(count = 120) {
+async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
   const scroll = new Node('scroll')
   const pages = new Node('pages')
   const status = new Node('status')
@@ -127,7 +127,16 @@ async function viewer(count = 120) {
   const timers = new Map<number, () => void>()
   const events = new Map<string, () => void>()
   const renders: number[] = []
-  const messages: { type: string; page?: number; pages?: number; uri?: string; url?: string }[] = []
+  const fetches = new Map<number, number>()
+  const cleanups = new Map<number, number>()
+  const messages: {
+    type: string
+    page?: number
+    pages?: number
+    uri?: string
+    url?: string
+    message?: string
+  }[] = []
   let id = 0
   let destroyed = 0
   let workers = 0
@@ -136,12 +145,23 @@ async function viewer(count = 120) {
   let maxInFlight = 0
   let holdNextRaster = false
   let releaseRaster = () => {}
+  // Documents differ in page shape, so a reload can keep the page count but not the heights.
+  let wide = false
+  // Holding the later size batches lets one render pass finish before the layout does.
+  let releaseLayout = () => {}
+  let layoutGate: Promise<void> | null = options.holdLayout
+    ? new Promise<void>((resolve) => {
+        releaseLayout = resolve
+      })
+    : null
   const pdfTask = {
     promise: Promise.resolve({
       numPages: count,
       async getPage(number: number) {
         // Alternate portrait and landscape pages to exercise per-page geometry.
-        const [width, height] = number % 2 ? [600, 800] : [800, 400]
+        const [width, height] = wide ? [600, 400] : number % 2 ? [600, 800] : [800, 400]
+        if (layoutGate && number > 16) await layoutGate
+        fetches.set(number, (fetches.get(number) ?? 0) + 1)
         inFlight++
         maxInFlight = Math.max(maxInFlight, inFlight)
         await Promise.resolve()
@@ -167,7 +187,9 @@ async function viewer(count = 120) {
             holdNextRaster = false
             return { promise, cancel: () => releaseRaster() }
           },
-          cleanup() {},
+          cleanup() {
+            cleanups.set(number, (cleanups.get(number) ?? 0) + 1)
+          },
         }
       },
     }),
@@ -219,6 +241,8 @@ async function viewer(count = 120) {
     await settle()
   }
   window.typoPdf.load('file:///first.pdf')
+  // Page sizes arrive in batches, so let the viewer finish before reading the tree.
+  for (let turn = 0; turn < 64 && pages.children.length < count; turn++) await settle()
   await settle()
   return {
     scroll,
@@ -228,13 +252,28 @@ async function viewer(count = 120) {
     messages,
     frame,
     counts: () => ({ destroyed, workers, terminated, maxInFlight }),
+    fetches,
+    cleanups,
     load: (uri: string) => window.typoPdf.load(uri),
+    setWidePages: () => {
+      wide = true
+    },
     holdNextRaster: () => {
       holdNextRaster = true
     },
     release: async () => {
       releaseRaster()
       await settle()
+    },
+    releaseLayout: async () => {
+      releaseLayout()
+      layoutGate = null
+      await settle()
+    },
+    fireTimers: () => {
+      const pending = [...timers.values()]
+      timers.clear()
+      for (const callback of pending) callback()
     },
     async close() {
       releaseRaster()
@@ -259,7 +298,8 @@ test('visible pages precede overscan, including document edges and one-page docu
 test('page placeholders ask for sizes in bounded batches and keep document order', async () => {
   const view = await viewer()
   try {
-    expect(view.counts().maxInFlight).toBe(16)
+    // One raster fetch may overlap the batch that measures page sizes.
+    expect(view.counts().maxInFlight).toBeLessThanOrEqual(17)
     expect(view.pages.children).toHaveLength(120)
     expect(view.pages.children[0].properties.get('--page-ratio')).toBe(String(800 / 600))
     expect(view.pages.children[1].properties.get('--page-ratio')).toBe(String(400 / 800))
@@ -300,14 +340,12 @@ test('a distant jump renders visible mixed-size pages first and keeps a bounded 
     expect(view.pages.querySelectorAll('canvas')).toHaveLength(7)
 
     // A second jump keeps the newest four pages and releases the older canvases.
-    const stale = view.pages.children[0].children[0]
+    const stale = view.pages.children[0]
     const recent = view.pages.children[100].children[0]
     view.scroll.scrollTop = view.pages.children[50].offsetTop
     view.scroll.dispatch('scroll')
     await view.frame()
-    expect(stale.parent).toBeNull()
-    expect(stale.width).toBe(1)
-    expect(stale.height).toBe(1)
+    expect(stale.children).toHaveLength(0)
     expect(recent.parent).toBe(view.pages.children[100])
     expect(view.pages.querySelectorAll('canvas')).toHaveLength(8)
   } finally {
@@ -358,6 +396,122 @@ test('a scroll that still needs the page in flight lets its raster finish', asyn
       view.messages.filter((message) => message.type === 'rendered' && message.page === 101)
     ).toHaveLength(1)
     expect(view.renders).toEqual([101, 102, 103, 104])
+  } finally {
+    await view.close()
+  }
+})
+
+test('zooming redraws a cached page without parsing it again', async () => {
+  const view = await viewer()
+  try {
+    const fetches = view.fetches.get(1) ?? 0
+    view.renders.length = 0
+    view.scroll.dispatch('touchstart', touches(100))
+    view.scroll.dispatch('touchmove', touches(200))
+    view.scroll.dispatch('touchend')
+    await settle()
+    view.scroll.dispatch('touchstart', touches(200))
+    view.scroll.dispatch('touchmove', touches(100))
+    view.scroll.dispatch('touchend')
+    await settle()
+    expect(view.renders).toContain(1)
+    expect(view.fetches.get(1)).toBe(fetches)
+    expect(view.cleanups.get(1)).toBe(1)
+  } finally {
+    await view.close()
+  }
+})
+
+test('a loaded document does not trip the load watchdog', async () => {
+  const view = await viewer(40, { holdLayout: true })
+  try {
+    // The first pages are drawn while the rest of the sizes are still being read, so
+    // a render pass finishes before the last batch arms the watchdog.
+    for (let turn = 0; turn < 8; turn++) await settle()
+    expect(view.pages.children).toHaveLength(16)
+    await view.releaseLayout()
+    for (let turn = 0; turn < 64 && view.pages.children.length !== 40; turn++) await settle()
+    await settle()
+    view.fireTimers()
+    expect(view.messages.filter((message) => message.type === 'error')).toEqual([])
+  } finally {
+    await view.close()
+  }
+})
+
+test('a stalled size batch keeps the watchdog armed', async () => {
+  const view = await viewer(40, { holdLayout: true })
+  try {
+    // The first pages are drawn while the second batch waits on the document. That
+    // pass must not disarm the timer covering the wait.
+    for (let turn = 0; turn < 8; turn++) await settle()
+    expect(view.pages.children).toHaveLength(16)
+    view.fireTimers()
+    const errors = view.messages.filter((message) => message.type === 'error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toContain('took too long')
+  } finally {
+    await view.close()
+  }
+})
+
+test('another document with the same page count gets its own page offsets', async () => {
+  const view = await viewer(4)
+  try {
+    expect(view.pages.children[1].offsetTop).toBe(24 + 448 + 16)
+    view.setWidePages()
+    view.load('file:///second.pdf')
+    for (let turn = 0; turn < 64 && view.pages.children.length !== 4; turn++) await settle()
+    await settle()
+    expect(view.pages.children[1].properties.get('--page-ratio')).toBe(String(400 / 600))
+    // A wide page is 224 CSS pixels tall, so the second page starts much higher.
+    expect(view.pages.children[1].offsetTop).toBe(24 + 224 + 16)
+    // With these heights the fourth page already crosses the viewport bottom, which
+    // the old geometry would have put far below it.
+    view.renders.length = 0
+    view.scroll.scrollTop = view.pages.children[1].offsetTop
+    view.scroll.dispatch('scroll')
+    await view.frame()
+    expect(view.renders).toEqual([4])
+  } finally {
+    await view.close()
+  }
+})
+
+test('a fling through pages rasters each page once', async () => {
+  const view = await viewer()
+  try {
+    view.scroll.clientHeight = 500
+    view.renders.length = 0
+    for (let index = 0; index < 12; index++) {
+      view.scroll.scrollTop = view.pages.children[index].offsetTop
+      view.scroll.dispatch('scroll')
+      await view.frame()
+      await settle()
+    }
+    const counts = new Map<number, number>()
+    for (const number of view.renders) counts.set(number, (counts.get(number) ?? 0) + 1)
+    expect([...counts].filter(([, count]) => count > 1)).toEqual([])
+    expect(counts.size).toBeGreaterThanOrEqual(10)
+    // Only the pages near the viewport keep a canvas: the visible few, their
+    // overscan neighbours, and the four cached pages behind them.
+    expect(view.pages.querySelectorAll('canvas').length).toBeLessThanOrEqual(9)
+  } finally {
+    await view.close()
+  }
+})
+
+test('only pages on screen carry a selection layer', async () => {
+  const view = await viewer()
+  try {
+    const layers = (index: number) =>
+      view.pages.children[index].children.filter((child) => child.className === 'textLayer')
+    // The third page is prerendered below the viewport, so it waits for its text.
+    expect(layers(2)).toHaveLength(0)
+    view.scroll.scrollTop = view.pages.children[2].offsetTop
+    view.scroll.dispatch('scroll')
+    await view.frame()
+    expect(layers(2)).toHaveLength(1)
   } finally {
     await view.close()
   }

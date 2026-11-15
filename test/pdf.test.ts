@@ -4,9 +4,13 @@ import {
   clampPage,
   clampZoom,
   MAX_CACHED_PAGES,
+  MAX_CACHED_PIXELS,
   MAX_CANVAS_PIXELS,
   MAX_CANVAS_SIDE,
+  pageAtOffset,
+  pageGeometry,
   pageLayout,
+  pageLeft,
   retainPages,
 } from '../src/pdf/layout'
 import { RenderQueue } from '../src/pdf/render-queue'
@@ -60,33 +64,85 @@ describe('PDF layout', () => {
   })
 })
 
+describe('PDF page geometry', () => {
+  test('offsets pages the way the page column stacks them', () => {
+    const ratios = [800 / 600, 400 / 800, 800 / 600]
+    const { tops, bottoms } = pageGeometry(ratios, 336)
+    expect(tops).toEqual([24, 24 + 448 + 16, 24 + 448 + 16 + 168 + 16])
+    expect(bottoms[0]).toBe(24 + 448)
+    // A point at a page border stays on that page, and one inside the gap below it
+    // belongs to the page underneath.
+    expect(pageAtOffset({ tops, bottoms }, 0)).toBe(0)
+    expect(pageAtOffset({ tops, bottoms }, 24 + 448)).toBe(0)
+    expect(pageAtOffset({ tops, bottoms }, 24 + 448 + 1)).toBe(1)
+    expect(pageAtOffset({ tops, bottoms }, 24 + 448 + 16 + 168)).toBe(1)
+    expect(pageAtOffset({ tops, bottoms }, 24 + 448 + 16 + 169)).toBe(2)
+    expect(pageGeometry([], 336)).toEqual({ tops: [], bottoms: [] })
+  })
+
+  test('centers the page column in the viewport', () => {
+    expect(pageLeft(384, 336)).toBe(24)
+    expect(pageLeft(1200, 336)).toBe(432)
+    expect(pageLeft(200, 336)).toBe(24)
+  })
+})
+
 describe('PDF page retention', () => {
   test('keeps the visible range and the newest usable pages outside it', () => {
-    const { keep, drop } = retainPages([0, 1, 8, 20, 21, 42], 20, 22, () => true)
+    const { keep, drop } = retainPages([0, 1, 8, 20, 21, 42], 20, 22, () => 1)
     expect(keep).toEqual([20, 21, 0, 1, 8, 42])
     expect(drop).toEqual([])
-    expect(retainPages([0, 1, 8, 20, 21, 42], 20, 22, () => true, 2)).toEqual({
+    expect(retainPages([0, 1, 8, 20, 21, 42], 20, 22, () => 1, 2)).toEqual({
       keep: [20, 21, 8, 42],
       drop: [0, 1],
     })
   })
 
   test('drops pages that are stale or older than the cache size', () => {
-    const usable = (index: number) => index % 2 === 0
+    const usable = (index: number) => (index % 2 === 0 ? 1 : 0)
     expect(retainPages([1, 2, 3, 4, 5, 6], 10, 11, usable)).toEqual({
       keep: [2, 4, 6],
       drop: [1, 3, 5],
     })
-    expect(retainPages([0, 1, 2, 3, 4, 5], 0, 1, () => true, 2)).toEqual({
+    expect(retainPages([0, 1, 2, 3, 4, 5], 0, 1, () => 1, 2)).toEqual({
       keep: [0, 1, 4, 5],
       drop: [2, 3],
     })
-    expect(retainPages([0, 1], 5, 6, () => true, 0)).toEqual({ keep: [], drop: [0, 1] })
+    expect(retainPages([0, 1], 5, 6, () => 1, 0)).toEqual({ keep: [], drop: [0, 1] })
     expect(MAX_CACHED_PAGES).toBeGreaterThan(0)
+  })
+
+  test('keeps one page even when it alone exceeds the pixel budget', () => {
+    const large = 4_000_000
+    expect(retainPages([0, 1, 2], 10, 11, () => large, 4, MAX_CACHED_PIXELS)).toEqual({
+      keep: [2],
+      drop: [0, 1],
+    })
+    expect(MAX_CACHED_PIXELS).toBeGreaterThan(0)
   })
 })
 
 describe('PDF render queue', () => {
+  test('reports whether a pass is still pending or running', async () => {
+    const release = deferred()
+    const started = deferred()
+    const queue = new RenderQueue<number>(
+      async () => {
+        started.resolve()
+        await release.promise
+      },
+      () => {}
+    )
+    expect(queue.busy).toBe(false)
+    queue.request(1)
+    expect(queue.busy).toBe(true)
+    await started.promise
+    expect(queue.busy).toBe(true)
+    release.resolve()
+    await queue.dispose()
+    expect(queue.busy).toBe(false)
+  })
+
   test('coalesces rapid input and cancels before reusing the canvas', async () => {
     const release = deferred()
     const started = deferred()

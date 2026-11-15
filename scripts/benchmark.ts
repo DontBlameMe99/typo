@@ -1,3 +1,4 @@
+import type { PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
 import { createCompiler, initializeCompiler } from '../src/compiler/engine'
 import { fingerprint } from '../src/compiler/fingerprint'
 import { PdfWorkspace } from '../src/compiler/workspace'
@@ -297,17 +298,15 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
   )
   const files = new Map<string, Uint8Array>()
   const encode = (value: string) => new TextEncoder().encode(value)
-  for (const pages of [1, 20]) {
-    files.set(
-      '/vault/main.typ',
-      encode(
-        Array.from(
-          { length: pages },
-          (_, i) =>
-            `= Page ${i + 1}\n\nÜber. Math: $x^2 + 1$.\n${'A short paragraph. '.repeat(100)}`
-        ).join('\n#pagebreak()\n')
-      )
+  const note = (pages: number) =>
+    encode(
+      Array.from(
+        { length: pages },
+        (_, i) => `= Page ${i + 1}\n\nÜber. Math: $x^2 + 1$.\n${'A short paragraph. '.repeat(100)}`
+      ).join('\n#pagebreak()\n')
     )
+  for (const pages of [1, 20]) {
+    files.set('/vault/main.typ', note(pages))
     await measure(
       {
         name: `compiler/${pages}-pages/cold`,
@@ -439,6 +438,83 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
         if (rows.length !== count) throw new Error('Incomplete library rows')
       }
     )
+  }
+  // Opening a PDF is engine work before any pixels exist: parsing the document,
+  // measuring every page, and decoding the content stream and text of a page.
+  // These run last and load PDF.js here, so the workloads above are measured in
+  // the process they were measured in before this document viewer existed.
+  const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  files.set('/vault/main.typ', note(20))
+  const viewerPdf = await (async () => {
+    const compiler = await createCompiler(files, fonts, new Map())
+    try {
+      const pdf = compiler.compile('main.typ').pdf
+      if (!pdf) throw new Error('The PDF fixture failed to compile.')
+      return pdf
+    } finally {
+      compiler.dispose()
+    }
+  })()
+  const openPdf = () => getDocument({ data: viewerPdf.slice(), useSystemFonts: false })
+  async function preparePage(pdf: PDFDocumentProxy, number: number) {
+    const page = await pdf.getPage(number)
+    try {
+      await page.getOperatorList()
+      const text = await page.getTextContent()
+      if (!text.items.length) throw new Error('The page has no text')
+    } finally {
+      page.cleanup()
+    }
+  }
+  await measure(
+    {
+      name: 'pdf/20-pages/open',
+      criterion: 'open a twenty page PDF within 100 ms',
+      budgetMs: 100,
+      samples: 5,
+      warmup: 1,
+    },
+    async () => {
+      const task = openPdf()
+      try {
+        const pdf = await task.promise
+        if (pdf.numPages !== 20) throw new Error('The PDF fixture changed its page count')
+        // The viewer measures every page in bounded batches before it lays out.
+        for (let start = 1; start <= pdf.numPages; start += 16) {
+          const numbers: number[] = []
+          for (let number = start; number <= Math.min(start + 15, pdf.numPages); number++)
+            numbers.push(number)
+          for (const page of await Promise.all(numbers.map((number) => pdf.getPage(number)))) {
+            page.getViewport({ scale: 1 })
+            page.cleanup()
+          }
+        }
+        await preparePage(pdf, 1)
+      } finally {
+        await task.destroy()
+      }
+    }
+  )
+  const viewerTask = openPdf()
+  const viewerDocument = await viewerTask.promise
+  let prepared = 4
+  try {
+    await measure(
+      {
+        name: 'pdf/20-pages/page',
+        criterion: 'prepare a page that scrolls into view within one frame',
+        budgetMs: FRAME_MS,
+        repeat: 4,
+        samples: 5,
+        warmup: 2,
+      },
+      async () => {
+        prepared = prepared === 20 ? 4 : prepared + 1
+        await preparePage(viewerDocument, prepared)
+      }
+    )
+  } finally {
+    await viewerTask.destroy()
   }
   return results
 }

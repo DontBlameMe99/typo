@@ -65,3 +65,12 @@ branch, which also holds the performance ceilings. The headline number is the
 fastest of the launches, because contention can only add time. A run fails the
 `Startup audit` check when that number grows past the floor by more than 25%
 plus 50 ms. Pushes to `main` record a new floor.
+
+## PDF viewer
+
+The `pdf/*` workloads measure the engine work behind the viewer: opening a twenty
+page document, measuring every page, and preparing the content stream and text of a
+page that scrolls into view. They run with the other workloads in
+`bun scripts/benchmark.ts`, so a pull request reports them in its performance audit.
+The fixture is compiled from the same Typst source as the compiler workloads, which
+keeps it out of the repository and gives it embedded fonts and math like a real note.
