@@ -5,7 +5,9 @@ const modules: Record<string, string> = {
   react: 'export const {useEffect,useRef,useState}=globalThis.hooks',
   'react/jsx-runtime': 'export const jsx=globalThis.jsx,jsxs=globalThis.jsx',
   'expo-file-system/legacy': 'export const cacheDirectory="file:///cache/"',
-  'react-native': `export const View="View",Text="Text",Pressable="Pressable";
+  'react-native': `export const View="View",Text="Text",Pressable="Pressable",AccessibilityInfo={
+      isReduceMotionEnabled:async()=>false,
+      addEventListener:()=>({remove(){}})};
     export const StyleSheet={create:styles=>styles,hairlineWidth:1};
     export const Linking={openURL:async()=>{}};
     export const Easing={linear:value=>value};

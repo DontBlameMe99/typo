@@ -37,6 +37,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  type TextStyle,
   useWindowDimensions,
   Vibration,
   View,
@@ -642,6 +643,7 @@ function BottomSheet({
   const start = useSharedValue(height)
   const dragging = useSharedValue(false)
   const dismissing = useSharedValue(false)
+  const handle = useSharedValue(1)
   const closing = useRef(false)
   const after = useRef<(() => void) | null>(null)
   const close = useRef(onClose)
@@ -722,6 +724,7 @@ function BottomSheet({
           }
           dragging.value = true
           start.value = offset.value
+          handle.value = spring(1.3, SWIPE_SPRING)
         })
         .onUpdate((event) => {
           'worklet'
@@ -751,8 +754,9 @@ function BottomSheet({
             offset.value = spring(0, SHEET_SPRING)
           }
           dragging.value = false
+          handle.value = spring(1, SWIPE_SPRING)
         }),
-    [busy, commit, dismissing, dragging, height, offset, start]
+    [busy, commit, dismissing, dragging, handle, height, offset, start]
   )
   const backdrop = useAnimatedStyle(() => ({
     // Fade in with the reveal, then follow the card while it is dragged down.
@@ -766,10 +770,11 @@ function BottomSheet({
     opacity: reveal.value,
     filter: [{ blur: (1 - reveal.value) * SHEET_REVEAL_BLUR }],
   }))
+  const handleMotion = useAnimatedStyle(() => ({ transform: [{ scaleX: handle.value }] }))
   const header = (
     <View>
       <View style={s.sheetGrabber}>
-        <View style={s.sheetHandle} />
+        <Reanimated.View style={[s.sheetHandle, handleMotion]} />
       </View>
       <View style={s.sheetHeader}>
         {leading}
@@ -877,6 +882,15 @@ function Dialog({
   children: React.ReactNode
 }) {
   const s = useStyles()
+  const progress = useSharedValue(0)
+  useEffect(() => {
+    // Reset while hidden, so the next opening does not start halfway in.
+    if (!visible) {
+      progress.value = 0
+      return
+    }
+    progress.value = spring(1, SHEET_SPRING)
+  }, [progress, visible])
   useEffect(() => {
     if (!visible) return
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -885,18 +899,23 @@ function Dialog({
     })
     return () => subscription.remove()
   }, [onClose, visible])
+  const dim = useAnimatedStyle(() => ({ opacity: progress.value }))
+  const card = useAnimatedStyle(() => ({
+    transform: [{ scale: 0.94 + progress.value * 0.06 }],
+  }))
   if (!visible) return null
   // A native Modal re-composites the WebView behind it and makes the source
   // flash. Keep the overlay in the same subtree as the WebView as well, so the
   // dim actually paints over the editor instead of behind it.
   const content = (
     <View style={[StyleSheet.absoluteFill, s.dialogOverlay, s.dialogLayer]}>
+      <Reanimated.View pointerEvents="none" style={[StyleSheet.absoluteFill, s.dialogDim, dim]} />
       <Pressable
         accessibilityLabel="Dismiss dialog"
         onPress={onClose}
         style={StyleSheet.absoluteFill}
       />
-      <View style={s.dialogCard} accessibilityViewIsModal>
+      <Reanimated.View style={[s.dialogCard, card]} accessibilityViewIsModal>
         <Text accessible accessibilityRole="header" style={s.dialogTitle}>
           {title}
         </Text>
@@ -906,7 +925,7 @@ function Dialog({
           </Text>
         )}
         {children}
-      </View>
+      </Reanimated.View>
     </View>
   )
   return local ? content : <Portal>{content}</Portal>
@@ -1119,6 +1138,101 @@ function IconFade({
       <Reanimated.View style={[s.swapIconLayer, incoming]}>
         <Icon name={to} size={size} color={color} />
       </Reanimated.View>
+    </View>
+  )
+}
+
+// A counter that ticks like an odometer: every digit is its own column, so only
+// the digits that changed roll, and the rest hold still.
+const TICKER_LINE = 16
+
+function Ticker({
+  current,
+  total,
+  style,
+}: {
+  current: number
+  total: number
+  style?: StyleProp<TextStyle>
+}) {
+  const s = useStyles()
+  const { fontScale } = useWindowDimensions()
+  // The slot follows the scaled line box, so enlarged digits are not clipped.
+  const slot = Math.round(TICKER_LINE * fontScale)
+  const text: StyleProp<TextStyle> = [style, { lineHeight: slot }]
+  return (
+    <View
+      accessible
+      accessibilityRole="text"
+      accessibilityLiveRegion="polite"
+      accessibilityLabel={`${current}/${total}`}
+      style={s.ticker}
+    >
+      <TickerNumber value={current} slot={slot} style={text} />
+      <Text style={text}>/</Text>
+      <TickerNumber value={total} slot={slot} style={text} />
+    </View>
+  )
+}
+
+function TickerNumber({
+  value,
+  slot,
+  style,
+}: {
+  value: number
+  slot: number
+  style?: StyleProp<TextStyle>
+}) {
+  const s = useStyles()
+  const digits = [...String(value)].map((digit, at, all) => ({
+    digit,
+    // A digit's place is its identity: 11 to 12 keeps the tens column as it is.
+    place: all.length - at,
+  }))
+  return (
+    <View style={s.tickerDigits}>
+      {digits.map((column) => (
+        <TickerDigit key={column.place} digit={column.digit} slot={slot} style={style} />
+      ))}
+    </View>
+  )
+}
+
+function TickerDigit({
+  digit,
+  slot,
+  style,
+}: {
+  digit: string
+  slot: number
+  style?: StyleProp<TextStyle>
+}) {
+  const s = useStyles()
+  const [shown, setShown] = useState(digit)
+  const [previous, setPrevious] = useState<string | null>(null)
+  const roll = useSharedValue(1)
+  useEffect(() => {
+    if (digit === shown) return
+    setPrevious(shown)
+    setShown(digit)
+    roll.value = 0
+    roll.value = timing(1, { duration: 200 })
+  }, [digit, roll, shown])
+  const incoming = useAnimatedStyle(() => ({
+    transform: [{ translateY: (1 - roll.value) * slot }],
+  }))
+  const outgoing = useAnimatedStyle(() => ({
+    opacity: 1 - roll.value,
+    transform: [{ translateY: -roll.value * slot }],
+  }))
+  return (
+    <View style={[s.tickerDigit, { height: slot }]}>
+      <Text style={[style, s.tickerSizer]}>0</Text>
+      {previous === null ? null : (
+        <Reanimated.Text style={[style, s.tickerGlyph, outgoing]}>{previous}</Reanimated.Text>
+      )}
+      <Reanimated.Text style={[style, s.tickerGlyph, incoming]}>{shown}</Reanimated.Text>
     </View>
   )
 }
@@ -2733,34 +2847,30 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
                       autoCorrect={false}
                       returnKeyType="search"
                     />
-                    {isSearching ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Clear search"
-                        hitSlop={8}
-                        onPress={() => {
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={isSearching ? 'Clear search' : `Sort notes. ${sortLabel}`}
+                      hitSlop={8}
+                      onPress={() => {
+                        if (isSearching) {
                           setQuery('')
                           searchInput.current?.focus()
-                        }}
-                        style={s.searchFieldAction}
-                      >
-                        <Icon name="closeCircle" size={22} color={colors.muted} />
-                      </Pressable>
-                    ) : (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Sort notes. ${sortLabel}`}
-                        hitSlop={8}
-                        onPress={() => {
-                          Keyboard.dismiss()
-                          searchInput.current?.blur()
-                          setSortOpen(true)
-                        }}
-                        style={s.searchFieldAction}
-                      >
-                        <Icon name="sort" size={22} color={colors.muted} />
-                      </Pressable>
-                    )}
+                          return
+                        }
+                        Keyboard.dismiss()
+                        searchInput.current?.blur()
+                        setSortOpen(true)
+                      }}
+                      style={s.searchFieldAction}
+                    >
+                      <IconFade
+                        from="sort"
+                        to="closeCircle"
+                        swapped={isSearching}
+                        size={22}
+                        color={colors.muted}
+                      />
+                    </Pressable>
                   </View>
                 </Pressable>
                 {isSearching ? (
@@ -4003,6 +4113,8 @@ function NoteDetail({
     }
     return found
   }, [source, find])
+  const matchCount = matches.length
+  const matchCurrent = matchCount ? Math.min(matchIndex + 1, matchCount) : 0
   useEffect(() => {
     alive.current = true
     return () => {
@@ -4249,6 +4361,20 @@ function NoteDetail({
   // In PDF mode the viewer also mounts before the first compile, so it can show the spinner
   // and have its webview booted by the time the PDF is ready.
   const showPdf = !pdfError && (!!autoPdf.preview || (mode === 'pdf' && !autoPdf.error))
+  // A failure covers the page it replaced, so it rises over it instead of
+  // appearing whole. A failure found while the source is open plays the rise
+  // when the PDF is opened, not off-screen.
+  const failureVisible = !!compileError && !pdfError && mode === 'pdf'
+  const failureReveal = useSharedValue(0)
+  useEffect(() => {
+    if (!failureVisible) return
+    failureReveal.value = 0
+    failureReveal.value = timing(1, { duration: 200 })
+  }, [failureReveal, failureVisible])
+  const failureMotion = useAnimatedStyle(() => ({
+    opacity: failureReveal.value,
+    transform: [{ translateY: (1 - failureReveal.value) * 8 }],
+  }))
 
   return (
     <Screen
@@ -4347,10 +4473,10 @@ function NoteDetail({
                 />
               ) : null}
               {compileError && !pdfError ? (
-                <View
+                <Reanimated.View
                   accessibilityRole="alert"
                   accessibilityLiveRegion="polite"
-                  style={s.pdfFailure}
+                  style={[s.pdfFailure, failureMotion]}
                 >
                   <Icon name="alert" size={30} color={colors.coral} />
                   <Text style={s.pdfFailureTitle}>PDF compilation failed</Text>
@@ -4367,7 +4493,7 @@ function NoteDetail({
                       }}
                     />
                   )}
-                </View>
+                </Reanimated.View>
               ) : null}
             </Reanimated.View>
             <View pointerEvents="none" style={s.noteContentFade}>
@@ -4482,11 +4608,7 @@ function NoteDetail({
                         returnKeyType="search"
                         onSubmitEditing={() => moveMatch(1)}
                       />
-                      <Text accessibilityLiveRegion="polite" style={s.findDockCount}>
-                        {matches.length
-                          ? `${Math.min(matchIndex + 1, matches.length)}/${matches.length}`
-                          : '0/0'}
-                      </Text>
+                      <Ticker current={matchCurrent} total={matchCount} style={s.findDockCount} />
                       <IconButton
                         name="chevronUp"
                         label="Previous match"
@@ -5159,33 +5281,15 @@ function Settings({
                 </View>
               </View>
               <View accessibilityRole="radiogroup" style={s.accentGrid}>
-                {accentNames.map((accent) => {
-                  const swatch = palette[accent]
-                  const selected = !custom && settings.accent === accent
-                  return (
-                    <Pressable
-                      key={accent}
-                      accessibilityRole="radio"
-                      accessibilityLabel={accent}
-                      accessibilityState={{ checked: selected }}
-                      onPress={() => updateSettings({ accent, customAccent: null })}
-                      style={s.accentPressable}
-                    >
-                      <View style={[s.accentSwatch, { backgroundColor: swatch }]}>
-                        {selected && (
-                          <>
-                            <View style={s.selectedRing} />
-                            <Icon
-                              name="check"
-                              size={18}
-                              color={luminance(swatch) > 0.179 ? '#000000' : '#ffffff'}
-                            />
-                          </>
-                        )}
-                      </View>
-                    </Pressable>
-                  )
-                })}
+                {accentNames.map((accent) => (
+                  <AccentSwatch
+                    key={accent}
+                    label={accent}
+                    color={palette[accent]}
+                    selected={!custom && settings.accent === accent}
+                    onPress={() => updateSettings({ accent, customAccent: null })}
+                  />
+                ))}
               </View>
               <Pressable
                 accessibilityRole="button"
@@ -5321,6 +5425,53 @@ function Settings({
         />
       )}
     </>
+  )
+}
+
+function AccentSwatch({
+  label,
+  color,
+  selected,
+  onPress,
+}: {
+  label: string
+  color: string
+  selected: boolean
+  onPress: () => void
+}) {
+  const s = useStyles()
+  const mark = useSharedValue(selected ? 1 : 0)
+  const settle = useSharedValue(1)
+  useEffect(() => {
+    // The switch itself is immediate: the ring lands on the new color in the
+    // frame of the tap, and only the little settle after it animates. A swatch
+    // that mounts already selected has nothing to settle.
+    const next = selected ? 1 : 0
+    if (mark.value === next) return
+    mark.value = next
+    if (!next) return
+    settle.value = 1.14
+    settle.value = spring(1, SWIPE_SPRING)
+  }, [mark, selected, settle])
+  const motion = useAnimatedStyle(() => ({
+    opacity: mark.value,
+    transform: [{ scale: mark.value * settle.value }],
+  }))
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityLabel={label}
+      accessibilityState={{ checked: selected }}
+      onPress={onPress}
+      style={s.accentPressable}
+    >
+      <View style={[s.accentSwatch, { backgroundColor: color }]}>
+        <Reanimated.View style={[s.selectedRing, motion]} />
+        <Reanimated.View style={motion}>
+          <Icon name="check" size={18} color={luminance(color) > 0.179 ? '#000000' : '#ffffff'} />
+        </Reanimated.View>
+      </View>
+    </Pressable>
   )
 }
 
@@ -6049,11 +6200,11 @@ function makeStyles(colors: ThemeColors) {
     newForm: { flexGrow: 1 },
     dialogOverlay: {
       flex: 1,
-      backgroundColor: 'rgba(0, 0, 0, 0.45)',
       alignItems: 'center',
       justifyContent: 'center',
       padding: 24,
     },
+    dialogDim: { backgroundColor: 'rgba(0, 0, 0, 0.45)' },
     // No elevation here: Android draws the shadow of a full-screen elevated
     // view inside the screen, which bands the dim around the dialog.
     dialogLayer: { zIndex: 40 },
@@ -6616,12 +6767,17 @@ function makeStyles(colors: ThemeColors) {
       paddingHorizontal: 6,
       paddingVertical: 0,
     },
+    // Equal digit widths keep the ticker columns straight while they roll.
     findDockCount: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 13,
+      fontFamily: 'JetBrainsMono_400Regular',
+      fontSize: 12,
       color: colors.muted,
-      paddingHorizontal: 4,
     },
+    ticker: { flexDirection: 'row', paddingHorizontal: 4 },
+    tickerDigits: { flexDirection: 'row' },
+    tickerDigit: { overflow: 'hidden' },
+    tickerSizer: { opacity: 0 },
+    tickerGlyph: { position: 'absolute', top: 0, left: 0, right: 0, textAlign: 'center' },
     noteSegments: {
       flex: 1,
       flexDirection: 'row',
