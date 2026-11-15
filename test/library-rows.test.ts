@@ -1,6 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import { sortNotes } from '../src/core'
-import { type FolderRowsCache, noteRow, sortedNoteRows } from '../src/library-rows'
+import {
+  CARD_HEIGHT,
+  CHIP_HEIGHT,
+  type FolderRowsCache,
+  type LibraryRow,
+  layoutRows,
+  noteRow,
+  ROW_GAP,
+  rowLayout,
+  sortedNoteRows,
+} from '../src/library-rows'
 import type { Note, SearchResult, Vault } from '../src/types'
 
 const vault: Vault = { uri: 'content://vault', name: 'Vault' }
@@ -74,5 +84,27 @@ describe('sortedNoteRows', () => {
     expect(
       sortedNoteRows(rows, '', root, 'modified-desc').map((row) => row.result.note.title)
     ).toEqual(['Beta', 'Alpha'])
+  })
+})
+
+describe('layoutRows', () => {
+  const chip: LibraryRow = { kind: 'folders', key: 'folders:', items: [] }
+  const card: LibraryRow = { kind: 'note', key: 'note:a', result: { note: note('a.typ', 'A') } }
+
+  test('gives a chip row the chip height plus the gap', () => {
+    expect(layoutRows([chip])[0].length).toBe(CHIP_HEIGHT + ROW_GAP)
+  })
+
+  test('gives a card row the card height plus the gap', () => {
+    expect(layoutRows([card])[0].length).toBe(CARD_HEIGHT + ROW_GAP)
+  })
+
+  test('keeps the length of each row kind in getItemLayout', () => {
+    const layout = layoutRows([chip, card, card])
+    expect(rowLayout(layout, 0).length).toBe(CHIP_HEIGHT + ROW_GAP)
+    expect(rowLayout(layout, 1).length).toBe(CARD_HEIGHT + ROW_GAP)
+    expect(rowLayout(layout, 2).length).toBe(CARD_HEIGHT + ROW_GAP)
+    expect(rowLayout(layout, 2).offset).toBe(CHIP_HEIGHT + ROW_GAP + CARD_HEIGHT + ROW_GAP)
+    expect(rowLayout(layout, 2).index).toBe(2)
   })
 })
