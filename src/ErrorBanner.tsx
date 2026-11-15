@@ -1,4 +1,11 @@
+import { useEffect } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import Reanimated, {
+  ReduceMotion,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated'
 import { Icon } from './icons'
 import { useTheme } from './theme'
 
@@ -13,8 +20,16 @@ export function ErrorBanner({
 }) {
   const { colors } = useTheme()
   const s = styles(colors)
+  const reveal = useSharedValue(0)
+  useEffect(() => {
+    reveal.value = withTiming(1, { duration: 200, reduceMotion: ReduceMotion.System })
+  }, [reveal])
+  const motion = useAnimatedStyle(() => ({
+    opacity: reveal.value,
+    transform: [{ translateY: (1 - reveal.value) * 6 }],
+  }))
   return (
-    <View accessibilityLiveRegion="polite" style={s.banner}>
+    <Reanimated.View accessibilityLiveRegion="polite" style={[s.banner, motion]}>
       <Icon name="alert" color={colors.coral} />
       <View style={s.body}>
         {title && <Text style={s.title}>{title}</Text>}
@@ -34,7 +49,7 @@ export function ErrorBanner({
           <Icon name="close" />
         </Pressable>
       )}
-    </View>
+    </Reanimated.View>
   )
 }
 

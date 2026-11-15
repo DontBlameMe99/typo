@@ -69,6 +69,8 @@ export default function PdfViewer(props: Props) {
   const [trouble, setTrouble] = useState(false)
   const spin = useRef(new Animated.Value(0)).current
   const fade = useRef(new Animated.Value(0)).current
+  const shade = useRef(new Animated.Value(1)).current
+  const headline = useRef(new Animated.Value(1)).current
   const requested = useRef<string | null>(null)
   const theme = inlineJson({
     background: palette.crust,
@@ -163,6 +165,28 @@ export default function PdfViewer(props: Props) {
     Animated.timing(fade, { toValue: 1, duration: 200, useNativeDriver: true }).start()
   }, [trouble, fade])
 
+  // The finished page dissolves out of the crust under the spinner, so a short
+  // compile lands as softly as a long one. The shade covers instantly, and only
+  // a page that has rendered fades in.
+  useEffect(() => {
+    Animated.timing(shade, {
+      toValue: showing ? 0 : 1,
+      duration: showing ? 180 : 0,
+      useNativeDriver: true,
+    }).start()
+  }, [shade, showing])
+
+  // The headline swaps every few seconds while compiling. It fades back in from
+  // a dim state instead of replacing its own text in one frame.
+  const headlineText = trouble ? SLOW_MESSAGE : LOADING_MESSAGES[message]
+  const shownHeadline = useRef(headlineText)
+  useEffect(() => {
+    if (shownHeadline.current === headlineText) return
+    shownHeadline.current = headlineText
+    headline.setValue(0.35)
+    Animated.timing(headline, { toValue: 1, duration: 260, useNativeDriver: true }).start()
+  }, [headline, headlineText])
+
   useEffect(() => {
     if (!ready || !source || showing) return
     const timer = setTimeout(
@@ -239,6 +263,10 @@ export default function PdfViewer(props: Props) {
           }}
         />
       )}
+      <Animated.View
+        pointerEvents="none"
+        style={[s.loading, { backgroundColor: palette.crust, opacity: shade }]}
+      />
       {loading && (
         <View style={[s.loading, { backgroundColor: palette.crust }]}>
           <View
@@ -270,9 +298,11 @@ export default function PdfViewer(props: Props) {
                 />
               </Svg>
             </Animated.View>
-            <Text numberOfLines={1} style={[s.headline, { color: colors.ink }]}>
-              {trouble ? SLOW_MESSAGE : LOADING_MESSAGES[message]}
-            </Text>
+            <Animated.View style={{ opacity: headline }}>
+              <Text numberOfLines={1} style={[s.headline, { color: colors.ink }]}>
+                {headlineText}
+              </Text>
+            </Animated.View>
             {elapsed > 0 && (
               <Text style={[s.seconds, { color: colors.muted }]}>
                 {`${elapsed} ${elapsed === 1 ? 'second' : 'seconds'} so far`}
