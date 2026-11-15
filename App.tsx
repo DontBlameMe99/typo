@@ -230,7 +230,12 @@ const SCREEN_SPRING = { damping: 34, mass: 0.82, overshootClamping: true, stiffn
 const SLIDE_TIMING = { duration: 250, easing: Easing.bezier(0.22, 1, 0.36, 1) }
 const ICON_SWAP_TIMING = { duration: 250, easing: Easing.bezier(0.42, 0, 0.58, 1) }
 const NOTE_DOCK_TOP = 12
-const NOTE_BAR_HEIGHT = 48
+// Every screen closes, saves, or confirms from a bar this tall.
+const BAR_HEIGHT = 48
+// The library list starts this far down, and inside a folder the parent row
+// comes first. getItemLayout has to count both.
+const LIBRARY_LIST_TOP = 16
+const LIBRARY_PARENT_HEIGHT = 44
 // The AMOLED track is 52 wide and the 24 thumb sits 4 from each edge.
 const TOGGLE_TRAVEL = 20
 const NOTE_MODE_OPTIONS = [
@@ -1446,7 +1451,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   const [selected, setSelected] = useState<NoteSession | null>(null)
   const [prepared, setPrepared] = useState<NoteSession | null>(null)
   const pendingNote = useRef<NoteSession | null>(null)
-  const openingScreen = useRef<'note' | 'new' | 'move' | 'appearance' | 'about' | null>(null)
+  const openingScreen = useRef<'note' | 'new' | 'move' | 'settings' | null>(null)
   const libraryVisibleRef = useRef(true)
   const [backGate] = useState(() => new BackGate())
   const backFrame = useRef<number | null>(null)
@@ -1464,8 +1469,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   creatingRef.current = creating
   const [moving, setMoving] = useState<MovingItem | null>(null)
   const [notice, setNotice] = useState<LibraryNotice | null>(null)
-  const [appearanceOpen, setAppearanceOpen] = useState(false)
-  const [aboutOpen, setAboutOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [favorites, setFavorites] = useState<string[]>(launch.favorites)
   const favoritesRef = useRef(favorites)
   favoritesRef.current = favorites
@@ -1724,10 +1728,10 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   }, [quietScan])
 
   useEffect(() => {
-    const open = !!selected || creating || !!moving || appearanceOpen || aboutOpen
+    const open = !!selected || creating || !!moving || settingsOpen
     if (modalWasOpen.current && !open) void quietScan()
     modalWasOpen.current = open
-  }, [selected, creating, moving, appearanceOpen, aboutOpen, quietScan])
+  }, [selected, creating, moving, settingsOpen, quietScan])
 
   async function chooseVault() {
     if (picking || backGate.blockOpening()) return
@@ -1897,24 +1901,19 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
         }
       }
       const layout = layoutRows(rows)
+      const above = LIBRARY_LIST_TOP + (path ? LIBRARY_PARENT_HEIGHT + ROW_GAP : 0)
       return {
         path,
         current,
         rows,
-        getItemLayout: (_: unknown, index: number) => rowLayout(layout, index),
+        getItemLayout: (_: unknown, index: number) => {
+          const frame = rowLayout(layout, index)
+          return { ...frame, offset: frame.offset + above }
+        },
         empty: orderedFolders.length === 0 && sorted.length === 0,
       }
     })
   }, [favoritePaths, folder, folderStack, foldersByParent, notesByFolder, sort])
-  const crumbs = useMemo(() => {
-    let path = ''
-    return folder
-      ? folder.split('/').map((name) => {
-          path = path ? `${path}/${name}` : name
-          return { name, path }
-        })
-      : []
-  }, [folder])
   const clearSearch = useCallback(() => {
     if (!queryRef.current) return
     setQuery('')
@@ -2138,8 +2137,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
       setSelected(null)
       setCreating(false)
       setMoving(null)
-      setAppearanceOpen(false)
-      setAboutOpen(false)
+      setSettingsOpen(false)
       return true
     }
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -2453,7 +2451,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
     setError(message)
   }, [])
   const noteVisible = !!selected
-  const libraryVisible = !noteVisible && !creating && !moving && !appearanceOpen && !aboutOpen
+  const libraryVisible = !noteVisible && !creating && !moving && !settingsOpen
   // The sort sheet is a sibling overlay, so the library has to ignore input
   // itself or row gestures fire through it.
   const libraryInteractive = libraryVisible && !setup && !sortOpen
@@ -2469,6 +2467,11 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
     }, 300)
     return () => clearTimeout(timer)
   }, [vault, notes, folders, scanning, picking, libraryVisible, painted])
+  const closeSettings = () => {
+    settleBack(false, false)
+    openingScreen.current = null
+    setSettingsOpen(false)
+  }
   const openCreate = () => {
     if (backGate.blockOpening()) return
     Keyboard.dismiss()
@@ -2547,52 +2550,6 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
           </ScrollView>
         ) : !setup || setupDone ? (
           <>
-            <View style={s.header}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="About Typo"
-                onPress={() => {
-                  if (backGate.blockOpening()) return
-                  Keyboard.dismiss()
-                  openingScreen.current = 'about'
-                  setAboutOpen(true)
-                }}
-                style={({ pressed }) => [s.brandLockup, pressed && s.pressed]}
-              >
-                <TypoMark size={34} />
-                <Text style={s.brand}>Typo</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Notes folder: ${vault.name}. Choose folder`}
-                disabled={picking}
-                onPress={() => void chooseVault()}
-                style={({ pressed }) => [
-                  s.folderButton,
-                  pressed && s.pressed,
-                  picking && s.disabled,
-                ]}
-              >
-                <Icon name="folderOpen" size={18} />
-                <Text numberOfLines={1} style={s.folderName}>
-                  {vault.name}
-                </Text>
-                <Icon name="swap" size={16} color={colors.muted} />
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Appearance settings"
-                onPress={() => {
-                  if (backGate.blockOpening()) return
-                  Keyboard.dismiss()
-                  openingScreen.current = 'appearance'
-                  setAppearanceOpen(true)
-                }}
-                style={({ pressed }) => [s.headerButton, pressed && s.pressed]}
-              >
-                <Icon name="palette" size={24} />
-              </Pressable>
-            </View>
             {(error || saveError) && (
               <View style={s.errorInset}>
                 {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
@@ -2647,122 +2604,92 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
                   />
                 </View>
               ) : (
-                <>
-                  {folder !== '' && (
-                    <View style={s.crumbs}>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Go to ${vault.name} root`}
-                        hitSlop={12}
-                        onPress={() => goToFolder('')}
-                        style={({ pressed }) => [s.crumbHome, pressed && s.pressed]}
-                      >
-                        <Icon name="home" size={18} color={colors.muted} />
-                      </Pressable>
-                      <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={s.crumbScroll}
-                      >
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`Go to ${vault.name} root`}
-                          hitSlop={{ top: 12, bottom: 12 }}
-                          onPress={() => goToFolder('')}
-                          style={({ pressed }) => [s.crumbButton, pressed && s.pressed]}
-                        >
-                          <Text numberOfLines={1} style={s.crumbText}>
-                            {vault.name}
-                          </Text>
-                        </Pressable>
-                        {crumbs.map((crumb, index) => (
-                          <View key={crumb.path} style={s.crumbGroup}>
-                            <Icon name="chevronRight" size={16} color={colors.muted} />
+                <View style={s.flex}>
+                  {folderViews.map((view, index) => (
+                    <Reanimated.View
+                      key={`folder:${view.path}`}
+                      entering={view.path === '' ? undefined : folderIn}
+                      exiting={view.path === '' ? undefined : folderOut}
+                      style={
+                        index === folderViews.length - 1 ? [s.flex, s.listLayer] : s.hiddenList
+                      }
+                      pointerEvents={view.current ? 'auto' : 'none'}
+                      accessibilityElementsHidden={!view.current}
+                      importantForAccessibility={view.current ? 'auto' : 'no-hide-descendants'}
+                    >
+                      <FlatList
+                        style={s.flex}
+                        bounces={false}
+                        alwaysBounceVertical={false}
+                        overScrollMode="never"
+                        initialNumToRender={12}
+                        maxToRenderPerBatch={16}
+                        updateCellsBatchingPeriod={16}
+                        windowSize={5}
+                        data={view.rows}
+                        getItemLayout={view.getItemLayout}
+                        keyExtractor={keyExtractor}
+                        keyboardShouldPersistTaps="handled"
+                        keyboardDismissMode="on-drag"
+                        contentContainerStyle={[s.list, view.empty && s.emptyList]}
+                        renderItem={renderLibraryItem}
+                        ListHeaderComponent={
+                          view.path ? (
                             <Pressable
                               accessibilityRole="button"
-                              accessibilityLabel={`Open folder ${crumb.path}`}
-                              hitSlop={{ top: 12, bottom: 12 }}
-                              disabled={index === crumbs.length - 1}
-                              onPress={() => goToFolder(crumb.path)}
-                              style={({ pressed }) => [s.crumbButton, pressed && s.pressed]}
+                              accessibilityLabel={`Up to ${
+                                parentFolder(view.path) === ''
+                                  ? vault.name
+                                  : folderName(parentFolder(view.path))
+                              }`}
+                              onPress={() => goToFolder(parentFolder(view.path))}
+                              style={({ pressed }) => [s.parentRow, pressed && s.pressed]}
                             >
-                              <Text
-                                numberOfLines={1}
-                                style={[s.crumbText, index === crumbs.length - 1 && s.crumbCurrent]}
-                              >
-                                {crumb.name}
+                              <Icon name="arrowLeft" size={18} color={colors.muted} />
+                              <Text numberOfLines={1} style={s.parentName}>
+                                {parentFolder(view.path) === ''
+                                  ? vault.name
+                                  : folderName(parentFolder(view.path))}
                               </Text>
                             </Pressable>
-                          </View>
-                        ))}
-                      </ScrollView>
-                    </View>
-                  )}
-                  <View style={s.flex}>
-                    {folderViews.map((view, index) => (
-                      <Reanimated.View
-                        key={`folder:${view.path}`}
-                        entering={view.path === '' ? undefined : folderIn}
-                        exiting={view.path === '' ? undefined : folderOut}
-                        style={
-                          index === folderViews.length - 1 ? [s.flex, s.listLayer] : s.hiddenList
+                          ) : undefined
                         }
-                        pointerEvents={view.current ? 'auto' : 'none'}
-                        accessibilityElementsHidden={!view.current}
-                        importantForAccessibility={view.current ? 'auto' : 'no-hide-descendants'}
-                      >
-                        <FlatList
-                          style={s.flex}
-                          bounces={false}
-                          alwaysBounceVertical={false}
-                          overScrollMode="never"
-                          initialNumToRender={12}
-                          maxToRenderPerBatch={16}
-                          updateCellsBatchingPeriod={16}
-                          windowSize={5}
-                          data={view.rows}
-                          getItemLayout={view.getItemLayout}
-                          keyExtractor={keyExtractor}
-                          keyboardShouldPersistTaps="handled"
-                          keyboardDismissMode="on-drag"
-                          contentContainerStyle={[s.list, view.empty && s.emptyList]}
-                          renderItem={renderLibraryItem}
-                          ListEmptyComponent={
-                            view.empty && startupReady && !scanning ? (
-                              <View style={s.empty}>
-                                <View style={s.emptyIcon}>
-                                  <Icon
-                                    name={view.path ? 'folderOpen' : 'file'}
-                                    size={32}
-                                    color={view.path ? colors.accent : colors.ink}
-                                  />
-                                </View>
-                                <Text style={s.emptyTitle}>
-                                  {view.path ? 'This folder is empty.' : 'A fresh page awaits.'}
-                                </Text>
-                                <Text style={s.emptyBody}>
-                                  {view.path
-                                    ? 'Write a note here, or add .typ files to this folder.'
-                                    : 'Create your first note, or add .typ files to this folder. They’ll feel right at home.'}
-                                </Text>
-                                <Pressable
-                                  accessibilityRole="button"
-                                  onPress={openCreate}
-                                  style={({ pressed }) => [s.emptyButton, pressed && s.pressed]}
-                                >
-                                  <Icon name="plus" size={20} color={colors.onAccent} />
-                                  <Text style={s.emptyButtonText}>
-                                    {view.path ? 'Write a note here' : 'Write your first note'}
-                                  </Text>
-                                </Pressable>
+                        ListEmptyComponent={
+                          view.empty && startupReady && !scanning ? (
+                            <View style={s.empty}>
+                              <View style={s.emptyIcon}>
+                                <Icon
+                                  name={view.path ? 'folderOpen' : 'file'}
+                                  size={32}
+                                  color={view.path ? colors.accent : colors.ink}
+                                />
                               </View>
-                            ) : undefined
-                          }
-                        />
-                      </Reanimated.View>
-                    ))}
-                  </View>
-                </>
+                              <Text style={s.emptyTitle}>
+                                {view.path ? 'This folder is empty.' : 'A fresh page awaits.'}
+                              </Text>
+                              {view.path ? null : (
+                                <Text style={s.emptyBody}>
+                                  Create your first note, or add .typ files to this folder. They’ll
+                                  feel right at home.
+                                </Text>
+                              )}
+                              <Pressable
+                                accessibilityRole="button"
+                                onPress={openCreate}
+                                style={({ pressed }) => [s.emptyButton, pressed && s.pressed]}
+                              >
+                                <Icon name="plus" size={20} color={colors.onAccent} />
+                                <Text style={s.emptyButtonText}>
+                                  {view.path ? 'Write a note here' : 'Write your first note'}
+                                </Text>
+                              </Pressable>
+                            </View>
+                          ) : undefined
+                        }
+                      />
+                    </Reanimated.View>
+                  ))}
+                </View>
               )}
               <View style={s.listFade}>
                 <View pointerEvents="none" style={s.listFadeRamp}>
@@ -2774,6 +2701,19 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
             </View>
             <KeyboardAvoidingView behavior={keyboardBehavior} style={s.dockShell}>
               <View style={s.dock}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Settings"
+                  onPress={() => {
+                    if (backGate.blockOpening()) return
+                    Keyboard.dismiss()
+                    openingScreen.current = 'settings'
+                    setSettingsOpen(true)
+                  }}
+                  style={({ pressed }) => [s.markButton, pressed && s.pressed]}
+                >
+                  <TypoMark size={30} />
+                </Pressable>
                 <Pressable
                   accessible={false}
                   onPress={() => searchInput.current?.focus()}
@@ -2965,22 +2905,17 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
           }}
         />
       )}
-      {aboutOpen && (
-        <AboutSheet
-          onClose={() => {
-            settleBack(false, false)
-            openingScreen.current = null
-            setAboutOpen(false)
+      {settingsOpen && vault && (
+        <Settings
+          vaultName={vault.name}
+          picking={picking}
+          onChangeFolder={() => {
+            closeSettings()
+            // The picker and the vault setup have to be visible, and neither
+            // can be while Settings covers the library.
+            void chooseVault()
           }}
-        />
-      )}
-      {appearanceOpen && (
-        <AppearanceSettings
-          onClose={() => {
-            settleBack(false, false)
-            openingScreen.current = null
-            setAppearanceOpen(false)
-          }}
+          onClose={closeSettings}
         />
       )}
       {sortOpen && (
@@ -3945,76 +3880,6 @@ function SortSheet({
   )
 }
 
-function AboutSheet({ onClose }: { onClose: () => void }) {
-  const s = useStyles()
-  const { colors } = useTheme()
-  const open = (url: string) => {
-    void Linking.openURL(url).catch(() => {})
-  }
-  const shortCommit = appCommit ? appCommit.slice(0, 7) : null
-  return (
-    <BottomSheet title="About Typo" onClose={onClose}>
-      <View style={s.sheetRow}>
-        <Icon name="info" size={20} color={colors.muted} />
-        <View style={s.sheetRowText}>
-          <Text style={s.sheetRowTitle}>Version</Text>
-        </View>
-        <Text style={s.aboutValue}>{appVersion}</Text>
-      </View>
-      <Pressable
-        accessibilityRole="link"
-        accessibilityLabel={
-          shortCommit ? `Commit ${shortCommit}. Opens in your browser` : 'Development build'
-        }
-        disabled={!shortCommit}
-        onPress={() => {
-          if (appCommit) open(commitUrl(appCommit))
-        }}
-        style={({ pressed }) => [s.sheetRow, pressed && s.rowPressed]}
-      >
-        <Icon name="commit" size={20} color={colors.muted} />
-        <View style={s.sheetRowText}>
-          <Text style={s.sheetRowTitle}>Commit</Text>
-          <Text numberOfLines={1} style={s.sheetRowPath}>
-            {shortCommit ?? 'Development build'}
-          </Text>
-        </View>
-        {shortCommit ? <Icon name="external" size={16} color={colors.muted} /> : null}
-      </Pressable>
-      <Pressable
-        accessibilityRole="link"
-        accessibilityLabel="Report an issue. Opens in your browser"
-        onPress={() => open(issuesUrl)}
-        style={({ pressed }) => [s.sheetRow, pressed && s.rowPressed]}
-      >
-        <Icon name="bug" size={20} color={colors.muted} />
-        <View style={s.sheetRowText}>
-          <Text style={s.sheetRowTitle}>Report an issue</Text>
-          <Text numberOfLines={1} style={s.sheetRowPath}>
-            {issuesUrl.replace('https://', '')}
-          </Text>
-        </View>
-        <Icon name="external" size={16} color={colors.muted} />
-      </Pressable>
-      <Pressable
-        accessibilityRole="link"
-        accessibilityLabel="Source code. Opens in your browser"
-        onPress={() => open(repositoryUrl)}
-        style={({ pressed }) => [s.sheetRow, pressed && s.rowPressed]}
-      >
-        <Icon name="code" size={20} color={colors.muted} />
-        <View style={s.sheetRowText}>
-          <Text style={s.sheetRowTitle}>Source</Text>
-          <Text numberOfLines={1} style={s.sheetRowPath}>
-            {repositoryUrl.replace('https://', '')}
-          </Text>
-        </View>
-        <Icon name="external" size={16} color={colors.muted} />
-      </Pressable>
-    </BottomSheet>
-  )
-}
-
 function NoteDetail({
   workspace,
   active,
@@ -4515,7 +4380,7 @@ function NoteDetail({
                 accessibilityRole="button"
                 accessibilityLabel={findOpen ? 'Close find' : 'Close note'}
                 onPress={() => (findOpen ? closeFind() : dismiss.current())}
-                style={({ pressed }) => [s.noteDockButton, pressed && s.pressed]}
+                style={({ pressed }) => [s.barButton, pressed && s.pressed]}
               >
                 <Icon name="close" size={24} color={colors.ink} />
               </Pressable>
@@ -4560,7 +4425,7 @@ function NoteDetail({
                         setFindOpen(true)
                       }}
                       style={({ pressed }) => [
-                        s.noteDockButton,
+                        s.barButton,
                         pressed && s.pressed,
                         mode === 'pdf' &&
                           (openingPdf || !!autoPdf.error || !!pdfError) &&
@@ -4583,7 +4448,7 @@ function NoteDetail({
                       }
                       onPress={() => void share()}
                       style={({ pressed }) => [
-                        s.noteDockButton,
+                        s.barButton,
                         pressed && s.pressed,
                         (opening ||
                           sharing ||
@@ -4745,6 +4610,7 @@ function NewNote({
       alive.current = false
     }
   }, [vault, initialTemplate])
+  const canCreate = !saving && !!title.trim() && !templateLoading && template !== null
   const close = () => {
     if (saving) return
     if (confirming) {
@@ -4794,80 +4660,11 @@ function NewNote({
             behavior={keyboardBehavior}
             keyboardVerticalOffset={top}
           >
-            <View style={s.newToolbar}>
-              <IconButton name="close" label="Close new note" onPress={close} disabled={saving} />
-              <Text style={[s.newHeading, s.flex]}>New note</Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Create note"
-                disabled={!title.trim() || saving || templateLoading || template === null}
-                onPress={() => void create()}
-                style={({ pressed }) => [
-                  s.newCreate,
-                  pressed && s.pressed,
-                  (!title.trim() || saving || templateLoading || template === null) &&
-                    s.newCreateDisabled,
-                ]}
-              >
-                <Text
-                  style={[
-                    s.newCreateText,
-                    (!title.trim() || saving || templateLoading || template === null) &&
-                      s.newCreateTextDisabled,
-                  ]}
-                >
-                  {saving ? 'Creating…' : 'Create'}
-                </Text>
-              </Pressable>
-            </View>
             <ScrollView
               style={s.flex}
               contentContainerStyle={s.newForm}
               keyboardShouldPersistTaps="handled"
             >
-              <View style={s.newMeta}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Create in ${destination || vault.name}. Choose folder`}
-                  disabled={saving}
-                  onPress={() => {
-                    Keyboard.dismiss()
-                    setPickingFolder(true)
-                  }}
-                  style={({ pressed }) => [
-                    s.newFolderPill,
-                    pressed && s.pressed,
-                    saving && s.disabled,
-                  ]}
-                >
-                  <Icon name="folderOpen" size={18} color={colors.muted} />
-                  <Text numberOfLines={1} style={s.newFolderText}>
-                    {destination ? folderName(destination) : vault.name}
-                  </Text>
-                  <Icon name="chevronDown" size={18} color={colors.muted} />
-                </Pressable>
-                <View style={s.flex} />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Edit note template"
-                  disabled={saving || templateLoading || template === null}
-                  onPress={() => {
-                    Keyboard.dismiss()
-                    if (template !== null) onEditTemplate(template, (source) => setTemplate(source))
-                  }}
-                  style={({ pressed }) => [
-                    s.newTemplate,
-                    pressed && s.pressed,
-                    (saving || templateLoading || template === null) && s.disabled,
-                  ]}
-                >
-                  <Text style={s.newTemplateText}>template.typ</Text>
-                  <View style={s.newTemplateEdit}>
-                    <Icon name="edit" size={16} color={colors.accent} />
-                    <Text style={s.newTemplateEditText}>Edit</Text>
-                  </View>
-                </Pressable>
-              </View>
               {error && (
                 <View style={s.errorInset}>
                   <ErrorBanner message={error} onDismiss={() => setError(null)} />
@@ -4904,6 +4701,75 @@ function NewNote({
                 />
               </View>
             </ScrollView>
+            <View style={s.barShell}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close new note"
+                disabled={saving}
+                onPress={close}
+                style={({ pressed }) => [
+                  s.barButton,
+                  s.barButtonFloating,
+                  pressed && s.pressed,
+                  saving && s.disabled,
+                ]}
+              >
+                <Icon name="close" size={24} color={colors.ink} />
+              </Pressable>
+              <View style={s.barCenter}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Create in ${destination || vault.name}. Choose folder`}
+                  disabled={saving}
+                  onPress={() => {
+                    Keyboard.dismiss()
+                    setPickingFolder(true)
+                  }}
+                  style={({ pressed }) => [s.barPill, pressed && s.pressed, saving && s.disabled]}
+                >
+                  <Icon name="folderOpen" size={17} color={colors.muted} />
+                  <Text numberOfLines={1} style={s.barPillText}>
+                    {destination ? folderName(destination) : vault.name}
+                  </Text>
+                  <Icon name="chevronDown" size={16} color={colors.muted} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Edit note template"
+                  disabled={saving || templateLoading || template === null}
+                  onPress={() => {
+                    Keyboard.dismiss()
+                    if (template !== null) onEditTemplate(template, (source) => setTemplate(source))
+                  }}
+                  style={({ pressed }) => [
+                    s.barPill,
+                    s.barPillFixed,
+                    pressed && s.pressed,
+                    (saving || templateLoading || template === null) && s.disabled,
+                  ]}
+                >
+                  <Icon name="edit" size={16} color={colors.accent} />
+                  <Text numberOfLines={1} style={[s.barPillText, s.barPillAction]}>
+                    Template
+                  </Text>
+                </Pressable>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Create note"
+                disabled={!canCreate}
+                onPress={() => void create()}
+                style={({ pressed }) => [
+                  s.barButton,
+                  s.barButtonFloating,
+                  s.barPrimary,
+                  pressed && s.pressed,
+                  !canCreate && s.barPrimaryDisabled,
+                ]}
+              >
+                <Icon name="check" size={24} color={canCreate ? colors.onAccent : colors.muted} />
+              </Pressable>
+            </View>
           </KeyboardAvoidingView>
           <ConfirmDialog
             visible={confirming}
@@ -4978,7 +4844,7 @@ function TemplateEditor({
 }) {
   const s = useStyles()
   const { colors } = useTheme()
-  const { top } = useSafeAreaInsets()
+  const { top, bottom } = useSafeAreaInsets()
   const [current, setCurrent] = useState(source)
   const saved = source
   const [saving, setSaving] = useState(false)
@@ -5008,7 +4874,7 @@ function TemplateEditor({
       })),
     [problems]
   )
-  const first = problems[0]
+  const canSave = !saving && dirty && problems.length === 0
   const card = selected === null ? undefined : problems[selected]
   const wantedTop = card
     ? TEMPLATE_CONTENT_TOP +
@@ -5053,63 +4919,15 @@ function TemplateEditor({
     setSelected(null)
     setError(null)
   }
-  const subtitle = first
-    ? `${problems.length} problem${problems.length === 1 ? '' : 's'}`
-    : 'template.typ'
   return (
     <Screen onClose={onClose} onRequestClose={close} insets={false} dismissRef={dismiss}>
-      <View style={s.screen}>
+      <View style={[s.screen, { paddingTop: top + 8, paddingBottom: bottom }]}>
         <KeyboardAvoidingView
           style={s.flex}
           importantForAccessibility={confirming ? 'no-hide-descendants' : 'auto'}
           behavior={keyboardBehavior}
           keyboardVerticalOffset={top}
         >
-          <View style={[s.templateToolbar, { paddingTop: top + 14 }]}>
-            <IconButton
-              name="close"
-              label="Close template editor"
-              onPress={close}
-              disabled={saving}
-            />
-            <View style={s.templateTitleBlock}>
-              <Text style={s.templateTitle}>Template</Text>
-              <View style={s.templateSubtitleRow}>
-                {first && <View style={[s.templateDot, { backgroundColor: colors.coral }]} />}
-                <Text
-                  numberOfLines={1}
-                  style={[s.templateSubtitle, first && s.templateSubtitleError]}
-                >
-                  {subtitle}
-                </Text>
-              </View>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Save template"
-              disabled={saving || !dirty || problems.length > 0}
-              onPress={() => void save()}
-              style={({ pressed }) => [
-                s.templateSave,
-                pressed && s.pressed,
-                (saving || !dirty || problems.length > 0) && s.templateSaveDisabled,
-              ]}
-            >
-              <Text
-                style={[
-                  s.templateSaveText,
-                  (saving || !dirty || problems.length > 0) && s.templateSaveTextDisabled,
-                ]}
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </Text>
-            </Pressable>
-          </View>
-          <Text style={s.templateIntro}>
-            New notes start from this file. <Text style={s.templatePlaceholder}>{'{{title}}'}</Text>{' '}
-            and <Text style={s.templatePlaceholder}>{'{{body}}'}</Text> are filled in when you
-            create a note.
-          </Text>
           {error && (
             <View style={s.errorInset}>
               <ErrorBanner message={error} onDismiss={() => setError(null)} />
@@ -5171,7 +4989,21 @@ function TemplateEditor({
               </View>
             ) : null}
           </View>
-          <View style={s.templateFooter}>
+          <View style={s.barShell}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close template editor"
+              disabled={saving}
+              onPress={close}
+              style={({ pressed }) => [
+                s.barButton,
+                s.barButtonFloating,
+                pressed && s.pressed,
+                saving && s.disabled,
+              ]}
+            >
+              <Icon name="close" size={24} color={colors.ink} />
+            </Pressable>
             <View style={s.templatePills}>
               <Pressable
                 accessibilityRole="button"
@@ -5194,6 +5026,21 @@ function TemplateEditor({
                 <Text style={s.templatePillText}>{'{{body}}'}</Text>
               </Pressable>
             </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Save template"
+              disabled={!canSave}
+              onPress={() => void save()}
+              style={({ pressed }) => [
+                s.barButton,
+                s.barButtonFloating,
+                s.barPrimary,
+                pressed && s.pressed,
+                !canSave && s.barPrimaryDisabled,
+              ]}
+            >
+              <Icon name="check" size={24} color={canSave ? colors.onAccent : colors.muted} />
+            </Pressable>
           </View>
         </KeyboardAvoidingView>
         <ConfirmDialog
@@ -5214,12 +5061,26 @@ function TemplateEditor({
   )
 }
 
-function AppearanceSettings({ onClose }: { onClose: () => void }) {
+function Settings({
+  vaultName,
+  picking,
+  onChangeFolder,
+  onClose,
+}: {
+  vaultName: string
+  picking: boolean
+  onChangeFolder: () => void
+  onClose: () => void
+}) {
   const s = useStyles()
   const { settings, updateSettings, palette, colors, persistenceError } = useTheme()
   const [customOpen, setCustomOpen] = useState(false)
   const dismiss = useRef<(after?: () => void) => void>(() => {})
   const custom = settings.customAccent
+  const open = (url: string) => {
+    void Linking.openURL(url).catch(() => {})
+  }
+  const shortCommit = appCommit ? appCommit.slice(0, 7) : null
   const amoled = useSharedValue(settings.amoled ? 1 : 0)
   useEffect(() => {
     amoled.value = spring(settings.amoled ? 1 : 0, SWIPE_SPRING)
@@ -5231,24 +5092,36 @@ function AppearanceSettings({ onClose }: { onClose: () => void }) {
     backgroundColor: interpolateColor(amoled.value, [0, 1], [colors.muted, colors.onAccent]),
     transform: [{ translateX: amoled.value * TOGGLE_TRAVEL }],
   }))
-  const accentLabel = custom
-    ? 'Custom'
-    : settings.accent.charAt(0).toUpperCase() + settings.accent.slice(1)
   return (
     <>
       <Screen onClose={onClose} swipeBack dismissRef={dismiss}>
         <View style={s.screen}>
-          <View style={s.appearanceToolbar}>
-            <IconButton
-              name="close"
-              label="Close appearance settings"
-              onPress={() => dismiss.current()}
-            />
-            <Text style={s.appearanceTitle}>Appearance</Text>
-          </View>
-          <ScrollView contentContainerStyle={s.appearanceBody}>
-            <View style={s.settingsSection}>
-              <Text style={s.settingsLabel}>MODE</Text>
+          <ScrollView contentContainerStyle={s.settingsBody}>
+            <Text style={s.settingsHeading}>Settings</Text>
+            <View style={s.settingsGroup}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Notes folder: ${vaultName}. Choose folder`}
+                disabled={picking}
+                onPress={onChangeFolder}
+                style={({ pressed }) => [
+                  s.sheetRow,
+                  s.settingsRow,
+                  pressed && s.rowPressed,
+                  picking && s.disabled,
+                ]}
+              >
+                <Icon name="folderOpen" size={20} color={colors.muted} />
+                <View style={s.sheetRowText}>
+                  <Text style={s.sheetRowTitle}>Notes folder</Text>
+                  <Text numberOfLines={1} style={s.sheetRowPath}>
+                    {vaultName}
+                  </Text>
+                </View>
+                <Icon name="swap" size={18} color={colors.muted} />
+              </Pressable>
+            </View>
+            <View style={s.settingsGroup}>
               <PillTabs
                 options={APPEARANCE_MODE_OPTIONS}
                 value={settings.mode}
@@ -5261,10 +5134,8 @@ function AppearanceSettings({ onClose }: { onClose: () => void }) {
                 activeColor={colors.onAccent}
                 idleColor={colors.ink}
               />
-              <Text style={s.settingsLabel}>PALETTE</Text>
               <View style={s.flavorRow}>
                 <View accessibilityRole="radiogroup" style={s.flavorLight}>
-                  <Text style={s.flavorGroupLabel}>LIGHT</Text>
                   <FlavorOption
                     flavor={lightFlavorNames[0]}
                     selected={settings.lightFlavor === lightFlavorNames[0]}
@@ -5273,7 +5144,6 @@ function AppearanceSettings({ onClose }: { onClose: () => void }) {
                 </View>
                 <View style={s.flavorDivider} />
                 <View style={s.flex}>
-                  <Text style={s.flavorGroupLabel}>DARK</Text>
                   <View accessibilityRole="radiogroup" style={s.flavorDarkRow}>
                     {darkFlavorNames.map((flavor) => (
                       <FlavorOption
@@ -5285,10 +5155,6 @@ function AppearanceSettings({ onClose }: { onClose: () => void }) {
                     ))}
                   </View>
                 </View>
-              </View>
-              <View style={s.accentLabelRow}>
-                <Text style={s.settingsLabel}>ACCENT</Text>
-                <Text style={s.accentValue}>{accentLabel}</Text>
               </View>
               <View accessibilityRole="radiogroup" style={s.accentGrid}>
                 {accentNames.map((accent) => {
@@ -5370,7 +5236,76 @@ function AppearanceSettings({ onClose }: { onClose: () => void }) {
               </Pressable>
               {persistenceError && <Text style={s.errorText}>{persistenceError}</Text>}
             </View>
+            <View style={s.settingsGroup}>
+              <View style={[s.sheetRow, s.settingsRow]}>
+                <Icon name="info" size={20} color={colors.muted} />
+                <View style={s.sheetRowText}>
+                  <Text style={s.sheetRowTitle}>Version</Text>
+                </View>
+                <Text style={s.aboutValue}>{appVersion}</Text>
+              </View>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel={
+                  shortCommit ? `Commit ${shortCommit}. Opens in your browser` : 'Development build'
+                }
+                disabled={!shortCommit}
+                onPress={() => {
+                  if (appCommit) open(commitUrl(appCommit))
+                }}
+                style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
+              >
+                <Icon name="commit" size={20} color={colors.muted} />
+                <View style={s.sheetRowText}>
+                  <Text style={s.sheetRowTitle}>Commit</Text>
+                  <Text numberOfLines={1} style={s.sheetRowPath}>
+                    {shortCommit ?? 'Development build'}
+                  </Text>
+                </View>
+                {shortCommit ? <Icon name="external" size={16} color={colors.muted} /> : null}
+              </Pressable>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel="Report an issue. Opens in your browser"
+                onPress={() => open(issuesUrl)}
+                style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
+              >
+                <Icon name="bug" size={20} color={colors.muted} />
+                <View style={s.sheetRowText}>
+                  <Text style={s.sheetRowTitle}>Report an issue</Text>
+                  <Text numberOfLines={1} style={s.sheetRowPath}>
+                    {issuesUrl.replace('https://', '')}
+                  </Text>
+                </View>
+                <Icon name="external" size={16} color={colors.muted} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel="Source code. Opens in your browser"
+                onPress={() => open(repositoryUrl)}
+                style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
+              >
+                <Icon name="code" size={20} color={colors.muted} />
+                <View style={s.sheetRowText}>
+                  <Text style={s.sheetRowTitle}>Source</Text>
+                  <Text numberOfLines={1} style={s.sheetRowPath}>
+                    {repositoryUrl.replace('https://', '')}
+                  </Text>
+                </View>
+                <Icon name="external" size={16} color={colors.muted} />
+              </Pressable>
+            </View>
           </ScrollView>
+          <View style={s.barShell}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close settings"
+              onPress={() => dismiss.current()}
+              style={({ pressed }) => [s.barButton, s.barButtonFloating, pressed && s.pressed]}
+            >
+              <Icon name="close" size={24} color={colors.ink} />
+            </Pressable>
+          </View>
         </View>
       </Screen>
       {customOpen && (
@@ -5687,34 +5622,6 @@ function makeStyles(colors: ThemeColors) {
       justifyContent: 'center',
     },
     launchOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
-    header: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      paddingTop: 18,
-      paddingRight: 12,
-      paddingBottom: 10,
-      paddingLeft: 20,
-    },
-    brandLockup: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
-    brand: { fontFamily: 'DMSans_600SemiBold', color: colors.ink, fontSize: 22, letterSpacing: -1 },
-    folderButton: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      flexShrink: 1,
-      maxWidth: 180,
-      gap: 8,
-      height: 44,
-      paddingHorizontal: 14,
-      borderRadius: 14,
-      backgroundColor: colors.soft,
-    },
-    folderName: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 15,
-      color: colors.ink,
-      flexShrink: 1,
-    },
     action: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -5734,6 +5641,59 @@ function makeStyles(colors: ThemeColors) {
       justifyContent: 'center',
       borderRadius: 14,
     },
+    barShell: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingTop: 12,
+      paddingHorizontal: 16,
+      paddingBottom: 28,
+      backgroundColor: colors.paper,
+    },
+    barButton: {
+      width: BAR_HEIGHT,
+      height: BAR_HEIGHT,
+      borderRadius: BAR_HEIGHT / 2,
+      backgroundColor: colors.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    barButtonFloating: {
+      elevation: 8,
+      shadowColor: '#000000',
+      shadowOpacity: 0.4,
+      shadowRadius: 24,
+      shadowOffset: { width: 0, height: 8 },
+    },
+    barPrimary: { backgroundColor: colors.accent },
+    barPrimaryDisabled: { backgroundColor: colors.surface },
+    barCenter: {
+      flex: 1,
+      minWidth: 0,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+    },
+    barPill: {
+      flexShrink: 1,
+      minWidth: 0,
+      height: 40,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingHorizontal: 12,
+      borderRadius: 20,
+      backgroundColor: colors.soft,
+    },
+    barPillFixed: { flexShrink: 0 },
+    barPillText: {
+      flexShrink: 1,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 14,
+      color: colors.ink,
+    },
+    barPillAction: { color: colors.accent },
     pressed: { opacity: 0.66 },
     disabled: { opacity: 0.42 },
     errorInset: { paddingHorizontal: 24, paddingVertical: 8 },
@@ -5783,7 +5743,7 @@ function makeStyles(colors: ThemeColors) {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    list: { paddingTop: 0, paddingBottom: 140 },
+    list: { paddingTop: LIBRARY_LIST_TOP, paddingBottom: 140 },
     emptyList: { flexGrow: 1 },
     listLayer: { backgroundColor: colors.paper },
     hiddenList: {
@@ -5957,6 +5917,23 @@ function makeStyles(colors: ThemeColors) {
       shadowOffset: { width: 0, height: 8 },
     },
     fabPressed: { transform: [{ scale: 0.96 }] },
+    markButton: {
+      width: 60,
+      height: 60,
+      borderRadius: 30,
+      marginTop: 12,
+      marginBottom: 28,
+      marginLeft: 16,
+      marginRight: 5,
+      backgroundColor: colors.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+      elevation: 8,
+      shadowColor: '#000000',
+      shadowOpacity: 0.4,
+      shadowRadius: 24,
+      shadowOffset: { width: 0, height: 8 },
+    },
     notice: {
       position: 'absolute',
       left: 16,
@@ -6181,13 +6158,6 @@ function makeStyles(colors: ThemeColors) {
       backgroundColor: colors.coral,
     },
     dialogConfirmText: { fontFamily: 'DMSans_600SemiBold', fontSize: 14, color: colors.paper },
-    headerButton: {
-      width: 44,
-      height: 44,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderRadius: 14,
-    },
     trashUndo: {
       height: 44,
       paddingHorizontal: 16,
@@ -6206,35 +6176,21 @@ function makeStyles(colors: ThemeColors) {
       paddingHorizontal: 2,
       color: colors.ink,
     },
-    crumbs: {
+    parentRow: {
+      height: LIBRARY_PARENT_HEIGHT,
+      marginHorizontal: 20,
+      marginBottom: ROW_GAP,
+      paddingHorizontal: 16,
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 6,
-      paddingTop: 4,
-      paddingHorizontal: 20,
+      gap: 8,
+      borderRadius: 16,
+      backgroundColor: colors.soft,
     },
-    crumbHome: {
-      width: 22,
-      height: 22,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    crumbScroll: { alignItems: 'center', gap: 6 },
-    crumbGroup: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    crumbButton: {
-      maxWidth: 180,
-      minHeight: 22,
-      justifyContent: 'center',
-      borderRadius: 8,
-    },
-    crumbText: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 15,
-      lineHeight: 20,
-      color: colors.muted,
-    },
-    crumbCurrent: {
+    parentName: {
+      flexShrink: 1,
       fontFamily: 'DMSans_600SemiBold',
+      fontSize: 15,
       color: colors.ink,
     },
     emptyButton: {
@@ -6273,7 +6229,7 @@ function makeStyles(colors: ThemeColors) {
       flex: 1,
       minWidth: 0,
       paddingTop: 12,
-      paddingLeft: 16,
+      paddingLeft: 5,
       paddingRight: 5,
       paddingBottom: 28,
     },
@@ -6403,81 +6359,6 @@ function makeStyles(colors: ThemeColors) {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 18,
       color: colors.onAccent,
-    },
-    newToolbar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      paddingTop: 14,
-      paddingRight: 12,
-      paddingBottom: 10,
-      paddingLeft: 12,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.line,
-    },
-    newHeading: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 22,
-      letterSpacing: -0.4,
-      color: colors.ink,
-    },
-    newCreate: {
-      height: 44,
-      paddingHorizontal: 20,
-      borderRadius: 22,
-      backgroundColor: colors.accent,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    newCreateText: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 16,
-      color: colors.onAccent,
-    },
-    newCreateDisabled: { backgroundColor: colors.surface },
-    newCreateTextDisabled: { color: colors.muted },
-    newMeta: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-      marginTop: 16,
-      marginHorizontal: 20,
-    },
-    newFolderPill: {
-      height: 40,
-      paddingHorizontal: 14,
-      borderRadius: 20,
-      backgroundColor: colors.soft,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-    },
-    newFolderText: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 15,
-      color: colors.ink,
-    },
-    newTemplate: {
-      height: 40,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-      paddingHorizontal: 6,
-    },
-    newTemplateText: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 14,
-      color: colors.muted,
-    },
-    newTemplateEdit: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-    },
-    newTemplateEditText: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 14,
-      color: colors.accent,
     },
     newTitleBlock: {
       paddingTop: 28,
@@ -6701,27 +6582,27 @@ function makeStyles(colors: ThemeColors) {
     },
     noteBarArea: {
       flex: 1,
-      height: NOTE_BAR_HEIGHT,
+      height: BAR_HEIGHT,
       minWidth: 0,
-      borderRadius: NOTE_BAR_HEIGHT / 2,
+      borderRadius: BAR_HEIGHT / 2,
       overflow: 'hidden',
     },
-    noteBarTrack: { flexDirection: 'row', height: NOTE_BAR_HEIGHT },
+    noteBarTrack: { flexDirection: 'row', height: BAR_HEIGHT },
     noteBarPanel: {
-      height: NOTE_BAR_HEIGHT,
+      height: BAR_HEIGHT,
       flexDirection: 'row',
       alignItems: 'center',
       gap: 8,
     },
     findDock: {
       flex: 1,
-      height: NOTE_BAR_HEIGHT,
+      height: BAR_HEIGHT,
       flexDirection: 'row',
       alignItems: 'center',
       gap: 4,
       paddingLeft: 16,
       paddingRight: 6,
-      borderRadius: NOTE_BAR_HEIGHT / 2,
+      borderRadius: BAR_HEIGHT / 2,
       backgroundColor: colors.surface,
     },
     findDockInput: {
@@ -6743,10 +6624,10 @@ function makeStyles(colors: ThemeColors) {
       flex: 1,
       flexDirection: 'row',
       gap: 4,
-      height: NOTE_BAR_HEIGHT,
+      height: BAR_HEIGHT,
       paddingHorizontal: 5,
       paddingVertical: 5,
-      borderRadius: NOTE_BAR_HEIGHT / 2,
+      borderRadius: BAR_HEIGHT / 2,
       backgroundColor: colors.surface,
     },
     noteSegment: {
@@ -6759,72 +6640,6 @@ function makeStyles(colors: ThemeColors) {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 16,
       color: colors.ink,
-    },
-    noteDockButton: {
-      width: NOTE_BAR_HEIGHT,
-      height: NOTE_BAR_HEIGHT,
-      borderRadius: NOTE_BAR_HEIGHT / 2,
-      backgroundColor: colors.surface,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    templateToolbar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      paddingRight: 12,
-      paddingBottom: 10,
-      paddingLeft: 12,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.line,
-    },
-    templateTitleBlock: { flex: 1, minWidth: 0 },
-    templateTitle: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 20,
-      lineHeight: 24,
-      letterSpacing: -0.3,
-      color: colors.ink,
-    },
-    templateSubtitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 1 },
-    templateDot: { width: 6, height: 6, borderRadius: 3 },
-    templateSubtitle: {
-      flexShrink: 1,
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 12,
-      lineHeight: 16,
-      color: colors.muted,
-    },
-    templateSubtitleError: { color: colors.coral },
-    templateSave: {
-      height: 40,
-      paddingHorizontal: 20,
-      borderRadius: 20,
-      backgroundColor: colors.accent,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    templateSaveText: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 15,
-      color: colors.onAccent,
-    },
-    templateSaveDisabled: { backgroundColor: colors.surface },
-    templateSaveTextDisabled: { color: colors.muted },
-    templateIntro: {
-      paddingTop: 14,
-      paddingHorizontal: 20,
-      paddingBottom: 4,
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 14,
-      lineHeight: 21,
-      color: colors.muted,
-    },
-    templatePlaceholder: {
-      color: colors.accent,
-      backgroundColor: rgba(colors.accent, 0.16),
-      borderRadius: 4,
-      paddingHorizontal: 2,
     },
     templateErrorCard: {
       position: 'absolute',
@@ -6865,18 +6680,14 @@ function makeStyles(colors: ThemeColors) {
       fontSize: 14,
       color: colors.ink,
     },
-    templateFooter: {
-      paddingTop: 12,
-      paddingHorizontal: 16,
-      paddingBottom: 28,
-      backgroundColor: colors.paper,
-    },
     templatePills: {
+      flex: 1,
+      minWidth: 0,
       flexDirection: 'row',
       gap: 8,
-      height: 60,
-      padding: 6,
-      borderRadius: 30,
+      height: BAR_HEIGHT,
+      padding: 4,
+      borderRadius: BAR_HEIGHT / 2,
       backgroundColor: colors.surface,
       elevation: 8,
       shadowColor: '#000000',
@@ -6886,13 +6697,13 @@ function makeStyles(colors: ThemeColors) {
     },
     templatePill: {
       flex: 1,
-      height: 48,
-      borderRadius: 24,
+      height: BAR_HEIGHT - 8,
+      borderRadius: (BAR_HEIGHT - 8) / 2,
       backgroundColor: colors.paper,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: 8,
+      gap: 6,
     },
     templatePillText: {
       fontFamily: 'JetBrainsMono_400Regular',
@@ -6901,39 +6712,21 @@ function makeStyles(colors: ThemeColors) {
     },
     moveButtonDisabled: { backgroundColor: colors.surface },
     moveButtonTextDisabled: { color: colors.muted },
-    appearanceToolbar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-      paddingTop: 14,
-      paddingRight: 12,
-      paddingBottom: 10,
-      paddingLeft: 12,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.line,
-    },
-    appearanceTitle: {
+    settingsHeading: {
+      paddingTop: 8,
+      paddingHorizontal: 8,
       fontFamily: 'DMSans_600SemiBold',
-      fontSize: 22,
-      letterSpacing: -0.4,
+      fontSize: 32,
+      lineHeight: 40,
+      letterSpacing: -0.8,
       color: colors.ink,
     },
-    appearanceBody: {
-      paddingHorizontal: 20,
-      paddingBottom: 48,
+    settingsBody: {
+      paddingHorizontal: 16,
+      paddingBottom: 24,
     },
-    settingsSection: {
-      paddingBottom: 12,
-    },
-    settingsLabel: {
-      fontFamily: 'DMSans_600SemiBold',
-      color: colors.muted,
-      fontSize: 12,
-      letterSpacing: 1.2,
-      marginTop: 14,
-      marginBottom: 8,
-      paddingHorizontal: 4,
-    },
+    settingsGroup: { marginTop: 32 },
+    settingsRow: { marginHorizontal: 0, paddingLeft: 8, paddingRight: 8, gap: 16 },
     modeRow: {
       flexDirection: 'row',
       gap: 4,
@@ -6953,9 +6746,10 @@ function makeStyles(colors: ThemeColors) {
     },
     flavorRow: {
       flexDirection: 'row',
-      alignItems: 'flex-end',
+      alignItems: 'center',
       gap: 8,
       paddingHorizontal: 4,
+      marginTop: 16,
     },
     flavorLight: { width: 78 },
     flavorDivider: {
@@ -6967,14 +6761,6 @@ function makeStyles(colors: ThemeColors) {
     flavorDarkRow: {
       flexDirection: 'row',
       gap: 8,
-    },
-    flavorGroupLabel: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 12,
-      letterSpacing: 1.2,
-      color: colors.muted,
-      marginBottom: 6,
-      marginLeft: 2,
     },
     flavorCard: { width: 78 },
     flavorPreview: {
@@ -7004,25 +6790,13 @@ function makeStyles(colors: ThemeColors) {
       textAlign: 'center',
     },
     flavorTextSelected: { color: colors.ink },
-    accentLabelRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingRight: 4,
-    },
-    accentValue: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 13,
-      color: colors.ink,
-      marginTop: 14,
-      marginBottom: 8,
-    },
     accentGrid: {
       flexDirection: 'row',
       flexWrap: 'wrap',
       justifyContent: 'space-between',
-      rowGap: 14,
+      rowGap: 16,
       padding: 4,
+      marginTop: 16,
     },
     accentPressable: {
       width: '14.2857%',
@@ -7049,11 +6823,11 @@ function makeStyles(colors: ThemeColors) {
     customRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 12,
+      gap: 16,
       height: 56,
-      marginTop: 12,
-      paddingLeft: 12,
-      paddingRight: 14,
+      marginTop: 8,
+      paddingLeft: 16,
+      paddingRight: 16,
       borderRadius: 18,
       backgroundColor: colors.soft,
     },
@@ -7092,8 +6866,8 @@ function makeStyles(colors: ThemeColors) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 16,
-      marginTop: 14,
-      paddingVertical: 12,
+      marginTop: 16,
+      paddingVertical: 16,
       paddingHorizontal: 16,
       borderRadius: 20,
       backgroundColor: colors.soft,
