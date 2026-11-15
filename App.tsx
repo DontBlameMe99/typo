@@ -224,7 +224,10 @@ const SHEET_CLOSE_DURATION = 350
 const SHEET_REVEAL_TRAVEL = 160
 const SHEET_REVEAL_BLUR = 2
 const SCREEN_SPRING = { damping: 34, mass: 0.82, overshootClamping: true, stiffness: 320 }
-const PILL_SPRING = { damping: 30, mass: 0.6, overshootClamping: true, stiffness: 300 }
+const SLIDE_TIMING = { duration: 250, easing: Easing.bezier(0.22, 1, 0.36, 1) }
+const ICON_SWAP_TIMING = { duration: 250, easing: Easing.bezier(0.42, 0, 0.58, 1) }
+const NOTE_DOCK_TOP = 12
+const NOTE_BAR_CLEARANCE = 8
 // The AMOLED track is 52 wide and the 24 thumb sits 4 from each edge.
 const TOGGLE_TRAVEL = 20
 const NOTE_MODE_OPTIONS = [
@@ -1091,6 +1094,44 @@ function SwapIcon({
   )
 }
 
+function IconFade({
+  from,
+  to,
+  swapped,
+  size,
+  color,
+}: {
+  from: IconName
+  to: IconName
+  swapped: boolean
+  size: number
+  color: string
+}) {
+  const s = useStyles()
+  const progress = useSharedValue(swapped ? 1 : 0)
+  useEffect(() => {
+    progress.value = timing(swapped ? 1 : 0, ICON_SWAP_TIMING)
+  }, [progress, swapped])
+  const outgoing = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0, 1], [1, 0], Extrapolation.CLAMP),
+    transform: [{ scale: interpolate(progress.value, [0, 1], [1, 0.25], Extrapolation.CLAMP) }],
+  }))
+  const incoming = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0, 1], [0, 1], Extrapolation.CLAMP),
+    transform: [{ scale: interpolate(progress.value, [0, 1], [0.25, 1], Extrapolation.CLAMP) }],
+  }))
+  return (
+    <View style={{ width: size, height: size }}>
+      <Reanimated.View style={[s.swapIconLayer, outgoing]}>
+        <Icon name={from} size={size} color={color} />
+      </Reanimated.View>
+      <Reanimated.View style={[s.swapIconLayer, incoming]}>
+        <Icon name={to} size={size} color={color} />
+      </Reanimated.View>
+    </View>
+  )
+}
+
 function PillTabs<T extends string>({
   options,
   value,
@@ -1099,7 +1140,6 @@ function PillTabs<T extends string>({
   itemStyle,
   textStyle,
   pillStyle,
-  gap,
   inset,
   activeColor,
   idleColor,
@@ -1111,30 +1151,49 @@ function PillTabs<T extends string>({
   itemStyle?: React.ComponentProps<typeof View>['style']
   textStyle?: React.ComponentProps<typeof Text>['style']
   pillStyle: React.ComponentProps<typeof View>['style']
-  gap: number
   inset: number
   activeColor: string
   idleColor: string
 }) {
-  const [width, setWidth] = useState(0)
+  const [boxes, setBoxes] = useState<{ x: number; width: number }[]>([])
   const selected = Math.max(
     0,
     options.findIndex((option) => option.value === value)
   )
+  const measured = options.every((_, at) => !!boxes[at])
+  // Snapping the first placement keeps the pill from growing out of the corner.
+  const placed = useRef(false)
   const position = useSharedValue(selected)
+  const left = useSharedValue(0)
+  const width = useSharedValue(0)
   useEffect(() => {
-    position.value = spring(selected, PILL_SPRING)
+    position.value = timing(selected, SLIDE_TIMING)
   }, [position, selected])
-  const slot = width ? (width - inset * 2 - gap * (options.length - 1)) / options.length : 0
+  useEffect(() => {
+    const box = boxes[selected]
+    if (!box) return
+    if (!placed.current) {
+      placed.current = true
+      left.value = box.x
+      width.value = box.width
+      return
+    }
+    left.value = timing(box.x, SLIDE_TIMING)
+    width.value = timing(box.width, SLIDE_TIMING)
+  }, [boxes, left, selected, width])
   const pill = useAnimatedStyle(() => ({
-    opacity: width ? 1 : 0,
-    width: slot,
-    transform: [{ translateX: inset + position.value * (slot + gap) }],
+    width: width.value,
+    transform: [{ translateX: left.value }],
   }))
   return (
-    <View onLayout={(event) => setWidth(event.nativeEvent.layout.width)} style={style}>
+    <View style={style}>
       <Reanimated.View
-        style={[{ position: 'absolute', left: 0, top: inset, bottom: inset }, pillStyle, pill]}
+        style={[
+          { position: 'absolute', left: 0, top: inset, bottom: inset },
+          pillStyle,
+          pill,
+          { opacity: measured ? 1 : 0 },
+        ]}
       />
       {options.map((option, at) => (
         <Pressable
@@ -1142,6 +1201,15 @@ function PillTabs<T extends string>({
           accessibilityRole="tab"
           accessibilityState={{ selected: option.value === value }}
           onPress={() => onSelect(option.value)}
+          onLayout={(event) => {
+            const { x, width } = event.nativeEvent.layout
+            setBoxes((current) => {
+              if (current[at]?.x === x && current[at]?.width === width) return current
+              const copy = current.slice()
+              copy[at] = { x, width }
+              return copy
+            })
+          }}
           style={itemStyle}
         >
           <PillLabel
@@ -3992,9 +4060,32 @@ function NoteDetail({
   const [focusFind, setFocusFind] = useState(false)
   const findInput = useRef<React.ComponentRef<typeof TextInput>>(null)
   const [findArea, setFindArea] = useState(0)
+  const [dockWidth, setDockWidth] = useState(0)
+  const [dockActionX, setDockActionX] = useState(0)
+  const [modeBarWidth, setModeBarWidth] = useState(0)
+  const [contentWidth, setContentWidth] = useState(0)
+  const page = useSharedValue(mode === 'pdf' ? 1 : 0)
+  const sourceSlide = useAnimatedStyle(() => ({
+    transform: [{ translateX: -page.value * contentWidth }],
+  }))
+  const pdfSlide = useAnimatedStyle(() => ({
+    transform: [{ translateX: (1 - page.value) * contentWidth }],
+  }))
+  useEffect(() => {
+    page.value = timing(mode === 'pdf' ? 1 : 0, SLIDE_TIMING)
+  }, [mode, page])
   const findProgress = useSharedValue(findOpen ? 1 : 0)
   const findTrackStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: -findProgress.value * findArea }],
+  }))
+  // The slide alone leaves a slice of the bar on narrow screens.
+  const barShift =
+    dockWidth && modeBarWidth && dockActionX
+      ? Math.min(0, dockActionX - NOTE_BAR_CLEARANCE - (dockWidth + modeBarWidth) / 2)
+      : 0
+  const noteBarStyle = useAnimatedStyle(() => ({
+    opacity: 1 - findProgress.value,
+    transform: [{ translateX: -findProgress.value * findArea + barShift }],
   }))
   useEffect(() => {
     findProgress.value = timing(findOpen ? 1 : 0, { duration: 220 })
@@ -4338,9 +4429,14 @@ function NoteDetail({
               />
             </View>
           )}
-          <View style={s.flex}>
-            <View
-              style={[s.flex, mode !== 'source' && { display: 'none' }]}
+          <View
+            style={[s.flex, s.contentClip]}
+            onLayout={(event) => setContentWidth(event.nativeEvent.layout.width)}
+          >
+            <Reanimated.View
+              style={[s.flex, sourceSlide]}
+              pointerEvents={mode === 'source' ? 'auto' : 'none'}
+              accessibilityElementsHidden={mode !== 'source'}
               importantForAccessibility={mode === 'source' ? 'auto' : 'no-hide-descendants'}
             >
               {isRootTemplate(savedNote.path) && (
@@ -4371,9 +4467,9 @@ function NoteDetail({
                 onSave={(text) => void flushSave(text)}
                 onBack={leave}
               />
-            </View>
-            <View
-              style={[StyleSheet.absoluteFill, { opacity: mode === 'pdf' ? 1 : 0 }]}
+            </Reanimated.View>
+            <Reanimated.View
+              style={[StyleSheet.absoluteFill, pdfSlide, { opacity: contentWidth ? 1 : 0 }]}
               pointerEvents={mode === 'pdf' ? 'auto' : 'none'}
               accessibilityElementsHidden={mode !== 'pdf'}
               importantForAccessibility={mode === 'pdf' ? 'auto' : 'no-hide-descendants'}
@@ -4420,7 +4516,7 @@ function NoteDetail({
                   )}
                 </View>
               ) : null}
-            </View>
+            </Reanimated.View>
             <View pointerEvents="none" style={s.noteContentFade}>
               <Fade id="note-content-fade" color={colors.paper} mid={0.15} />
             </View>
@@ -4432,24 +4528,7 @@ function NoteDetail({
                 onLayout={(event) => setFindArea(event.nativeEvent.layout.width)}
               >
                 <Reanimated.View style={[s.noteFindTrack, findTrackStyle]}>
-                  <View
-                    style={[s.noteFindPanel, { width: findArea || '100%' }]}
-                    pointerEvents={findOpen ? 'none' : 'auto'}
-                  >
-                    <PillTabs
-                      options={NOTE_MODE_OPTIONS}
-                      value={mode}
-                      onSelect={switchMode}
-                      style={s.noteSegments}
-                      itemStyle={s.noteSegment}
-                      textStyle={s.noteSegmentText}
-                      pillStyle={{ backgroundColor: colors.accent, borderRadius: 24 }}
-                      gap={4}
-                      inset={6}
-                      activeColor={colors.onAccent}
-                      idleColor={colors.ink}
-                    />
-                  </View>
+                  <View style={[s.noteFindPanel, { width: findArea || '100%' }]} />
                   <View
                     style={[s.noteFindPanel, { width: findArea || '100%' }]}
                     pointerEvents={findOpen ? 'auto' : 'none'}
@@ -4492,41 +4571,69 @@ function NoteDetail({
                   </View>
                 </Reanimated.View>
               </View>
-              {mode === 'source' ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={findOpen ? 'Close find' : 'Find in note'}
-                  onPress={() => {
-                    if (findOpen) {
-                      setFindOpen(false)
-                      setFocusFind(false)
-                      Keyboard.dismiss()
-                      editor.current?.blur()
-                    } else {
-                      editor.current?.blur()
-                      setFocusFind(true)
-                      setFindOpen(true)
-                    }
-                  }}
-                  style={({ pressed }) => [s.noteDockButton, pressed && s.pressed]}
-                >
-                  <Icon name={findOpen ? 'close' : 'search'} size={24} color={colors.ink} />
-                </Pressable>
-              ) : (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Open PDF in the device viewer"
-                  disabled={openingPdf || !!autoPdf.error || !!pdfError}
-                  onPress={() => void openNativePdf()}
-                  style={({ pressed }) => [
-                    s.noteDockButton,
-                    pressed && s.pressed,
-                    (openingPdf || !!autoPdf.error || !!pdfError) && s.disabled,
-                  ]}
-                >
-                  <Icon name="maximize" size={28} color={colors.ink} />
-                </Pressable>
-              )}
+              <Reanimated.View
+                style={[s.noteModeBar, noteBarStyle]}
+                onLayout={(event) => setDockWidth(event.nativeEvent.layout.width)}
+                pointerEvents={findOpen ? 'none' : 'auto'}
+                accessibilityElementsHidden={findOpen}
+                importantForAccessibility={findOpen ? 'no-hide-descendants' : 'auto'}
+              >
+                <View onLayout={(event) => setModeBarWidth(event.nativeEvent.layout.width)}>
+                  <PillTabs
+                    options={NOTE_MODE_OPTIONS}
+                    value={mode}
+                    onSelect={switchMode}
+                    style={s.noteSegments}
+                    itemStyle={s.noteSegment}
+                    textStyle={s.noteSegmentText}
+                    pillStyle={{ backgroundColor: colors.accent, borderRadius: 24 }}
+                    inset={6}
+                    activeColor={colors.onAccent}
+                    idleColor={colors.ink}
+                  />
+                </View>
+              </Reanimated.View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={
+                  mode === 'pdf'
+                    ? 'Open PDF in the device viewer'
+                    : findOpen
+                      ? 'Close find'
+                      : 'Find in note'
+                }
+                onLayout={(event) => setDockActionX(event.nativeEvent.layout.x)}
+                disabled={mode === 'pdf' && (openingPdf || !!autoPdf.error || !!pdfError)}
+                onPress={() => {
+                  if (mode === 'pdf') {
+                    void openNativePdf()
+                    return
+                  }
+                  if (findOpen) {
+                    setFindOpen(false)
+                    setFocusFind(false)
+                    Keyboard.dismiss()
+                    editor.current?.blur()
+                    return
+                  }
+                  editor.current?.blur()
+                  setFocusFind(true)
+                  setFindOpen(true)
+                }}
+                style={({ pressed }) => [
+                  s.noteDockButton,
+                  pressed && s.pressed,
+                  mode === 'pdf' && (openingPdf || !!autoPdf.error || !!pdfError) && s.disabled,
+                ]}
+              >
+                <IconFade
+                  from={findOpen ? 'close' : 'search'}
+                  to="maximize"
+                  swapped={mode === 'pdf'}
+                  size={26}
+                  color={colors.ink}
+                />
+              </Pressable>
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -5146,7 +5253,6 @@ function AppearanceSettings({ onClose }: { onClose: () => void }) {
                 itemStyle={s.modeButton}
                 textStyle={s.modeText}
                 pillStyle={{ backgroundColor: colors.accent, borderRadius: 22 }}
-                gap={4}
                 inset={4}
                 activeColor={colors.onAccent}
                 idleColor={colors.ink}
@@ -5568,6 +5674,7 @@ function CustomColorSheet({
 function makeStyles(colors: ThemeColors) {
   return StyleSheet.create({
     flex: { flex: 1 },
+    contentClip: { overflow: 'hidden' },
     screen: { flex: 1, backgroundColor: colors.paper },
     launchScreen: {
       flex: 1,
@@ -6609,7 +6716,7 @@ function makeStyles(colors: ThemeColors) {
       alignItems: 'center',
       gap: 12,
       paddingHorizontal: 16,
-      paddingTop: 12,
+      paddingTop: NOTE_DOCK_TOP,
       paddingBottom: 28,
     },
     noteFindArea: {
@@ -6621,6 +6728,15 @@ function makeStyles(colors: ThemeColors) {
     },
     noteFindTrack: { flexDirection: 'row', height: 60 },
     noteFindPanel: { height: 60, justifyContent: 'center' },
+    // Absolute so it can center on the screen instead of the find field's width,
+    // and shifted by the same slide the find field uses.
+    noteModeBar: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: NOTE_DOCK_TOP,
+      alignItems: 'center',
+    },
     findDock: {
       height: 60,
       flexDirection: 'row',
@@ -6652,11 +6768,11 @@ function makeStyles(colors: ThemeColors) {
       paddingHorizontal: 4,
     },
     noteSegments: {
-      flex: 1,
       flexDirection: 'row',
       gap: 4,
       height: 60,
-      padding: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
       borderRadius: 30,
       backgroundColor: colors.surface,
       elevation: 8,
@@ -6666,8 +6782,8 @@ function makeStyles(colors: ThemeColors) {
       shadowOffset: { width: 0, height: 8 },
     },
     noteSegment: {
-      flex: 1,
       height: 48,
+      paddingHorizontal: 22,
       alignItems: 'center',
       justifyContent: 'center',
     },
