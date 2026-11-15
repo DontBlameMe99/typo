@@ -129,7 +129,14 @@ async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
   const renders: number[] = []
   const fetches = new Map<number, number>()
   const cleanups = new Map<number, number>()
-  const messages: { type: string; page?: number; pages?: number; uri?: string; url?: string }[] = []
+  const messages: {
+    type: string
+    page?: number
+    pages?: number
+    uri?: string
+    url?: string
+    message?: string
+  }[] = []
   let id = 0
   let destroyed = 0
   let workers = 0
@@ -427,6 +434,22 @@ test('a loaded document does not trip the load watchdog', async () => {
     await settle()
     view.fireTimers()
     expect(view.messages.filter((message) => message.type === 'error')).toEqual([])
+  } finally {
+    await view.close()
+  }
+})
+
+test('a stalled size batch keeps the watchdog armed', async () => {
+  const view = await viewer(40, { holdLayout: true })
+  try {
+    // The first pages are drawn while the second batch waits on the document. That
+    // pass must not disarm the timer covering the wait.
+    for (let turn = 0; turn < 8; turn++) await settle()
+    expect(view.pages.children).toHaveLength(16)
+    view.fireTimers()
+    const errors = view.messages.filter((message) => message.type === 'error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toContain('took too long')
   } finally {
     await view.close()
   }

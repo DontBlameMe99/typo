@@ -574,6 +574,7 @@ async function load(uri: string) {
     if (session !== current) return
     current.pdf = pdf
     // Pages are appended in batches below, so the document starts at its first page.
+    let loading = true
     const previous = pages.querySelectorAll('canvas')
     pages.replaceChildren()
     for (const canvas of previous) canvas.width = canvas.height = 1
@@ -635,7 +636,10 @@ async function load(uri: string) {
             if (buffer && !shown) parkCanvas(buffer)
           }
         }
-        stopWatchdog(current)
+        // A batch may be waiting on a page size right now, and its timer is the only
+        // one covering that wait, so the pass leaves the watchdog alone until loading
+        // is done.
+        if (!loading) stopWatchdog(current)
       },
       (cause) => fail(current, cause)
     )
@@ -680,6 +684,7 @@ async function load(uri: string) {
       resizePreview()
       if (start === 1) requestRender()
     }
+    loading = false
     clearSelection()
     requestRender()
     // The last batch arms the watchdog, and a pass that already finished will not
