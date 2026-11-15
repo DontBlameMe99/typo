@@ -202,12 +202,12 @@
       "updatedAt": "2026-11-07T19:49:02.018Z"
     },
     "workspace/1000-files/changed-refresh": {
-      "sha": "6e6573abcfa86e6f26109c2e9ef866cf11cb6954",
+      "sha": "45e43a108d17db7384e69039b379e63653b5d5e8",
       "method": 2,
-      "medianMs": 22.960406999999577,
-      "worstMedianMs": 23.38344799999959,
+      "medianMs": 23.114117999999507,
+      "worstMedianMs": 24.050893000000542,
       "budgetMs": 100,
-      "updatedAt": "2026-11-15T17:24:26.877Z"
+      "updatedAt": "2026-11-15T19:39:34.551Z"
     },
     "workspace/1000-files/unchanged-refresh": {
       "sha": "84c92cbb532cb128c8b189ce277c94bc6bf861d1",
