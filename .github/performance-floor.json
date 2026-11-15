@@ -280,6 +280,22 @@
       "worstMedianMs": 0.442450000000008,
       "budgetMs": 16.7,
       "updatedAt": "2026-11-11T16:23:56.058Z"
+    },
+    "pdf/20-pages/open": {
+      "sha": "03f37e3ef09b411e20f601b2e44e77e2ab3ff87f",
+      "method": 2,
+      "medianMs": 12.439030000000457,
+      "worstMedianMs": 13.665625999999975,
+      "budgetMs": 100,
+      "updatedAt": "2026-11-15T03:20:42.242Z"
+    },
+    "pdf/20-pages/page": {
+      "sha": "03f37e3ef09b411e20f601b2e44e77e2ab3ff87f",
+      "method": 2,
+      "medianMs": 3.2186719999999696,
+      "worstMedianMs": 3.6852200000002995,
+      "budgetMs": 16.7,
+      "updatedAt": "2026-11-15T03:20:42.242Z"
     }
   },
   "budgets": {
@@ -317,6 +333,8 @@
     "library/1000/sort-name-desc": 16.7,
     "library/5000/sort-modified-desc": 16.7,
     "library/5000/sort-name-asc": 16.7,
-    "library/5000/sort-name-desc": 16.7
+    "library/5000/sort-name-desc": 16.7,
+    "pdf/20-pages/open": 100,
+    "pdf/20-pages/page": 16.7
   }
 }
