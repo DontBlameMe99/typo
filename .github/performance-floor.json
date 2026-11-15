@@ -282,12 +282,12 @@
       "updatedAt": "2026-11-11T16:23:56.058Z"
     },
     "pdf/20-pages/open": {
-      "sha": "03f37e3ef09b411e20f601b2e44e77e2ab3ff87f",
+      "sha": "c574385ba27012ea891154ade340b4b3f0a09070",
       "method": 2,
-      "medianMs": 12.439030000000457,
-      "worstMedianMs": 13.665625999999975,
+      "medianMs": 9.723007999999936,
+      "worstMedianMs": 10.525977999999668,
       "budgetMs": 100,
-      "updatedAt": "2026-11-15T03:20:42.242Z"
+      "updatedAt": "2026-11-15T23:55:55.175Z"
     },
     "pdf/20-pages/page": {
       "sha": "03f37e3ef09b411e20f601b2e44e77e2ab3ff87f",
