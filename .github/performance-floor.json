@@ -130,12 +130,12 @@
       "updatedAt": "2026-11-14T18:30:58.562Z"
     },
     "search/1000/names": {
-      "sha": "41a5ab48e4e0f3cddb3c62421c2acea52b72a3ab",
+      "sha": "6e6573abcfa86e6f26109c2e9ef866cf11cb6954",
       "method": 2,
-      "medianMs": 0.6218969999999899,
-      "worstMedianMs": 0.6498639999999796,
+      "medianMs": 0.7751760000001013,
+      "worstMedianMs": 0.8193999999998596,
       "budgetMs": 33.4,
-      "updatedAt": "2026-11-10T14:22:02.498Z"
+      "updatedAt": "2026-11-15T17:24:26.877Z"
     },
     "search/1000/reindex": {
       "sha": "07720764e9c46f1580267f9eda207626fe661b80",
@@ -202,12 +202,12 @@
       "updatedAt": "2026-11-07T19:49:02.018Z"
     },
     "workspace/1000-files/changed-refresh": {
-      "sha": "5237aed48bb33c8441f7f3044fa361e1d5ea4666",
+      "sha": "6e6573abcfa86e6f26109c2e9ef866cf11cb6954",
       "method": 2,
-      "medianMs": 16.695913000000473,
-      "worstMedianMs": 16.800946000000295,
+      "medianMs": 22.960406999999577,
+      "worstMedianMs": 23.38344799999959,
       "budgetMs": 100,
-      "updatedAt": "2026-11-07T19:49:02.018Z"
+      "updatedAt": "2026-11-15T17:24:26.877Z"
     },
     "workspace/1000-files/unchanged-refresh": {
       "sha": "84c92cbb532cb128c8b189ce277c94bc6bf861d1",
