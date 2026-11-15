@@ -85,7 +85,19 @@ import { loadFavorites, loadFavoritesSync, storeFavorites } from './src/favorite
 import { Icon, type IconName } from './src/icons'
 import { loadVaultIndex, loadVaultIndexSync, storeVaultIndex } from './src/library-cache'
 import type { VaultIndex } from './src/library-index'
-import { type FolderRowItem, type FolderRowsCache, sortedNoteRows } from './src/library-rows'
+import {
+  CARD_HEIGHT,
+  CHIP_HEIGHT,
+  type FolderRowItem,
+  type FolderRowsCache,
+  type LibraryRow,
+  layoutRows,
+  ROW_GAP,
+  rowLayout,
+  SWIPE_CARD_REVEAL,
+  SWIPE_CHIP_REVEAL,
+  sortedNoteRows,
+} from './src/library-rows'
 import { TypoMark } from './src/Mark'
 import { NoteSearch } from './src/NoteSearch'
 import Pdf from './src/PdfViewer'
@@ -167,11 +179,6 @@ type TrashUndo = {
   result: Promise<TrashedNote | null>
 }
 type RowAction = 'favorite' | 'trash'
-type LibraryRow =
-  | { kind: 'space'; key: string; height: number }
-  | { kind: 'folders'; key: string; items: FolderRowItem[] }
-  | { kind: 'note'; key: string; result: SearchResult }
-type RowLayout = { length: number; offset: number }
 const warmNote: Note = { uri: '', path: '', title: '', source: '', modifiedAt: null }
 const EMPTY_NOTES: Note[] = []
 const EMPTY_FOLDERS: FolderRowItem[] = []
@@ -206,16 +213,11 @@ const noteSorts = [
   descValue: NoteSort
   defaultValue: NoteSort
 }[]
-const SWIPE_CHIP_REVEAL = 96
-const SWIPE_CARD_REVEAL = 120
 const SWIPE_SPRING = { damping: 26, mass: 0.7, overshootClamping: true, stiffness: 330 }
 // The pane tucks this far under the row so its colour fills the rounded
 // corner notch instead of leaving a plain strip of the row surface.
 const PANE_OVERLAP = 16
 const PANE_FADE = 30 + PANE_OVERLAP
-const CHIP_HEIGHT = 54
-const CARD_HEIGHT = 96
-const ROW_GAP = 8
 const SHEET_SPRING = { damping: 34, mass: 0.8, overshootClamping: true, stiffness: 340 }
 // Sheets rise into place with a short travel, a fade, and a touch of blur.
 const SHEET_REVEAL_EASE = Easing.bezier(0.22, 1, 0.36, 1)
@@ -290,23 +292,6 @@ function folderPathLabel(path: string, vaultName: string): string {
   if (!path) return vaultName
   const parts = path.split('/')
   return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : path
-}
-
-function rowLength(row: LibraryRow): number {
-  if (row.kind === 'space') return row.height
-  if (row.kind === 'folders') return CHIP_HEIGHT + ROW_GAP
-  return CARD_HEIGHT + ROW_GAP
-}
-
-function layoutRows(rows: LibraryRow[]): RowLayout[] {
-  const layout: RowLayout[] = []
-  let offset = 0
-  for (const row of rows) {
-    const length = rowLength(row)
-    layout.push({ length, offset })
-    offset += length
-  }
-  return layout
 }
 
 function sameList<T>(a: readonly T[], b: readonly T[]): boolean {
@@ -1914,7 +1899,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
         path,
         current,
         rows,
-        getItemLayout: (_: unknown, index: number) => ({ ...layout[index], index }),
+        getItemLayout: (_: unknown, index: number) => rowLayout(layout, index),
         empty: orderedFolders.length === 0 && sorted.length === 0,
       }
     })

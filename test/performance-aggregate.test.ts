@@ -42,7 +42,7 @@ async function writeRun(sha: string, round: number, value: number | number[], na
 }
 
 function run() {
-  return Bun.spawn(['bun', 'scripts/performance-aggregate.ts', input, output, '3'], {
+  return Bun.spawn([process.execPath, 'scripts/performance-aggregate.ts', input, output, '3'], {
     stdout: 'pipe',
     stderr: 'pipe',
   })

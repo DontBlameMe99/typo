@@ -26,7 +26,8 @@ async function run(name: string, current: string, baseline?: string, minimum = 8
   const output = join(directory, `${name}.md`)
   await writeFile(input, current)
   if (baseline) await writeFile(join(directory, `${name}-baseline.xml`), baseline)
-  const child = Bun.spawn(['bun', 'scripts/coverage-check.ts', input, String(minimum), output], {
+  const command = [process.execPath, 'scripts/coverage-check.ts', input, String(minimum), output]
+  const child = Bun.spawn(command, {
     env: {
       ...process.env,
       GITHUB_REPOSITORY: 'owner/repo',

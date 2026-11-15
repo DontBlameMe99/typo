@@ -4,6 +4,40 @@ import type { Note, SearchResult } from './types'
 export type NoteRowItem = { kind: 'note'; result: SearchResult }
 export type FolderRowItem = { kind: 'folder'; path: string; name: string }
 
+export type LibraryRow =
+  | { kind: 'space'; key: string; height: number }
+  | { kind: 'folders'; key: string; items: FolderRowItem[] }
+  | { kind: 'note'; key: string; result: SearchResult }
+export type RowLayout = { length: number; offset: number }
+
+export const SWIPE_CHIP_REVEAL = 96
+export const SWIPE_CARD_REVEAL = 120
+export const CHIP_HEIGHT = 54
+export const CARD_HEIGHT = 96
+export const ROW_GAP = 8
+
+function rowLength(row: LibraryRow): number {
+  if (row.kind === 'space') return row.height
+  if (row.kind === 'folders') return CHIP_HEIGHT + ROW_GAP
+  return CARD_HEIGHT + ROW_GAP
+}
+
+export function layoutRows(rows: LibraryRow[]): RowLayout[] {
+  const layout: RowLayout[] = []
+  let offset = 0
+  for (const row of rows) {
+    const length = rowLength(row)
+    layout.push({ length, offset })
+    offset += length
+  }
+  return layout
+}
+
+// The shape FlatList asks getItemLayout for: the row's layout plus its index.
+export function rowLayout(layout: RowLayout[], index: number): RowLayout & { index: number } {
+  return { ...layout[index], index }
+}
+
 const noteResults = new WeakMap<Note, SearchResult>()
 const noteRows = new WeakMap<SearchResult, NoteRowItem>()
 
