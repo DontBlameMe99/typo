@@ -1790,6 +1790,7 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
 
   const deferredQuery = useDeferredValue(query)
   const [searchResults, setResults] = useState<SearchResult[]>([])
+  const searchFailure = useRef<string | null>(null)
   const [searchPending, setSearchPending] = useState(false)
   const searchBusy = searchPending || deferredQuery !== query
   const results = useMemo(() => {
@@ -2438,8 +2439,15 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
   }, [])
   const searchResultsReady = useCallback((next: SearchResult[]) => {
     setResults(next)
+    // A search that answers after a restart must not leave its own failure up.
+    if (searchFailure.current !== null) {
+      const failure = searchFailure.current
+      searchFailure.current = null
+      setError((current) => (current === failure ? null : current))
+    }
   }, [])
   const searchError = useCallback((message: string) => {
+    searchFailure.current = message
     setResults([])
     setError(message)
   }, [])

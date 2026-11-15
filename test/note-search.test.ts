@@ -59,8 +59,9 @@ function search(initial: Omit<Props, 'onResults' | 'onError' | 'onPending'>, fai
     },
     useState(value: unknown) {
       const index = cursor++
+      if (!(index in states)) states[index] = value
       return [
-        index in states ? states[index] : value,
+        states[index],
         (next: unknown) => {
           const resolved =
             typeof next === 'function' ? (next as (old: unknown) => unknown)(states[index]) : next
@@ -84,18 +85,31 @@ function search(initial: Omit<Props, 'onResults' | 'onError' | 'onPending'>, fai
     },
   }
 
+  // The search deadline is measured against virtual time so a test does not
+  // wait for it.
+  const timers = new Map<number, { at: number; run(): void }>()
+  let clock = 0
+  let nextTimer = 1
   const module = { exports: {} }
   runInNewContext(source, {
     module,
     exports: module.exports,
     __DEV__: false,
     performance,
+    setTimeout(run: () => void, delay = 0) {
+      const id = nextTimer++
+      timers.set(id, { at: clock + Number(delay), run })
+      return id
+    },
+    clearTimeout(id: number) {
+      timers.delete(id)
+    },
     require(name: string) {
       if (name === 'react') return react
       if (name === 'react-native') return { View: 'View' }
       if (name === 'react-native-webview') return { WebView: 'WebView' }
       if (name === 'react/jsx-runtime' || name === 'react/jsx-dev-runtime') {
-        const element = (type: unknown, props: unknown) => ({ type, props })
+        const element = (type: unknown, props: unknown, key?: unknown) => ({ type, props, key })
         return { jsx: element, jsxDEV: element }
       }
       if (name.endsWith('/editor/document')) return { inlineJson: JSON.stringify }
@@ -137,6 +151,20 @@ function search(initial: Omit<Props, 'onResults' | 'onError' | 'onPending'>, fai
       render()
     }
   }
+  const advance = async (ms: number) => {
+    const target = clock + ms
+    while (true) {
+      const due = [...timers.entries()]
+        .filter(([, timer]) => timer.at <= target)
+        .sort((a, b) => a[1].at - b[1].at)[0]
+      if (!due) break
+      timers.delete(due[0])
+      clock = due[1].at
+      due[1].run()
+      await settle()
+    }
+    clock = target
+  }
   render()
 
   const child = () => {
@@ -149,10 +177,17 @@ function search(initial: Omit<Props, 'onResults' | 'onError' | 'onPending'>, fai
       onRenderProcessGone(): void
     }
   }
+  // Remounting is the only way to replace a runtime that stopped answering.
+  const webviewKey = () => {
+    const children = (view as Element).props.children as (Element & { key?: unknown }) | undefined
+    if (!children) throw new Error('No search WebView')
+    return children.key
+  }
   return {
     ...hooks,
     runtime,
     settle,
+    advance,
     setProps(next: Partial<Props>) {
       props = { ...props, ...next }
       dirty = true
@@ -163,17 +198,20 @@ function search(initial: Omit<Props, 'onResults' | 'onError' | 'onPending'>, fai
       this.message({ type: 'boot' })
     },
     requestId() {
+      return this.request().id
+    },
+    request() {
       const script = injected.at(-1)
       if (!script) throw new Error('No search request was sent')
-      return (
-        JSON.parse(script.replace(/^window\.typoSearch\(/u, '').replace(/\);true;$/u, '')) as {
-          id: number
-        }
-      ).id
+      return JSON.parse(script.replace(/^window\.typoSearch\(/u, '').replace(/\);true;$/u, '')) as {
+        id: number
+        query: string
+      }
     },
     message(data: unknown) {
       child().onMessage({ nativeEvent: { data: JSON.stringify(data) } })
     },
+    webviewKey,
   }
 }
 
@@ -235,4 +273,157 @@ test('a WebView load error remounts after the next query', async () => {
   api.setProps({ query: 'next' })
   await api.settle()
   expect(api.child().source.uri).toBe('file:///search.html')
+})
+
+test('a page that boots again resends the query the first page never answered', async () => {
+  const api = search({ notes: [], query: 'query', mode: 'names' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  const first = api.request()
+  // A renderer respawn reloads the page and loses the index with it.
+  api.boot()
+  await api.settle()
+  expect(api.request()).toEqual({ ...first, id: first.id + 1 })
+  expect(api.onError).not.toHaveBeenCalled()
+})
+
+test('a query that is never answered reports a failure and restarts the runtime', async () => {
+  const api = search({ notes: [], query: 'query', mode: 'names' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  const first = api.request()
+  const mounted = api.webviewKey()
+  await api.advance(29_999)
+  expect(api.onError).not.toHaveBeenCalled()
+  await api.advance(1)
+  expect(api.onError).toHaveBeenCalledWith('The note search stopped responding and is restarting.')
+  expect(api.onPending).toHaveBeenLastCalledWith(false)
+  expect(api.webviewKey()).not.toBe(mounted)
+  // The restarted runtime is empty, so the boot asks for the whole vault again.
+  api.boot()
+  await api.settle()
+  const retry = api.request()
+  expect(retry.query).toBe(first.query)
+  expect(retry.id).not.toBe(first.id)
+  expect(api.onResults).not.toHaveBeenCalled()
+})
+
+test('a runtime that keeps failing is restarted once per query, not forever', async () => {
+  const api = search({ notes: [], query: 'query', mode: 'names' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  await api.advance(30_000)
+  api.boot()
+  await api.settle()
+  const remounted = api.webviewKey()
+  await api.advance(30_000)
+  expect(api.onError).toHaveBeenLastCalledWith(
+    'The note search is not responding. Clear the search and try again.'
+  )
+  expect(api.webviewKey()).toBe(remounted)
+})
+
+test('a query typed before the first boot still gets a deadline', async () => {
+  const api = search({ notes: [], query: 'query', mode: 'names' })
+  await api.settle()
+  expect(api.onPending).toHaveBeenLastCalledWith(true)
+  await api.advance(30_000)
+  expect(api.onError).toHaveBeenCalledWith('The note search stopped responding and is restarting.')
+  expect(api.onPending).toHaveBeenLastCalledWith(false)
+  // The replacement page gets its own deadline, and a second silence is final.
+  const mounted = api.webviewKey()
+  await api.advance(30_000)
+  expect(api.onError).toHaveBeenLastCalledWith(
+    'The note search is not responding. Clear the search and try again.'
+  )
+  expect(api.webviewKey()).toBe(mounted)
+})
+
+test('a note change during a search does not push the deadline back', async () => {
+  const note = {
+    uri: 'content://one',
+    path: 'one.typ',
+    title: 'One',
+    source: '= One',
+    modifiedAt: null,
+  }
+  const api = search({ notes: [note], query: 'query', mode: 'all' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  await api.advance(20_000)
+  api.setProps({ notes: [{ ...note, source: '= One, edited' }] })
+  await api.settle()
+  await api.advance(9_999)
+  expect(api.onError).not.toHaveBeenCalled()
+  await api.advance(1)
+  expect(api.onError).toHaveBeenCalledWith('The note search stopped responding and is restarting.')
+})
+
+test('clearing the query before the runtime boots cancels the deadline', async () => {
+  const api = search({ notes: [], query: 'query', mode: 'names' })
+  await api.settle()
+  api.setProps({ query: '' })
+  await api.settle()
+  await api.advance(60_000)
+  expect(api.onError).not.toHaveBeenCalled()
+  expect(api.onPending).toHaveBeenLastCalledWith(false)
+})
+
+test('the one restart per query is available again once the search ends', async () => {
+  const api = search({ notes: [], query: 'query', mode: 'names' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  await api.advance(30_000)
+  api.boot()
+  await api.settle()
+  await api.advance(30_000)
+  expect(api.onError).toHaveBeenLastCalledWith(
+    'The note search is not responding. Clear the search and try again.'
+  )
+  api.setProps({ query: '' })
+  await api.settle()
+  api.setProps({ query: 'query' })
+  await api.settle()
+  const mounted = api.webviewKey()
+  await api.advance(30_000)
+  expect(api.onError).toHaveBeenLastCalledWith(
+    'The note search stopped responding and is restarting.'
+  )
+  expect(api.webviewKey()).not.toBe(mounted)
+})
+
+test('a page that never boots is retried after the search is cleared and typed again', async () => {
+  const api = search({ notes: [], query: 'query', mode: 'names' })
+  await api.settle()
+  await api.advance(30_000)
+  const mounted = api.webviewKey()
+  expect(api.onError).toHaveBeenLastCalledWith(
+    'The note search stopped responding and is restarting.'
+  )
+  api.setProps({ query: '' })
+  await api.settle()
+  api.setProps({ query: 'query' })
+  await api.settle()
+  await api.advance(30_000)
+  expect(api.onError).toHaveBeenLastCalledWith(
+    'The note search stopped responding and is restarting.'
+  )
+  expect(api.webviewKey()).not.toBe(mounted)
+})
+
+test('an answered query never reaches the deadline', async () => {
+  const api = search({ notes: [], query: 'query', mode: 'names' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  const id = api.requestId()
+  api.message({ type: 'results', id, results: [] })
+  await api.advance(60_000)
+  expect(api.onError).not.toHaveBeenCalled()
+  expect(api.onResults).toHaveBeenCalledWith([])
 })
