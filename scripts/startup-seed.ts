@@ -112,12 +112,13 @@ if (!allowed)
     `the folder picker never asked to allow access\nlast screen: ${await screenSummary()}`
   )
 
-// The folder chip appears as soon as the picker returns, so it proves the
-// grant landed before the scan is waited for.
-const folder = FOLDER.slice(FOLDER.lastIndexOf('/') + 1)
+// The library paints the fixture's preview once the picker returns and the
+// vault is scanned. The picker itself only lists file names, so the preview
+// proves the app is back with the folder open. A folder chip or caption in the
+// app chrome cannot stand in for this, since it moves with the layout.
 const granted = Date.now() + 60_000
-while (Date.now() < granted && !(await hasText(`Notes folder: ${folder}`))) await wait(1000)
-if (!(await hasText(`Notes folder: ${folder}`)))
+while (Date.now() < granted && !(await hasText('Paragraph 0 of note'))) await wait(1000)
+if (!(await hasText('Paragraph 0 of note')))
   throw new Error(`the app never opened the picked folder\nlast screen: ${await screenSummary()}`)
 
 // The first launch indexes the vault in the background. Wait for a row to
