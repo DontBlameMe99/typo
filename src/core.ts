@@ -572,9 +572,9 @@ function literalHit(
   lower: string
 ): ContentHit | null {
   const length = term.length
-  const starts = lineOffsets(entry, text)
   let at = text.indexOf(term)
   if (at < 0) return null
+  const starts = lineOffsets(entry, text)
   let line = 0
   let best = -Infinity
   let bestAt = 0
@@ -717,16 +717,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
       }
     }
     if (sameOrder) {
-      for (let index = 0; index < next.length; index++) {
-        const entry = current[index]
-        const note = next[index]
-        if (entry.text !== note.source) {
-          entry.text = note.source
-          entry.folded = undefined
-          entry.starts = undefined
-        }
-        entry.note = note
-      }
+      for (let index = 0; index < next.length; index++) refresh(current[index], next[index])
       return current
     }
     const byPath = new Map(current.map((entry) => [entry.note.path, entry]))

@@ -309,6 +309,33 @@ describe('search', () => {
     expect((await search('lego', 'content'))[0].note.path).toBe('third.typ')
   })
 
+  // The line starts belong to the folded text, so an edit that adds or removes a
+  // line has to drop them with the fold or the next query reports a stale line.
+  test('an edit that adds a line above a match reports the new line', async () => {
+    const search = createNoteSearch([note('a.typ', 'line one\nline two\nline three\n')])
+    expect((await search('three', 'content'))[0].line).toBe(3)
+    search.update([note('a.typ', 'line one\n\nline two\nline three\n')])
+    const [result] = await search('three', 'content')
+    expect(result.line).toBe(4)
+    expect(result.snippet).toBe('line three')
+  })
+
+  // Multi-word queries compare folded terms against the folded name, so a term
+  // only has to differ in case or accent to be dropped by a raw comparison.
+  test('an edit is matched against its folded name and content', async () => {
+    const search = createNoteSearch([
+      note('Papers/alpha.typ', '#title[Papers Alpha]\nLEGO'),
+      note('Papers/beta.typ', '#title[Papers Beta]\nNothing here.'),
+    ])
+    expect((await search('papers alpha', 'names')).map((r) => r.note.path)).toEqual([
+      'Papers/alpha.typ',
+      'Papers/beta.typ',
+    ])
+    search.update([note('Papers/alpha.typ', '#title[Papers Alpha]\nLEGO bricks')])
+    expect(await search('papers alpha', 'all')).toHaveLength(1)
+    expect((await search('lego bricks', 'content'))[0].note.path).toBe('Papers/alpha.typ')
+  })
+
   test('updates before the content index is built', async () => {
     const search = createNoteSearch([note('first.typ', '#title[First]\nLEGO bricks.')])
     search.update([note('second.typ', '#title[Second]\nLEGO blocks.')])
