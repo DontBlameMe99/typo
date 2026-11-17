@@ -27,14 +27,11 @@ Start the dev server:
 Send the user the printed `exp://` link. The script rebuilds `dist/` when
 needed.
 
-Other commands: `status`, `restart`, `rebuild`, `stop`. Logs are in
-`~/.cache/typo-dev/logs/`.
+Other commands: `status`, `rebuild`. Logs are in `~/.cache/typo-dev/logs/`.
 
-Stop the server when done:
-
-```sh
-./scripts/dev-mobile.sh stop
-```
+Deleting the worktree stops its server on its own, within a minute. `start`
+also prunes dead reservations and restarts a wedged server on its port, so
+there is no stop or restart step.
 
 ## Native changes
 

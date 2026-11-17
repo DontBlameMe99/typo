@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Start and stop a Metro server for testing a worktree in Expo Go.
+# Start a Metro server for testing a worktree in Expo Go. A server stops on its
+# own once its worktree is deleted.
 #
 #   ./scripts/dev-mobile.sh start [--host <host>] [--port <port>]
-#   ./scripts/dev-mobile.sh stop
-#   ./scripts/dev-mobile.sh restart [options]
 #   ./scripts/dev-mobile.sh status
 #   ./scripts/dev-mobile.sh rebuild
 #
-# See AGENTS.md and docs/mobile-testing.md.
+# See AGENTS.md and .agents/skills/mobile-testing/SKILL.md.
 # shellcheck disable=SC2153
 set -euo pipefail
 
@@ -21,18 +20,18 @@ die() {
 }
 
 usage() {
-  sed -n '3,9p' "$script_path" | sed 's/^# \{0,1\}//'
+  sed -n '5,7p' "$script_path" | sed 's/^# \{0,1\}//'
 }
 
 cmd="${1:-}"
 case "$cmd" in
-  start|stop|restart|status|rebuild) shift ;;
+  start|status|rebuild) shift ;;
   help|--help|-h) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
 
 # Re-run inside the Nix shell before parsing options, so all arguments survive.
-if [[ $cmd == start || $cmd == restart || $cmd == rebuild ]]; then
+if [[ $cmd == start || $cmd == rebuild ]]; then
   if ! command -v bun >/dev/null || ! command -v wasm-opt >/dev/null || ! command -v node >/dev/null; then
     if [[ -n ${TYPO_DEV_MOBILE_NIX:-} ]]; then
       die "bun, wasm-opt, and node are required. Run this from 'nix develop'."
@@ -94,6 +93,39 @@ kill_server() {
   fi
 }
 
+# Prints the directory a live PID holds, with a trailing " (deleted)" once that
+# directory is gone.
+process_cwd() {
+  readlink "/proc/$1/cwd" 2>/dev/null || true
+}
+
+# True when the PID is this worktree's Expo CLI, not a recycled PID. PIDs get
+# reused, so prove that before killing anything.
+owns_server() {
+  [[ "$(process_cwd "$1")" == "$root" ]] || return 1
+  grep -qaF -- "$root/node_modules/.bin/expo" "/proc/$1/cmdline" 2>/dev/null
+}
+
+# Removes reservations whose server is gone. The port lock also excludes a start
+# that is reserving that port right now.
+prune_state() {
+  local dir port pid
+  for dir in "${ports_dir:?}"/*/; do
+    [[ -d $dir ]] || continue
+    port="$(basename "$dir")"
+    exec 9>"$ports_dir/$port.lock" || continue
+    if ! flock -n 9; then
+      exec 9>&-
+      continue
+    fi
+    pid="$(cat "$dir/pid" 2>/dev/null || true)"
+    if [[ -z $pid ]] || ! kill -0 "$pid" 2>/dev/null; then
+      rm -rf "$dir"
+    fi
+    exec 9>&-
+  done
+}
+
 acquire_worktree_lock() {
   mkdir -p "$state_dir"
   exec 8>"$state_dir/start.lock"
@@ -105,35 +137,6 @@ acquire_worktree_lock() {
 release_worktree_lock() {
   flock -u 8 2>/dev/null || true
   exec 8>&-
-}
-
-stop_server() {
-  acquire_worktree_lock
-  if [[ ! -f $state ]]; then
-    release_worktree_lock
-    echo "No saved server for this worktree."
-    return 0
-  fi
-  # shellcheck disable=SC1090
-  source "$state"
-  if kill -0 "$PID" 2>/dev/null; then
-    local cwd=""
-    cwd="$(readlink "/proc/$PID/cwd" 2>/dev/null || true)"
-    if [[ -n $cwd && $cwd != "$WORKTREE" ]]; then
-      echo "PID $PID no longer belongs to this worktree. Removing stale state."
-      rm -f "$state"
-      rm -rf "${ports_dir:?}/${PORT:?}"
-      release_worktree_lock
-      return 0
-    fi
-    kill_server "$PID"
-    echo "Stopped port $PORT."
-  else
-    echo "Server on port $PORT was already stopped."
-  fi
-  rm -f "$state"
-  rm -rf "${ports_dir:?}/${PORT:?}"
-  release_worktree_lock
 }
 
 detect_host() {
@@ -188,11 +191,11 @@ try_reserve_port() {
         return 1
       fi
     fi
-    if ! port_free "$p"; then
-      exec 7>&-
-      return 1
-    fi
     rm -rf "$dir"
+  fi
+  if ! port_free "$p"; then
+    exec 7>&-
+    return 1
   fi
   if ! mkdir "$dir"; then
     exec 7>&-
@@ -207,7 +210,7 @@ try_reserve_port() {
 }
 
 pick_port() {
-  # Stable per worktree, so the reported link survives restarts.
+  # Stable per worktree, so the link stays the same.
   local base p i
   base="$(
     node -e 'const h=require("crypto").createHash("sha1").update(process.argv[1]).digest().readUInt16BE(0);process.stdout.write(String(8100+(h%100)))' \
@@ -247,7 +250,7 @@ build_dist() {
 }
 
 start_server() {
-  local host="" port=""
+  local host="" port="" heal_port=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --host|--port)
@@ -262,6 +265,8 @@ start_server() {
     esac
   done
 
+  command -v setsid >/dev/null || die "setsid is required to run the server."
+  prune_state
   acquire_worktree_lock
   if [[ -f $state ]]; then
     # shellcheck disable=SC1090
@@ -272,15 +277,25 @@ start_server() {
         echo "Already running on port $PORT."
         echo "Link: $URL"
         echo "Log: $LOG"
-        echo "Stop: $script_path stop"
         return
       fi
-      echo "Process $PID is alive but Metro is not responding." >&2
-      echo "Run '$script_path restart' or '$script_path stop'." >&2
-      exit 1
+      # Alive but not answering: the server is wedged. Kill its group so its
+      # port can be reused.
+      if owns_server "$PID"; then
+        kill_server "$PID"
+        # The listening socket can outlive the process for a moment.
+        for _ in {1..25}; do
+          port_free "$PORT" && break
+          sleep 0.2
+        done
+        heal_port="$PORT"
+      fi
     fi
     rm -f "$state"
-    rm -rf "${ports_dir:?}/${PORT:?}"
+    # A stale state file can name a port another worktree now owns.
+    if [[ "$(cat "$ports_dir/$PORT/worktree" 2>/dev/null)" == "$root" ]]; then
+      rm -rf "${ports_dir:?}/${PORT:?}"
+    fi
   fi
 
   [[ -n $host ]] || host="$(detect_host)"
@@ -289,11 +304,14 @@ start_server() {
   bun install --frozen-lockfile
   build_dist 0
 
-  if [[ -z $port ]]; then
+  if [[ -n $port ]]; then
+    try_reserve_port "$port" || die "Port $port is in use."
+  elif [[ -n $heal_port ]] && try_reserve_port "$heal_port"; then
+    # Keep the link the user already holds.
+    port="$heal_port"
+  else
     pick_port
     port="$picked_port"
-  elif ! try_reserve_port "$port"; then
-    die "Port $port is in use."
   fi
 
   mkdir -p "$log_dir"
@@ -301,13 +319,23 @@ start_server() {
   local expo_args=(start --host lan --port "$port" --go)
 
   echo "Starting Metro on port $port..."
-  if command -v setsid >/dev/null; then
-    setsid env REACT_NATIVE_PACKAGER_HOSTNAME="$host" EXPO_NO_TELEMETRY=1 \
-      "$root/node_modules/.bin/expo" "${expo_args[@]}" 8>&- 9>&- >"$log" 2>&1 </dev/null &
+  # A watcher in the server's session kills the group once .git is gone, so a
+  # deleted worktree never leaves Metro behind. Poll .git, never the root:
+  # Metro recreates paths under its root, and .git is a file in a linked
+  # worktree and a directory in a primary checkout.
+  # shellcheck disable=SC2016
+  local watcher='if [ -e "$1/.git" ]; then
+    ( while [ -e "$1/.git" ] && kill -0 $$; do sleep "$2"; done; kill -TERM 0 ) &
   else
-    nohup env REACT_NATIVE_PACKAGER_HOSTNAME="$host" EXPO_NO_TELEMETRY=1 \
-      "$root/node_modules/.bin/expo" "${expo_args[@]}" 8>&- 9>&- >"$log" 2>&1 </dev/null &
+    echo "dev-mobile: no .git under $1, this server will not stop itself." >&2
   fi
+  shift 2
+  exec "$@"'
+  local launcher=(
+    bash -c "$watcher" _ "$root" 60 "$root/node_modules/.bin/expo" "${expo_args[@]}"
+  )
+  setsid env REACT_NATIVE_PACKAGER_HOSTNAME="$host" EXPO_NO_TELEMETRY=1 \
+    "${launcher[@]}" 8>&- 9>&- >"$log" 2>&1 </dev/null &
   local pid=$!
   printf '%s\n' "$pid" >"$ports_dir/$port/pid.$$.tmp"
   mv "$ports_dir/$port/pid.$$.tmp" "$ports_dir/$port/pid"
@@ -370,19 +398,11 @@ start_server() {
   echo "Open in Expo Go: $url"
   echo "Branch: ${branch:-detached}"
   echo "Log: $log"
-  echo "Stop: $script_path stop"
 }
 
 case "$cmd" in
   start)
     start_server "$@"
-    ;;
-  restart)
-    stop_server
-    start_server "$@"
-    ;;
-  stop)
-    stop_server
     ;;
   status)
     if [[ ! -f $state ]]; then

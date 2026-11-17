@@ -84,5 +84,5 @@ doc files.
 
 ## Response Rules
 
-If it would help if a user tests the change, set it up using
-`docs/mobile-testing.md` and ask the user to do so.
+If it would help if a user tests the change, set it up using the
+`mobile-testing` skill and ask the user to do so.
