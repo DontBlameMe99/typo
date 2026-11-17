@@ -16,6 +16,50 @@ function lineStarts(source: string) {
   return starts
 }
 
+// Index of the first element greater than `index`.
+function firstAfter(starts: number[], index: number) {
+  let low = 0
+  let high = starts.length
+  while (low < high) {
+    const middle = (low + high) >> 1
+    if (starts[middle] <= index) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+// Only the lines the edit touches can move. Everything before it is byte for
+// byte the same text, and everything after it shifts by one constant.
+function updateStarts(
+  starts: number[],
+  source: string,
+  start: number,
+  oldEnd: number,
+  newEnd: number
+) {
+  const kept = firstAfter(starts, start)
+  const tail = firstAfter(starts, oldEnd)
+  const shifted = newEnd - oldEnd
+  const added: number[] = []
+  let index = source.indexOf('\n', start)
+  while (index !== -1 && index < newEnd) {
+    added.push(index + 1)
+    index = source.indexOf('\n', index + 1)
+  }
+  const tailStart = kept + added.length
+  const tailCount = starts.length - tail
+  // The tail moves right when the edit adds lines, and copyWithin cannot grow an
+  // array, so the shift is written element by element in the safe direction.
+  if (tailStart + tailCount > starts.length) starts.length = tailStart + tailCount
+  if (tailStart >= tail) {
+    for (let i = tailCount - 1; i >= 0; i--) starts[tailStart + i] = starts[tail + i] + shifted
+  } else {
+    for (let i = 0; i < tailCount; i++) starts[tailStart + i] = starts[tail + i] + shifted
+  }
+  starts.length = tailStart + tailCount
+  for (let i = 0; i < added.length; i++) starts[kept + i] = added[i]
+}
+
 function pointAt(starts: number[], index: number) {
   let low = 0
   let high = starts.length - 1
@@ -73,12 +117,7 @@ function insidePair(before: string, after: string, oldIndex: number, newIndex: n
   return code >= 0xdc00 && code <= 0xdfff
 }
 
-export function replacementEdit(
-  before: string,
-  after: string,
-  beforeStarts = lineStarts(before),
-  afterStarts = lineStarts(after)
-) {
+function changedSpan(before: string, after: string) {
   let start = sharedStart(before, after)
   if (start > 0 && insidePair(before, after, start, start)) start--
   let { oldEnd, newEnd } = sharedEnd(before, after, start)
@@ -86,15 +125,30 @@ export function replacementEdit(
     oldEnd++
     newEnd++
   }
+  return { startIndex: start, oldEndIndex: oldEnd, newEndIndex: newEnd }
+}
+
+export function replacementEdit(
+  before: string,
+  after: string,
+  beforeStarts = lineStarts(before),
+  afterStarts = lineStarts(after)
+) {
+  const span = changedSpan(before, after)
   return {
-    startIndex: start,
-    oldEndIndex: oldEnd,
-    newEndIndex: newEnd,
-    startPosition: pointAt(beforeStarts, start),
-    oldEndPosition: pointAt(beforeStarts, oldEnd),
-    newEndPosition: pointAt(afterStarts, newEnd),
+    ...span,
+    startPosition: pointAt(beforeStarts, span.startIndex),
+    oldEndPosition: pointAt(beforeStarts, span.oldEndIndex),
+    newEndPosition: pointAt(afterStarts, span.newEndIndex),
   }
 }
+
+// A capture with the pattern that produced it, which breaks ties between spans
+// that cover the same text.
+type Span = Highlight & { patternIndex: number }
+
+const byPrecedence = (a: Span, b: Span) =>
+  a.from - b.from || b.to - a.to || a.patternIndex - b.patternIndex
 
 export class TypstSyntax {
   private tree: Tree | null = null
@@ -110,11 +164,28 @@ export class TypstSyntax {
 
   highlights(source: string, range = { from: 0, to: source.length }): Highlight[] {
     if (!this.tree || source !== this.source) {
-      const starts = lineStarts(source)
-      this.tree?.edit(new Edit(replacementEdit(this.source, source, this.starts, starts)))
-      // The parser reads a small chunk per line. Keep the slice bounded so large
-      // notes do not copy the whole remaining source on every callback.
-      const tree = this.parser.parse((index) => parseChunk(source, index), this.tree)
+      let starts: number[]
+      let tree: Tree | null
+      if (this.tree) {
+        const span = changedSpan(this.source, source)
+        starts = this.starts
+        // The end of the change is a position in the old text, so it is read
+        // before the starts array is patched to describe the new one.
+        const oldEndPosition = pointAt(starts, span.oldEndIndex)
+        updateStarts(starts, source, span.startIndex, span.oldEndIndex, span.newEndIndex)
+        this.tree.edit(
+          new Edit({
+            ...span,
+            startPosition: pointAt(starts, span.startIndex),
+            oldEndPosition,
+            newEndPosition: pointAt(starts, span.newEndIndex),
+          })
+        )
+        tree = this.parser.parse((index) => parseChunk(source, index), this.tree)
+      } else {
+        starts = lineStarts(source)
+        tree = this.parser.parse((index) => parseChunk(source, index), null)
+      }
       if (!tree) throw new Error('Unable to parse this note.')
       this.tree?.delete()
       this.tree = tree
@@ -122,21 +193,19 @@ export class TypstSyntax {
       this.starts = starts
     }
     if (range.from === range.to) return []
-    const captures = this.query
-      .captures(this.tree.rootNode, {
-        startPosition: pointAt(this.starts, range.from),
-        endPosition: pointAt(this.starts, range.to),
-      })
-      .map(({ name, node, patternIndex }) => ({
-        from: node.startIndex,
-        to: node.endIndex,
-        style: name,
-        patternIndex,
-      }))
+    const captures = this.query.captures(this.tree.rootNode, {
+      startPosition: pointAt(this.starts, range.from),
+      endPosition: pointAt(this.starts, range.to),
+    })
+    const spans: Span[] = new Array(captures.length)
+    for (let i = 0; i < captures.length; i++) {
+      const { name, node, patternIndex } = captures[i]
+      spans[i] = { from: node.startIndex, to: node.endIndex, style: name, patternIndex }
+    }
     // Outer spans provide a base color. Inner nodes and later query patterns take precedence.
-    captures.sort((a, b) => a.from - b.from || b.to - a.to || a.patternIndex - b.patternIndex)
+    spans.sort(byPrecedence)
     const result: Highlight[] = []
-    const stack: Highlight[] = []
+    const stack: Span[] = []
     let position = range.from
     const flush = (end: number) => {
       while (stack.length) {
@@ -153,12 +222,12 @@ export class TypstSyntax {
       }
       position = end
     }
-    for (const capture of captures) {
-      const from = Math.max(range.from, capture.from)
-      const to = Math.min(range.to, capture.to)
+    for (const span of spans) {
+      const from = Math.max(range.from, span.from)
+      const to = Math.min(range.to, span.to)
       if (from >= to) continue
       flush(from)
-      stack.push({ from, to, style: capture.style })
+      stack.push(span)
     }
     flush(range.to)
     return result
@@ -169,8 +238,13 @@ export class TypstSyntax {
   }
 }
 
+// The wasm side copies a chunk into a fixed 10 KB UTF-16 buffer, so a chunk must
+// stay well under 5 K characters. Small chunks also keep the copy proportional to
+// the text the lexer actually consumes.
+const CHUNK = 64
+
 function parseChunk(source: string, index: number) {
-  const end = Math.min(index + 64, source.length)
+  const end = Math.min(index + CHUNK, source.length)
   if (end < source.length) {
     const code = source.charCodeAt(end)
     if (code >= 0xdc00 && code <= 0xdfff) return source.slice(index, end + 1)
