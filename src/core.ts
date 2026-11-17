@@ -329,9 +329,13 @@ export function sortNotes(notes: Note[], sort: NoteSort): Note[] {
       const body = name
         ? nameKey(entry)
         : `${modifiedDate(entry, desc).slice(shared)}\u0000${pathKey(entry)}`
-      // Two single byte characters, so the key stays a one byte string: a wider
+      // Three single byte characters, so the key stays a one byte string: a wider
       // tag turns every comparison into a two byte one.
-      key = `${body}\u0000${String.fromCharCode(index & 0xff, (index >>> 8) & 0xff)}`
+      key = `${body}\u0000${String.fromCharCode(
+        index & 0xff,
+        (index >>> 8) & 0xff,
+        (index >>> 16) & 0xff
+      )}`
       entry.tagged = key
       entry.taggedFor = state
     }
@@ -342,8 +346,9 @@ export function sortNotes(notes: Note[], sort: NoteSort): Note[] {
   const sorted = new Array<Note>(count)
   for (let index = 0; index < count; index++) {
     const key = keys[index]
-    const at = key.length - 2
-    sorted[index] = notes[key.charCodeAt(at) | (key.charCodeAt(at + 1) << 8)]
+    const at = key.length - 3
+    sorted[index] =
+      notes[key.charCodeAt(at) | (key.charCodeAt(at + 1) << 8) | (key.charCodeAt(at + 2) << 16)]
   }
   return sorted
 }
@@ -467,7 +472,7 @@ function isSpace(code: number): boolean {
   )
 }
 
-type LineInfo = { line: number; end: number; left: number; right: number }
+type LineInfo = { line: number; left: number; right: number }
 
 let offsetScratch = new Int32Array(256)
 
@@ -508,7 +513,7 @@ function lineAt(text: string, starts: Int32Array, line: number): LineInfo {
   while (left < end && isSpace(text.charCodeAt(left))) left++
   let right = end
   while (right > left && isSpace(text.charCodeAt(right - 1))) right--
-  return { line, end, left, right }
+  return { line, left, right }
 }
 
 function trimmedLine(text: string, line: number): string {
@@ -600,11 +605,12 @@ function literalHit(
     }
     at = text.indexOf(term, end + 1)
   }
+  if (best === -Infinity) return null
   return contentHit(
     entry,
     text,
     lower,
-    { line: bestLine, end: 0, left: bestLeft, right: bestRight },
+    { line: bestLine, left: bestLeft, right: bestRight },
     bestAt,
     best
   )
@@ -647,7 +653,7 @@ function fuzzyHit(
     entry,
     text,
     lower,
-    { line: bestLine, end: 0, left: bestLeft, right: bestRight },
+    { line: bestLine, left: bestLeft, right: bestRight },
     text.indexOf(pattern[0], bestLeft) - bestLeft,
     best
   )
@@ -717,6 +723,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         if (entry.text !== note.source) {
           entry.text = note.source
           entry.folded = undefined
+          entry.starts = undefined
         }
         entry.note = note
       }
@@ -782,8 +789,8 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         if (current !== request || cancelled()) return []
         const note = entry.note
         const name = foldedName(note)
-        const title = name.title
-        const path = name.path
+        const title = name.foldedTitle
+        const path = name.foldedPath
         const foldedText = namesOnly ? '' : foldedOf(entry)
         let matched = 0
         let titleHits = 0
