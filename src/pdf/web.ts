@@ -470,10 +470,13 @@ async function attachLayers(
   target.element.append(text, links)
   target.text = text
   target.links = links
+  // The selection layer and the link boxes both place themselves on the page's
+  // unscaled viewport, so it is built once for both.
+  const viewport = page.getViewport({ scale: 1 })
   const textLayer = new TextLayer({
     textContentSource: page.streamTextContent(),
     container: text,
-    viewport: page.getViewport({ scale: 1 }),
+    viewport,
   })
   target.textLayer = textLayer
   const annotations = page.getAnnotations().catch(() => [])
@@ -485,7 +488,6 @@ async function attachLayers(
   } finally {
     if (target.textLayer === textLayer) target.textLayer = null
   }
-  const viewport = page.getViewport({ scale: 1 })
   for (const data of await annotations) {
     if (target.links !== links) return
     if (data?.subtype !== 'Link' || !Array.isArray(data.rect)) continue
