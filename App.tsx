@@ -237,6 +237,8 @@ const BAR_HEIGHT = 48
 // comes first. getItemLayout has to count both.
 const LIBRARY_LIST_TOP = 16
 const LIBRARY_PARENT_HEIGHT = 44
+// The settings button's frame, which the logo's swap also fills.
+const MARK_SIZE = 60
 // The AMOLED track is 52 wide and the 24 thumb sits 4 from each edge.
 const TOGGLE_TRAVEL = 20
 const NOTE_MODE_OPTIONS = [
@@ -1104,18 +1106,18 @@ function SwapIcon({
   )
 }
 
-function IconFade({
-  from,
-  to,
+// One face shrinks away while the other settles in, so a control that swaps
+// what it shows keeps its frame.
+function SwapFaces({
+  front,
+  back,
   swapped,
   size,
-  color,
 }: {
-  from: IconName
-  to: IconName
+  front: React.ReactNode
+  back: React.ReactNode
   swapped: boolean
   size: number
-  color: string
 }) {
   const s = useStyles()
   const progress = useSharedValue(swapped ? 1 : 0)
@@ -1132,13 +1134,32 @@ function IconFade({
   }))
   return (
     <View style={{ width: size, height: size }}>
-      <Reanimated.View style={[s.swapIconLayer, outgoing]}>
-        <Icon name={from} size={size} color={color} />
-      </Reanimated.View>
-      <Reanimated.View style={[s.swapIconLayer, incoming]}>
-        <Icon name={to} size={size} color={color} />
-      </Reanimated.View>
+      <Reanimated.View style={[s.swapIconLayer, outgoing]}>{front}</Reanimated.View>
+      <Reanimated.View style={[s.swapIconLayer, incoming]}>{back}</Reanimated.View>
     </View>
+  )
+}
+
+function IconFade({
+  from,
+  to,
+  swapped,
+  size,
+  color,
+}: {
+  from: IconName
+  to: IconName
+  swapped: boolean
+  size: number
+  color: string
+}) {
+  return (
+    <SwapFaces
+      swapped={swapped}
+      size={size}
+      front={<Icon name={from} size={size} color={color} />}
+      back={<Icon name={to} size={size} color={color} />}
+    />
   )
 }
 
@@ -2817,8 +2838,12 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
               <View style={s.dock}>
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Settings"
+                  accessibilityLabel={isSearching ? 'Cancel search' : 'Settings'}
                   onPress={() => {
+                    if (isSearching) {
+                      stopSearch()
+                      return
+                    }
                     if (backGate.blockOpening()) return
                     Keyboard.dismiss()
                     openingScreen.current = 'settings'
@@ -2826,7 +2851,12 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
                   }}
                   style={({ pressed }) => [s.markButton, pressed && s.pressed]}
                 >
-                  <TypoMark size={30} />
+                  <SwapFaces
+                    swapped={isSearching}
+                    size={MARK_SIZE}
+                    front={<TypoMark size={30} />}
+                    back={<Icon name="close" size={30} color={colors.ink} />}
+                  />
                 </Pressable>
                 <Pressable
                   accessible={false}
@@ -2849,57 +2879,39 @@ function Library({ onReady, visible }: { onReady: () => void; visible: boolean }
                     />
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel={isSearching ? 'Clear search' : `Sort notes. ${sortLabel}`}
+                      accessibilityLabel={`Sort notes. ${sortLabel}`}
+                      accessibilityElementsHidden={isSearching}
+                      importantForAccessibility={isSearching ? 'no-hide-descendants' : 'auto'}
+                      disabled={isSearching}
                       hitSlop={8}
                       onPress={() => {
-                        if (isSearching) {
-                          setQuery('')
-                          searchInput.current?.focus()
-                          return
-                        }
                         Keyboard.dismiss()
                         searchInput.current?.blur()
                         setSortOpen(true)
                       }}
                       style={s.searchFieldAction}
                     >
-                      <IconFade
-                        from="sort"
-                        to="closeCircle"
+                      <SwapFaces
                         swapped={isSearching}
                         size={22}
-                        color={colors.muted}
+                        front={<Icon name="sort" size={22} color={colors.muted} />}
+                        back={null}
                       />
                     </Pressable>
                   </View>
                 </Pressable>
-                {isSearching ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Cancel search"
-                    onPress={stopSearch}
-                    style={s.dockButton}
-                  >
-                    {({ pressed }) => (
-                      <View style={[s.cancelSearch, pressed && s.pressed]}>
-                        <Text style={s.cancelSearchText}>Cancel</Text>
-                      </View>
-                    )}
-                  </Pressable>
-                ) : (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Create a new note"
-                    onPress={openCreate}
-                    style={s.dockButton}
-                  >
-                    {({ pressed }) => (
-                      <View style={[s.fab, pressed && s.fabPressed]}>
-                        <Icon name="plus" size={32} color={colors.onAccent} />
-                      </View>
-                    )}
-                  </Pressable>
-                )}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Create a new note"
+                  onPress={openCreate}
+                  style={s.dockButton}
+                >
+                  {({ pressed }) => (
+                    <View style={[s.fab, pressed && s.fabPressed]}>
+                      <Icon name="plus" size={32} color={colors.onAccent} />
+                    </View>
+                  )}
+                </Pressable>
               </View>
             </KeyboardAvoidingView>
             {trashNotice ? (
@@ -6071,9 +6083,9 @@ function makeStyles(colors: ThemeColors) {
     },
     fabPressed: { transform: [{ scale: 0.96 }] },
     markButton: {
-      width: 60,
-      height: 60,
-      borderRadius: 30,
+      width: MARK_SIZE,
+      height: MARK_SIZE,
+      borderRadius: MARK_SIZE / 2,
       marginTop: 12,
       marginBottom: 28,
       marginLeft: 16,
@@ -6426,17 +6438,6 @@ function makeStyles(colors: ThemeColors) {
       height: 32,
       alignItems: 'center',
       justifyContent: 'center',
-    },
-    cancelSearch: {
-      height: 60,
-      paddingHorizontal: 10,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    cancelSearchText: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 16,
-      color: colors.accent,
     },
     onboardArt: {
       width: 190,
