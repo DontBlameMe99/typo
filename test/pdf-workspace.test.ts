@@ -114,6 +114,35 @@ test('content fingerprints are deterministic, Unicode-safe, and chunk-independen
   expect(fingerprint('ab')).not.toBe(fingerprint('abc'))
 })
 
+// A note is recompiled only when its key changes, so a key that ignores part of
+// the source serves a stale PDF. Multiplication carries upwards, which used to
+// let a change in the last byte of a word stay in the top bits of the key.
+test('content fingerprints notice a change anywhere in the source', () => {
+  const base = 'abcdefghijklmnopqrstuvwxyz0123456789'.repeat(4)
+  const seen = new Map([[fingerprint(base), 'base']])
+  for (let index = 0; index < base.length; index++) {
+    for (const replacement of ['q', '\u00fc', '\u4e16']) {
+      if (replacement === base[index]) continue
+      const edited = base.slice(0, index) + replacement + base.slice(index + 1)
+      const key = fingerprint(edited)
+      const known = seen.get(key)
+      expect(known).toBeUndefined()
+      seen.set(key, `${index}:${replacement}`)
+    }
+  }
+})
+
+test('content fingerprints keep a surrogate pair inside one slice', async () => {
+  // Slices are 65,536 code units, so this pair straddles the cut. Split, both
+  // halves encode as U+FFFD and two different emoji would hash alike.
+  const prefix = 'x'.repeat(65535)
+  const first = `${prefix}😀`
+  const second = `${prefix}😁`
+  expect(fingerprint(first)).not.toBe(fingerprint(second))
+  expect(await fingerprintAsync(first)).toBe(fingerprint(first))
+  expect(await fingerprintAsync(second)).toBe(fingerprint(second))
+})
+
 test('saved notes compile and persist in the library without opening their PDFs', async () => {
   const f = fixture()
   const workspace = f.create()

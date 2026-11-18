@@ -23,13 +23,24 @@ type Job = { key: string; run(): Promise<void> }
 const FONT_FILE = /\.(ttf|otf|ttc)$/iu
 
 // Reads are cached by the input loader, so identical arrays are the common case.
+// Equality is transitive, so when both sides of an entry repeat a pair that
+// already matched, the answer is known. Vaults hold many files with identical
+// content, and comparing their base64 one by one is what makes an unchanged
+// refresh cost a full string comparison per file.
 function sameFiles(previous: Files, files: Files) {
   if (previous === files) return true
   if (previous.length !== files.length) return false
+  let newBase: string | null = null
+  let knownBase: string | null = null
   for (let index = 0; index < files.length; index++) {
     const file = files[index]
     const known = previous[index]
-    if (file !== known && (file.path !== known.path || file.base64 !== known.base64)) return false
+    if (file === known) continue
+    if (file.path !== known.path) return false
+    if (file.base64 === newBase && known.base64 === knownBase) continue
+    if (file.base64 !== known.base64) return false
+    newBase = file.base64
+    knownBase = known.base64
   }
   return true
 }

@@ -199,12 +199,18 @@ type NameEntry = {
   note: Note
   text: string
   folded: string
+  // Lowercasing is folding for ASCII, so a plain entry can only match a query
+  // whose characters appear in it in order.
+  plain: boolean
 }
 
 type ContentEntry = {
   note: Note
   text: string
-  folded: string
+  // Folding is cleared by an edit and paid for by the next query, so a burst of
+  // keystrokes on one note folds it once instead of once per keystroke.
+  folded: string | undefined
+  // Line starts of the folded text, indexed once and dropped with the fold.
   starts: Int32Array | undefined
 }
 
@@ -216,8 +222,12 @@ type SortEntry = {
   modifiedAt: number | null
   pathKey?: string
   nameKey?: string
-  modifiedAscKey?: string
-  modifiedDescKey?: string
+  modifiedAscDate?: string
+  modifiedDescDate?: string
+  // The sort key with the note's position appended, for the mode and position it
+  // was built for.
+  tagged: string
+  taggedFor: number
 }
 
 const sortEntries = new WeakMap<Note, SortEntry>()
@@ -239,15 +249,13 @@ function sortText(text: string): string {
 }
 
 function sortEntry(note: Note): SortEntry {
-  const cached = sortEntries.get(note)
-  if (
-    cached &&
-    cached.title === note.title &&
-    cached.path === note.path &&
-    cached.modifiedAt === note.modifiedAt
-  )
-    return cached
-  const entry: SortEntry = { title: note.title, path: note.path, modifiedAt: note.modifiedAt }
+  const entry: SortEntry = {
+    title: note.title,
+    path: note.path,
+    modifiedAt: note.modifiedAt,
+    tagged: '',
+    taggedFor: -1,
+  }
   sortEntries.set(note, entry)
   return entry
 }
@@ -262,55 +270,86 @@ function nameKey(entry: SortEntry): string {
   return entry.nameKey
 }
 
-function modifiedKey(entry: SortEntry, desc: boolean): string {
+// Unknown dates stay last in both directions.
+function modifiedDate(entry: SortEntry, desc: boolean): string {
   if (desc) {
-    // Unknown dates stay last in both directions.
-    entry.modifiedDescKey ??= `${
+    entry.modifiedDescDate ??=
       entry.modifiedAt === null
-        ? MAX_MODIFIED
+        ? String(MAX_MODIFIED)
         : String(MAX_MODIFIED - entry.modifiedAt).padStart(14, '0')
-    }\u0000${pathKey(entry)}`
-    return entry.modifiedDescKey
+    return entry.modifiedDescDate
   }
-  entry.modifiedAscKey ??= `${
-    entry.modifiedAt === null ? MAX_MODIFIED : String(entry.modifiedAt).padStart(14, '0')
-  }\u0000${pathKey(entry)}`
-  return entry.modifiedAscKey
+  entry.modifiedAscDate ??=
+    entry.modifiedAt === null ? String(MAX_MODIFIED) : String(entry.modifiedAt).padStart(14, '0')
+  return entry.modifiedAscDate
 }
 
 // Keys are built for the requested sort only, so an import that never shows
-// modification order does not pay for it.
-function sortKeyFor(note: Note, name: boolean, desc: boolean): string {
-  const entry = sortEntry(note)
-  return name ? nameKey(entry) : modifiedKey(entry, desc)
-}
-
+// modification order does not pay for it. Each key carries the note's position as
+// a trailing tag, which lets the native sort carry it through and removes the
+// key to note map from every call.
+//
 // Sorting keys in a native string sort avoids a JavaScript comparator, which
-// Hermes calls once per comparison. The map turns the sorted keys back into notes.
+// Hermes calls once per comparison.
 export function sortNotes(notes: Note[], sort: NoteSort): Note[] {
   const name = sort.startsWith('name')
   const desc = sort.endsWith('-desc')
-  const keys = new Array<string>(notes.length)
-  const byKey = new Map<string, Note>()
-  for (let index = 0; index < notes.length; index++) {
-    const note = notes[index]
-    const key = sortKeyFor(note, name, desc)
-    keys[index] = key
-    byKey.set(key, note)
+  const count = notes.length
+  // Notes touched on the same days share most of their date key, and comparing
+  // characters every key shares is what makes date sorts slow. Drop them.
+  let shared = 0
+  if (!name && count > 0) {
+    let low = Infinity
+    let high = -Infinity
+    for (let index = 0; index < count; index++) {
+      const at = notes[index].modifiedAt
+      const value = at === null ? MAX_MODIFIED : desc ? MAX_MODIFIED - at : at
+      if (value < low) low = value
+      if (value > high) high = value
+    }
+    const from = String(low).padStart(14, '0')
+    const to = String(high).padStart(14, '0')
+    while (shared < 14 && from[shared] === to[shared]) shared++
   }
-  // Duplicate paths are not expected, but they must not drop a note from the list.
-  if (byKey.size !== notes.length) {
-    const direction = name && desc ? -1 : 1
-    return [...notes].sort((a, b) => {
-      const left = sortKeyFor(a, name, desc)
-      const right = sortKeyFor(b, name, desc)
-      return (left < right ? -1 : left > right ? 1 : 0) * direction
-    })
+  const base = ((name ? 0 : desc ? 2 : 1) * 16 + (name ? 0 : shared)) * 0x1000000
+  const keys = new Array<string>(count)
+  for (let index = 0; index < count; index++) {
+    const note = notes[index]
+    const cached = sortEntries.get(note)
+    const entry =
+      cached &&
+      cached.title === note.title &&
+      cached.path === note.path &&
+      cached.modifiedAt === note.modifiedAt
+        ? cached
+        : sortEntry(note)
+    const state = base + index
+    let key = entry.tagged
+    if (entry.taggedFor !== state) {
+      const body = name
+        ? nameKey(entry)
+        : `${modifiedDate(entry, desc).slice(shared)}\u0000${pathKey(entry)}`
+      // Three single byte characters, so the key stays a one byte string: a wider
+      // tag turns every comparison into a two byte one.
+      key = `${body}\u0000${String.fromCharCode(
+        index & 0xff,
+        (index >>> 8) & 0xff,
+        (index >>> 16) & 0xff
+      )}`
+      entry.tagged = key
+      entry.taggedFor = state
+    }
+    keys[index] = key
   }
   keys.sort()
   if (name && desc) keys.reverse()
-  const sorted = new Array<Note>(notes.length)
-  for (let index = 0; index < keys.length; index++) sorted[index] = byKey.get(keys[index]) as Note
+  const sorted = new Array<Note>(count)
+  for (let index = 0; index < count; index++) {
+    const key = keys[index]
+    const at = key.length - 3
+    sorted[index] =
+      notes[key.charCodeAt(at) | (key.charCodeAt(at + 1) << 8) | (key.charCodeAt(at + 2) << 16)]
+  }
   return sorted
 }
 
@@ -357,15 +396,23 @@ function foldSearchText(text: string): string {
 }
 
 function nameEntry(note: Note, text: string): NameEntry {
-  return { note, text, folded: foldSearchText(text) }
+  return { note, text, folded: foldSearchText(text), plain: isAsciiText(text) }
 }
 
-function searchBudget() {
+// Cooperative yielding: hand the frame back once a slide has run for 6ms.
+function uiBudget() {
   let started = performance.now()
-  return async () => {
-    if (performance.now() - started < 6) return
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    started = performance.now()
+  return {
+    over: () => performance.now() - started >= 6,
+    yieldFrame: () =>
+      new Promise<void>((resolve) =>
+        setTimeout(() => {
+          // Reset once the timer has fired, so its delay is not counted against
+          // the next slice and every entry after it yields again.
+          started = performance.now()
+          resolve()
+        }, 0)
+      ),
   }
 }
 
@@ -377,6 +424,14 @@ function isBoundary(text: string, index: number): boolean {
 
 function literalScore(length: number, exact: boolean, at: number, boundary: boolean): number {
   return 10000 - length + (exact ? 5000 : 0) + (boundary ? 100 : 0) - Math.min(at, 100)
+}
+
+// A line can only match when every query character occurs somewhere in the note.
+// This is one native scan per character instead of walking every line.
+function containsAll(text: string, pattern: string): boolean {
+  for (let index = 0; index < pattern.length; index++)
+    if (text.indexOf(pattern[index]) < 0) return false
+  return true
 }
 
 // The fuzzy score of `pattern` inside [start, end), or NaN when the pattern is
@@ -404,14 +459,6 @@ function fuzzyScoreInRange(text: string, pattern: string, start: number, end: nu
   return score
 }
 
-// A line can only match when every query character occurs somewhere in the note.
-// This is one native scan per character instead of walking every line.
-function containsAll(text: string, pattern: string): boolean {
-  for (let index = 0; index < pattern.length; index++)
-    if (text.indexOf(pattern[index]) < 0) return false
-  return true
-}
-
 // Same whitespace set as String.prototype.trim.
 function isSpace(code: number): boolean {
   if (code > 32 && code < 0x7f) return false
@@ -429,6 +476,8 @@ function isSpace(code: number): boolean {
     code === 0xfeff
   )
 }
+
+type LineInfo = { line: number; left: number; right: number }
 
 let offsetScratch = new Int32Array(256)
 
@@ -448,9 +497,28 @@ function lineStarts(text: string): Int32Array {
   return offsetScratch.slice(0, count)
 }
 
-function lineOffsets(entry: ContentEntry): Int32Array {
-  entry.starts ??= lineStarts(entry.folded)
+// A note's line starts are indexed once and kept, so a query reads a line's
+// bounds instead of scanning for them on every hit.
+function lineOffsets(entry: ContentEntry, text: string): Int32Array {
+  entry.starts ??= lineStarts(text)
   return entry.starts
+}
+
+// The line holding `at`, walked forward from `line` because occurrences arrive
+// in order.
+function lineOf(starts: Int32Array, at: number, line: number): number {
+  while (line + 1 < starts.length && starts[line + 1] <= at) line++
+  return line
+}
+
+function lineAt(text: string, starts: Int32Array, line: number): LineInfo {
+  const start = starts[line]
+  const end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length
+  let left = start
+  while (left < end && isSpace(text.charCodeAt(left))) left++
+  let right = end
+  while (right > left && isSpace(text.charCodeAt(right - 1))) right--
+  return { line, left, right }
 }
 
 function trimmedLine(text: string, line: number): string {
@@ -464,33 +532,145 @@ function trimmedLine(text: string, line: number): string {
   return text.slice(start, newline < 0 ? text.length : newline).trim()
 }
 
-function lineText(entry: ContentEntry, line: number, left: number, right: number): string {
-  return entry.folded.length === entry.text.length
+function lineText(
+  entry: ContentEntry,
+  folded: string,
+  line: number,
+  left: number,
+  right: number
+): string {
+  return folded.length === entry.text.length
     ? entry.text.slice(left, right)
     : trimmedLine(entry.text, line)
 }
 
-function lineHit(entry: ContentEntry, term: string): { line: number; snippet: string } | null {
-  const at = entry.folded.indexOf(term)
-  if (at < 0) return null
-  const starts = lineOffsets(entry)
-  let line = 0
-  while (line + 1 < starts.length && starts[line + 1] <= at) line++
-  const lineStart = starts[line]
-  const end = line + 1 < starts.length ? starts[line + 1] - 1 : entry.folded.length
-  let left = lineStart
-  while (left < end && isSpace(entry.folded.charCodeAt(left))) left++
-  let right = end
-  while (right > left && isSpace(entry.folded.charCodeAt(right - 1))) right--
-  const text = lineText(entry, line, left, right)
-  const index = Math.max(0, text.toLocaleLowerCase().indexOf(term))
-  const from = Math.max(0, index - 50)
-  return {
-    line: line + 1,
-    snippet: `${from ? '…' : ''}${text.slice(from, from + 180)}${text.length > from + 180 ? '…' : ''}`,
-  }
+type ContentHit = { text: string; line: number; offset: number; score: number }
+
+function contentHit(
+  entry: ContentEntry,
+  folded: string,
+  lower: string,
+  info: LineInfo,
+  offset: number,
+  score: number
+): ContentHit {
+  const text = lineText(entry, folded, info.line, info.left, info.right)
+  // Folded offsets only address the source when folding kept every length.
+  const at =
+    folded.length === entry.text.length ? offset : Math.max(0, text.toLowerCase().indexOf(lower))
+  return { text, line: info.line + 1, offset: at, score }
 }
 
+function snippetText(text: string, offset: number): string {
+  const from = Math.max(0, offset - 50)
+  return `${from ? '…' : ''}${text.slice(from, from + 180)}${text.length > from + 180 ? '…' : ''}`
+}
+
+// The best line containing `term`: short lines and matches at a word start rank
+// first. Every matching line is scored, so the reported line and the score that
+// orders results do not depend on how many times the term occurs. Bounds are
+// kept in locals because this loop runs once per occurrence in the vault.
+function literalHit(
+  entry: ContentEntry,
+  text: string,
+  term: string,
+  lower: string
+): ContentHit | null {
+  const length = term.length
+  let at = text.indexOf(term)
+  if (at < 0) return null
+  const starts = lineOffsets(entry, text)
+  let line = 0
+  let best = -Infinity
+  let bestAt = 0
+  let bestLine = 0
+  let bestLeft = 0
+  let bestRight = 0
+  while (at >= 0) {
+    while (line + 1 < starts.length && starts[line + 1] <= at) line++
+    const end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length
+    let left = starts[line]
+    while (left < end && isSpace(text.charCodeAt(left))) left++
+    let right = end
+    while (right > left && isSpace(text.charCodeAt(right - 1))) right--
+    if (at >= left && at + length <= right) {
+      const score = literalScore(
+        right - left,
+        right - left === length,
+        at - left,
+        at === left || isBoundary(text, at)
+      )
+      if (score > best) {
+        best = score
+        bestAt = at - left
+        bestLine = line
+        bestLeft = left
+        bestRight = right
+      }
+    }
+    at = text.indexOf(term, end + 1)
+  }
+  if (best === -Infinity) return null
+  return contentHit(
+    entry,
+    text,
+    lower,
+    { line: bestLine, left: bestLeft, right: bestRight },
+    bestAt,
+    best
+  )
+}
+
+// The best line whose characters hold `pattern` in order. Every line is scored,
+// so the result does not depend on where in the note the best line sits.
+function fuzzyHit(
+  entry: ContentEntry,
+  text: string,
+  pattern: string,
+  lower: string
+): ContentHit | null {
+  const starts = lineOffsets(entry, text)
+  let best = -Infinity
+  let bestLength = 0
+  let bestLine = 0
+  let bestLeft = 0
+  let bestRight = 0
+  for (let line = 0; line < starts.length; line++) {
+    const end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length
+    let left = starts[line]
+    while (left < end && isSpace(text.charCodeAt(left))) left++
+    let right = end
+    while (right > left && isSpace(text.charCodeAt(right - 1))) right--
+    if (right > left) {
+      const score = fuzzyScoreInRange(text, pattern, left, right)
+      const length = right - left
+      if (score > best || (score === best && length < bestLength)) {
+        best = score
+        bestLength = length
+        bestLine = line
+        bestLeft = left
+        bestRight = right
+      }
+    }
+  }
+  if (best === -Infinity) return null
+  return contentHit(
+    entry,
+    text,
+    lower,
+    { line: bestLine, left: bestLeft, right: bestRight },
+    text.indexOf(pattern[0], bestLeft) - bestLeft,
+    best
+  )
+}
+
+function lineHit(entry: ContentEntry, folded: string, term: string): ContentHit | null {
+  const at = folded.indexOf(term)
+  if (at < 0) return null
+  const starts = lineOffsets(entry, folded)
+  const info = lineAt(folded, starts, lineOf(starts, at, 0))
+  return contentHit(entry, folded, term, info, at - info.left, 0)
+}
 export type NoteSearch = ((
   query: string,
   mode: SearchMode,
@@ -516,12 +696,14 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     starts: undefined,
   })
 
+  const foldedOf = (entry: ContentEntry): string => (entry.folded ??= foldSearchText(entry.text))
+
   // Notes keep their object identity across scans, so an edit updates the entry in
   // place instead of copying the whole index.
   const refresh = (entry: ContentEntry, note: Note): ContentEntry => {
     if (entry.text !== note.source) {
       entry.text = note.source
-      entry.folded = foldSearchText(note.source)
+      entry.folded = undefined
       entry.starts = undefined
     }
     entry.note = note
@@ -529,8 +711,16 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   }
 
   const patch = (current: ContentEntry[], next: readonly Note[]): ContentEntry[] => {
-    const sameOrder =
-      next.length === current.length && next.every((note, i) => note.path === current[i].note.path)
+    let sameOrder = next.length === current.length
+    if (sameOrder) {
+      for (let index = 0; index < next.length; index++) {
+        const note = next[index]
+        if (note !== current[index].note && note.path !== current[index].note.path) {
+          sameOrder = false
+          break
+        }
+      }
+    }
     if (sameOrder) {
       for (let index = 0; index < next.length; index++) refresh(current[index], next[index])
       return current
@@ -544,15 +734,25 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
 
   const indexContent = async (snapshot: readonly Note[], builtVersion: number) => {
     const built: ContentEntry[] = []
-    const pause = searchBudget()
+    const budget = uiBudget()
+    const started = performance.now()
+    let yielded = false
     let size = 0
     for (const note of snapshot) {
       const source = note.source
       built.push({ note, text: source, folded: foldSearchText(source), starts: undefined })
       size += source.length
-      if ((built.length & 63) === 0) await pause()
-    } // A large note can fold inside one budget slice, so always let timers run once.
-    if (size >= 262144) await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      if ((built.length & 63) === 0 && budget.over()) {
+        // Handing the frame back costs a timer round trip, so only take it when
+        // the rest of the index would hold the frame longer than that.
+        const left = snapshot.length - built.length
+        if (left > 0 && ((performance.now() - started) / built.length) * left > 2) {
+          yielded = true
+          await budget.yieldFrame()
+        }
+      }
+    } // A large note can fold inside one budget slice, so let timers run once.
+    if (!yielded && size >= 262144) await new Promise<void>((resolve) => setTimeout(resolve, 0))
     entries = builtVersion === version ? built : patch(built, notes)
     content = Promise.resolve(entries)
     return entries
@@ -564,7 +764,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     cancelled = () => false
   ): Promise<SearchResult[]> => {
     const current = ++request
-    const pause = searchBudget()
+    const budget = uiBudget()
     const value = query.trim()
     if (!value) {
       all ??= notes.map((note) => ({ note }))
@@ -584,8 +784,10 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
       for (const entry of currentEntries) {
         if (current !== request || cancelled()) return []
         const note = entry.note
-        const title = foldSearchText(note.title)
-        const path = foldSearchText(note.path)
+        const name = foldedName(note)
+        const title = name.foldedTitle
+        const path = name.foldedPath
+        const foldedText = namesOnly ? '' : foldedOf(entry)
         let matched = 0
         let titleHits = 0
         let score = 0
@@ -593,7 +795,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         for (const term of terms) {
           const inTitle = !contentOnly && title.includes(term)
           const inPath = !contentOnly && path.includes(term)
-          const inContent = !namesOnly && entry.folded.includes(term)
+          const inContent = !namesOnly && foldedText.includes(term)
           if (!inTitle && !inPath && !inContent) continue
           matched++
           if (inTitle) {
@@ -610,14 +812,14 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         score += Math.max(0, 100 - Math.min(title.length, 100))
         const result: SearchResult = { note }
         if (snippetTerm) {
-          const hit = lineHit(entry, snippetTerm)
+          const hit = lineHit(entry, foldedText, snippetTerm)
           if (hit) {
             result.line = hit.line
-            result.snippet = hit.snippet
+            result.snippet = snippetText(hit.text, hit.offset)
           }
         }
         hits.push({ result, matched, titleHits, score })
-        await pause()
+        if (budget.over()) await budget.yieldFrame()
       }
       return hits
         .sort((a, b) => b.matched - a.matched || b.titleHits - a.titleHits || b.score - a.score)
@@ -634,7 +836,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
       line: number | undefined,
       rank: number,
       score: number,
-      start: number
+      offset: number
     ) => {
       const length = text.length
       const previous = found.get(note.path)
@@ -647,17 +849,16 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         return
       const result: SearchResult = { note }
       if (line !== undefined) {
-        const literal = text.toLowerCase().indexOf(lower)
-        const from = Math.max(0, (literal >= 0 ? literal : start) - 50)
         result.line = line
-        result.snippet = `${from ? '…' : ''}${text.slice(from, from + 180)}${text.length > from + 180 ? '…' : ''}`
+        result.snippet = snippetText(text, offset)
       }
       found.set(note.path, { result, rank, score, length })
     }
 
+    const first = folded[0]
     if (mode !== 'content') {
-      for (const { item, score, start } of names.find(value))
-        add(item.note, item.text, undefined, item.folded.includes(folded) ? 0 : 2, score, start)
+      for (const { item, score } of names.find(value))
+        add(item.note, item.text, undefined, item.folded.includes(folded) ? 0 : 2, score, 0)
     }
     if (mode !== 'names') {
       if (!content) content = indexContent(notes, version)
@@ -666,86 +867,19 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         if (current !== request || cancelled()) return []
         // Nothing in the content can outrank a name hit for the same note.
         if (found.get(entry.note.path)?.rank !== 0) {
-          const foldedText = entry.folded
-          let literal = -1
-          let literalAt = 0
-          let bestLine = 0
-          let bestLeft = 0
-          let bestRight = 0
-          let at = foldedText.indexOf(folded)
-          if (at >= 0) {
-            const starts = lineOffsets(entry)
-            let line = 0
-            while (at >= 0) {
-              while (line + 1 < starts.length && starts[line + 1] <= at) line++
-              const lineStart = starts[line]
-              const end = line + 1 < starts.length ? starts[line + 1] - 1 : foldedText.length
-              let left = lineStart
-              while (left < end && isSpace(foldedText.charCodeAt(left))) left++
-              let right = end
-              while (right > left && isSpace(foldedText.charCodeAt(right - 1))) right--
-              if (at >= left && at + folded.length <= right) {
-                const score = literalScore(
-                  right - left,
-                  right - left === folded.length,
-                  at - left,
-                  at === left || isBoundary(foldedText, at)
-                )
-                if (literal < 0 || score > literal) {
-                  literal = score
-                  literalAt = at
-                  bestLine = line
-                  bestLeft = left
-                  bestRight = right
-                }
-              }
-              at = foldedText.indexOf(folded, end + 1)
+          const foldedText = foldedOf(entry)
+          // A note without the query's first character can match neither way.
+          if (foldedText.indexOf(first) >= 0) {
+            const literal = literalHit(entry, foldedText, folded, lower)
+            if (literal)
+              add(entry.note, literal.text, literal.line, 1, literal.score, literal.offset)
+            else if (containsAll(foldedText, folded)) {
+              const fuzzy = fuzzyHit(entry, foldedText, folded, lower)
+              if (fuzzy) add(entry.note, fuzzy.text, fuzzy.line, 3, fuzzy.score, fuzzy.offset)
             }
-          }
-          if (literal >= 0)
-            add(
-              entry.note,
-              lineText(entry, bestLine, bestLeft, bestRight),
-              bestLine + 1,
-              1,
-              literal,
-              literalAt - bestLeft
-            )
-          else if (containsAll(foldedText, folded)) {
-            const starts = lineOffsets(entry)
-            let fuzzy = -Infinity
-            let fuzzyLength = 0
-            for (let line = 0; line < starts.length; line++) {
-              const lineStart = starts[line]
-              const end = line + 1 < starts.length ? starts[line + 1] - 1 : foldedText.length
-              let left = lineStart
-              while (left < end && isSpace(foldedText.charCodeAt(left))) left++
-              let right = end
-              while (right > left && isSpace(foldedText.charCodeAt(right - 1))) right--
-              if (right > left) {
-                const score = fuzzyScoreInRange(foldedText, folded, left, right)
-                const length = right - left
-                if (score > fuzzy || (score === fuzzy && length < fuzzyLength)) {
-                  fuzzy = score
-                  fuzzyLength = length
-                  bestLine = line
-                  bestLeft = left
-                  bestRight = right
-                }
-              }
-            }
-            if (fuzzy > -Infinity)
-              add(
-                entry.note,
-                lineText(entry, bestLine, bestLeft, bestRight),
-                bestLine + 1,
-                3,
-                fuzzy,
-                foldedText.indexOf(folded[0], bestLeft) - bestLeft
-              )
           }
         }
-        await pause()
+        if (budget.over()) await budget.yieldFrame()
       }
     }
     return [...found.values()]
@@ -759,9 +893,17 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   }
 
   search.update = (next: readonly Note[]) => {
-    const renamed =
-      next.length !== notes.length ||
-      next.some((note, i) => note.path !== notes[i].path || note.title !== notes[i].title)
+    let renamed = next.length !== notes.length
+    if (!renamed) {
+      for (let index = 0; index < next.length; index++) {
+        const note = next[index]
+        const previous = notes[index]
+        if (note !== previous && (note.path !== previous.path || note.title !== previous.title)) {
+          renamed = true
+          break
+        }
+      }
+    }
     notes = next
     if (renamed) names = nameIndex(next)
     all = null
@@ -776,13 +918,63 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   return search
 }
 
+type FoldedName = { title: string; path: string; foldedTitle: string; foldedPath: string }
+
+const foldedNames = new WeakMap<Note, FoldedName>()
+
+function foldedName(note: Note): FoldedName {
+  const cached = foldedNames.get(note)
+  if (cached && cached.title === note.title && cached.path === note.path) return cached
+  const entry = {
+    title: note.title,
+    path: note.path,
+    foldedTitle: foldSearchText(note.title),
+    foldedPath: foldSearchText(note.path),
+  }
+  foldedNames.set(note, entry)
+  return entry
+}
+
+const NAME_OPTIONS = {
+  selector: (entry: NameEntry) => entry.text,
+  casing: 'case-insensitive' as const,
+  sort: false,
+}
+
+// A name can only match when the query's characters appear in it in order, and
+// deciding that is much cheaper than the scoring pass FZF runs per entry. Only
+// candidates reach it, so a query with few candidates never needs the index over
+// every name at all.
 function nameIndex(notes: readonly Note[]) {
-  return new Fzf(
-    notes.flatMap((note) => [nameEntry(note, note.title), nameEntry(note, note.path)]),
-    {
-      selector: (entry: NameEntry) => entry.text,
-      casing: 'case-insensitive' as const,
-      sort: false,
-    }
-  )
+  const entries: NameEntry[] = []
+  for (const note of notes) {
+    entries.push(nameEntry(note, note.title), nameEntry(note, note.path))
+  }
+  let index: Fzf<NameEntry[]> | undefined
+  const everything = () => (index ??= new Fzf(entries, NAME_OPTIONS))
+  return {
+    find(value: string) {
+      if (entries.length === 0) return []
+      // Normalization can map characters this prefilter does not, so leave those
+      // queries to FZF alone.
+      if (!isAsciiText(value)) return everything().find(value)
+      const needle = value.toLowerCase()
+      const candidates: NameEntry[] = []
+      for (const entry of entries) {
+        if (!entry.plain || isSubsequence(entry.folded, needle)) candidates.push(entry)
+      }
+      if (candidates.length === 0) return []
+      if (candidates.length * 2 > entries.length) return everything().find(value)
+      return new Fzf(candidates, NAME_OPTIONS).find(value)
+    },
+  }
+}
+
+function isSubsequence(text: string, needle: string): boolean {
+  let position = -1
+  for (let index = 0; index < needle.length; index++) {
+    position = text.indexOf(needle[index], position + 1)
+    if (position < 0) return false
+  }
+  return true
 }

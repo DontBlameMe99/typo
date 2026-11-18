@@ -23,11 +23,11 @@ function rowLength(row: LibraryRow): number {
 }
 
 export function layoutRows(rows: LibraryRow[]): RowLayout[] {
-  const layout: RowLayout[] = []
+  const layout = new Array<RowLayout>(rows.length)
   let offset = 0
-  for (const row of rows) {
-    const length = rowLength(row)
-    layout.push({ length, offset })
+  for (let index = 0; index < rows.length; index++) {
+    const length = rowLength(rows[index])
+    layout[index] = { length, offset }
     offset += length
   }
   return layout
@@ -40,15 +40,6 @@ export function rowLayout(layout: RowLayout[], index: number): RowLayout & { ind
 
 const noteResults = new WeakMap<Note, SearchResult>()
 const noteRows = new WeakMap<SearchResult, NoteRowItem>()
-
-function noteResult(note: Note): SearchResult {
-  let result = noteResults.get(note)
-  if (!result) {
-    result = { note }
-    noteResults.set(note, result)
-  }
-  return result
-}
 
 // Rows keep their identity while their note does, so an edited source does not
 // recreate every row and FlatList can skip cells that did not change.
@@ -78,7 +69,17 @@ export function sortedNoteRows(
     cached.notes = notes
     return cached.rows
   }
-  const rows = sortNotes(notes, sort).map((note) => noteRow(noteResult(note)))
+  const sorted = sortNotes(notes, sort)
+  const rows = new Array<NoteRowItem>(sorted.length)
+  for (let index = 0; index < sorted.length; index++) {
+    const note = sorted[index]
+    let result = noteResults.get(note)
+    if (!result) {
+      result = { note }
+      noteResults.set(note, result)
+    }
+    rows[index] = noteRow(result)
+  }
   cache.set(key, { notes, sort, rows })
   return rows
 }

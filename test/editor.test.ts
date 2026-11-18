@@ -213,6 +213,29 @@ test('incremental edits match a fresh parse across Unicode and multiple lines', 
   }
 })
 
+test('incremental edits keep every line start when an edit adds lines above the tail', () => {
+  const incremental = new TypstSyntax(language)
+  const fresh = new TypstSyntax(language)
+  try {
+    for (const [before, after] of [
+      [
+        '#let a = 1\n#let b = 2\n#let c = 3\n#let d = 4\n',
+        '#let a = 1\n#let b = 2\n\n\n#let c = 3\n#let d = 4\n',
+      ],
+      [
+        '= Title\n\n#let x = 1\n#let y = 2\n$ x + y $',
+        '= Title\n\n#let x = 1\n\n\n#let y = 2\n$ x + y $',
+      ],
+    ]) {
+      incremental.highlights(before)
+      expect(incremental.highlights(after)).toEqual(fresh.highlights(after))
+    }
+  } finally {
+    incremental.destroy()
+    fresh.destroy()
+  }
+})
+
 test('viewport highlighting matches full highlights and stays inside the visible range', () => {
   const syntax = new TypstSyntax(language)
   try {

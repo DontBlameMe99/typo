@@ -53,7 +53,73 @@ export function applyEditorChange(source: string, edit: EditorChange): string {
   return source.slice(0, edit.from) + edit.insert + source.slice(edit.to)
 }
 
+const fastHead = '{"type":"change","documentId":"'
+const fastSession = '","session":'
+const fastFrom = ',"change":{"from":'
+const fastTo = ',"to":'
+const fastInsert = ',"insert":"'
+
+// Where readNumber leaves the value it read.
+let digits = 0
+
+// Reads the integer at `at` and returns the index after it, or -1 when it is
+// not written the way JSON.stringify writes integers.
+function readNumber(json: string, at: number): number {
+  const start = at
+  let code = json.charCodeAt(at)
+  if (code < 48 || code > 57) return -1
+  digits = 0
+  do {
+    digits = digits * 10 + (code - 48)
+    code = json.charCodeAt(++at)
+  } while (code > 47 && code < 58)
+  if (at - start > 1 && json.charCodeAt(start) === 48) return -1
+  return at
+}
+
+/**
+ * The change message the editor sends for a plain edit, spelled the way the
+ * editor writes it, or undefined for every other message: other types, escaped
+ * values, other spellings of the same values, extra fields, another key order.
+ * Those fall through to JSON.parse and the checks in editorMessage.
+ */
+function fastChange(json: string, documentId: string): EditorMessage | null | undefined {
+  if (!json.startsWith(fastHead)) return undefined
+  let at = fastHead.length
+  if (!json.startsWith(documentId, at)) return undefined
+  at += documentId.length
+  if (!json.startsWith(fastSession, at)) return undefined
+  at = readNumber(json, at + fastSession.length)
+  if (at < 0) return undefined
+  const current = digits
+  if (!json.startsWith(fastFrom, at)) return undefined
+  at = readNumber(json, at + fastFrom.length)
+  if (at < 0) return undefined
+  const from = digits
+  if (!json.startsWith(fastTo, at)) return undefined
+  at = readNumber(json, at + fastTo.length)
+  if (at < 0) return undefined
+  const to = digits
+  if (!json.startsWith(fastInsert, at)) return undefined
+  const start = at + fastInsert.length
+  at = start
+  for (;;) {
+    const code = json.charCodeAt(at)
+    if (code === 34) break
+    if (code < 32 || code === 92 || at >= json.length) return undefined
+    at++
+  }
+  if (at + 3 !== json.length || json.charCodeAt(at + 1) !== 125 || json.charCodeAt(at + 2) !== 125)
+    return undefined
+  if (!session(current)) throw new Error('Invalid editor message.')
+  const edit = { from, to, insert: json.slice(start, at) }
+  if (!change(edit)) throw new Error('Invalid editor message.')
+  return { type: 'change', documentId, session: current, change: edit }
+}
+
 export function editorMessage(json: string, documentId: string): EditorMessage | null {
+  const fast = fastChange(json, documentId)
+  if (fast !== undefined) return fast
   const value: unknown = JSON.parse(json)
   if (!value || typeof value !== 'object' || !('type' in value))
     throw new Error('Invalid editor message.')
