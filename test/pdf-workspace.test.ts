@@ -132,6 +132,17 @@ test('content fingerprints notice a change anywhere in the source', () => {
   }
 })
 
+test('content fingerprints keep a surrogate pair inside one slice', async () => {
+  // Slices are 65,536 code units, so this pair straddles the cut. Split, both
+  // halves encode as U+FFFD and two different emoji would hash alike.
+  const prefix = 'x'.repeat(65535)
+  const first = `${prefix}😀`
+  const second = `${prefix}😁`
+  expect(fingerprint(first)).not.toBe(fingerprint(second))
+  expect(await fingerprintAsync(first)).toBe(fingerprint(first))
+  expect(await fingerprintAsync(second)).toBe(fingerprint(second))
+})
+
 test('saved notes compile and persist in the library without opening their PDFs', async () => {
   const f = fixture()
   const workspace = f.create()

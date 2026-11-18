@@ -74,10 +74,25 @@ function slice(value: string, start: number, end: number) {
   return start === 0 && end === value.length ? value : value.slice(start, end)
 }
 
+// A cut between the halves of a surrogate pair encodes both halves as U+FFFD, so
+// two different astral characters would hash alike.
+function chunkEnd(value: string, start: number) {
+  let end = Math.min(start + CHUNK, value.length)
+  if (end < value.length) {
+    const code = value.charCodeAt(end - 1)
+    if (code >= 0xd800 && code <= 0xdbff) end++
+  }
+  return end
+}
+
 export function fingerprint(value: string): string {
   const hash = new Hasher()
-  for (let start = 0; start < value.length; start += CHUNK)
-    hash.add(slice(value, start, Math.min(start + CHUNK, value.length)))
+  let start = 0
+  while (start < value.length) {
+    const end = chunkEnd(value, start)
+    hash.add(slice(value, start, end))
+    start = end
+  }
   return hash.value()
 }
 
@@ -85,10 +100,12 @@ export function fingerprint(value: string): string {
 export async function fingerprintAsync(value: string): Promise<string> {
   const hash = new Hasher()
   let lastYield = performance.now()
-  for (let start = 0; start < value.length; start += CHUNK) {
-    const end = Math.min(start + CHUNK, value.length)
+  let start = 0
+  while (start < value.length) {
+    const end = chunkEnd(value, start)
     hash.add(slice(value, start, end))
-    if (end < value.length && performance.now() - lastYield >= 8) {
+    start = end
+    if (start < value.length && performance.now() - lastYield >= 8) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
       lastYield = performance.now()
     }
