@@ -33,7 +33,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-    height: 64,
+    minHeight: 64,
     paddingHorizontal: 16,
     borderRadius: 24,
   },

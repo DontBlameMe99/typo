@@ -20,9 +20,16 @@ import { useTheme } from './theme'
 import { afterPaint, webRuntime } from './web-runtime'
 
 const SPINNER_DELAY = 120
-const MESSAGE_DELAY = 3000
+const MESSAGE_DELAY = 5000
 const REPORT_DELAY = 10_000
 const SPIN_MS = 900
+// The headline squashes to a line and grows back one letter at a time. Each
+// letter of the new line uses MORPH_SPAN of the morph, and the last one starts
+// MORPH_LAG after the first, so the two add up to the whole value.
+const MORPH_OUT_MS = 150
+const MORPH_IN_MS = 320
+const MORPH_SPAN = 0.6
+const MORPH_LAG = 0.4
 const LOADING_MESSAGES = [
   'Getting ready…',
   'Removing a Typo…',
@@ -66,12 +73,14 @@ export default function PdfViewer(props: Props) {
   const [displayed, setDisplayed] = useState<string | null>(null)
   const [waiting, setWaiting] = useState(false)
   const [message, setMessage] = useState(0)
+  const [shown, setShown] = useState(LOADING_MESSAGES[0])
   const [elapsed, setElapsed] = useState(0)
   const [trouble, setTrouble] = useState(false)
   const spin = useRef(new Animated.Value(0)).current
   const fade = useRef(new Animated.Value(0)).current
   const shade = useRef(new Animated.Value(1)).current
-  const headline = useRef(new Animated.Value(1)).current
+  const morph = useRef(new Animated.Value(1)).current
+  const growing = useRef(false)
   // Animated.timing has no reduce-motion switch of its own.
   const reducedMotion = useRef(false)
   const requested = useRef<string | null>(null)
@@ -126,6 +135,10 @@ export default function PdfViewer(props: Props) {
 
   useEffect(() => {
     if (!loading) return
+    morph.stopAnimation()
+    morph.setValue(1)
+    growing.current = false
+    setShown(LOADING_MESSAGES[0])
     setMessage(0)
     setElapsed(0)
     setTrouble(false)
@@ -143,7 +156,7 @@ export default function PdfViewer(props: Props) {
       clearInterval(rotation)
       clearTimeout(report)
     }
-  }, [loading])
+  }, [loading, morph])
 
   useEffect(() => {
     if (!loading) return
@@ -193,20 +206,51 @@ export default function PdfViewer(props: Props) {
     }).start()
   }, [shade, showing])
 
-  // The headline swaps every few seconds while compiling. It fades back in from
-  // a dim state instead of replacing its own text in one frame.
+  // The headline swaps every few seconds while compiling: the old line squashes
+  // flat, the text swaps, and the new line grows back letter by letter.
   const headlineText = trouble ? SLOW_MESSAGE : LOADING_MESSAGES[message]
-  const shownHeadline = useRef(headlineText)
+  const squashing = shown !== headlineText
+  const wave = shown.length > 1 ? MORPH_LAG / (shown.length - 1) : 0
+  const chars = Array.from(shown, (char, index) => ({
+    slot: index,
+    char,
+    from: squashing ? 0 : index * wave,
+    span: squashing ? 1 : MORPH_SPAN,
+  }))
   useEffect(() => {
-    if (shownHeadline.current === headlineText) return
-    shownHeadline.current = headlineText
-    if (reducedMotion.current) {
-      headline.setValue(1)
+    if (shown !== headlineText) {
+      if (reducedMotion.current) {
+        growing.current = false
+        morph.stopAnimation()
+        morph.setValue(1)
+        setShown(headlineText)
+        return
+      }
+      growing.current = true
+      Animated.timing(morph, {
+        toValue: 0,
+        duration: MORPH_OUT_MS,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setShown(headlineText)
+      })
       return
     }
-    headline.setValue(0.35)
-    Animated.timing(headline, { toValue: 1, duration: 260, useNativeDriver: true }).start()
-  }, [headline, headlineText])
+    // The grow waits for the new letters, so it never animates the old line.
+    if (!growing.current) return
+    growing.current = false
+    if (reducedMotion.current) {
+      morph.setValue(1)
+      return
+    }
+    Animated.timing(morph, {
+      toValue: 1,
+      duration: MORPH_IN_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [headlineText, morph, shown])
 
   useEffect(() => {
     if (!ready || !source || showing) return
@@ -319,11 +363,45 @@ export default function PdfViewer(props: Props) {
                 />
               </Svg>
             </Animated.View>
-            <Animated.View style={{ opacity: headline }}>
-              <Text numberOfLines={1} style={[s.headline, { color: colors.ink }]}>
-                {headlineText}
-              </Text>
-            </Animated.View>
+            <View style={s.headlineRow}>
+              {chars.map(({ slot, char, from, span }) => {
+                const range = [from, from + span]
+                return (
+                  <Animated.Text
+                    key={slot}
+                    style={[
+                      s.headline,
+                      { color: colors.ink },
+                      {
+                        opacity: morph.interpolate({
+                          inputRange: range,
+                          outputRange: [0, 1],
+                          extrapolate: 'clamp',
+                        }),
+                        transform: [
+                          {
+                            scaleY: morph.interpolate({
+                              inputRange: range,
+                              outputRange: [0.08, 1],
+                              extrapolate: 'clamp',
+                            }),
+                          },
+                          {
+                            scaleX: morph.interpolate({
+                              inputRange: range,
+                              outputRange: [1.35, 1],
+                              extrapolate: 'clamp',
+                            }),
+                          },
+                        ],
+                      },
+                    ]}
+                  >
+                    {char}
+                  </Animated.Text>
+                )
+              })}
+            </View>
             {elapsed > 0 && (
               <Text style={[s.seconds, { color: colors.muted }]}>
                 {`${elapsed} ${elapsed === 1 ? 'second' : 'seconds'} so far`}
@@ -358,8 +436,14 @@ const s = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 36,
   },
-  headline: {
+  headlineRow: {
     marginTop: 22,
+    flexDirection: 'row',
+    // Large system text wraps the line instead of running past the screen.
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  headline: {
     fontFamily: 'DMSans_600SemiBold',
     fontSize: 24,
     letterSpacing: -0.5,
@@ -373,7 +457,8 @@ const s = StyleSheet.create({
     position: 'absolute',
     left: 20,
     right: 20,
-    bottom: 16,
+    // Clears the content fade above the dock, which is painted over this area.
+    bottom: 48,
   },
   report: {
     borderRadius: 24,
