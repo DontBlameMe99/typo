@@ -269,21 +269,20 @@ test('a loading indicator covers the PDF until the first page is displayed', asy
   expect(viewer.spinner()).toBe(false)
 })
 
-test('the loading screen rotates its message until the PDF is ready', async () => {
+test('the loading screen rotates its message, then settles on one and offers the tracker', async () => {
   const viewer = await host()
   viewer.message({ type: 'boot' })
   viewer.runTimers(120)
   expect(viewer.texts()).toContain('Getting ready…')
+  expect(viewer.report()).toBe(false)
   viewer.runTimers(5000)
   expect(viewer.texts()).toContain('Removing a Typo…')
+  expect(viewer.report()).toBe(false)
+  viewer.runTimers(10_000)
+  expect(viewer.texts()).toContain('Still compiling…')
+  expect(viewer.report()).toBe(true)
   viewer.runTimers(5000)
-  expect(viewer.texts()).toContain('Warming up…')
-  viewer.runTimers(5000)
-  expect(viewer.texts()).toContain('Setting the type…')
-  viewer.runTimers(5000)
-  expect(viewer.texts()).toContain('Compiling…')
-  viewer.runTimers(5000)
-  expect(viewer.texts()).toContain('Laying out pages…')
+  expect(viewer.texts()).toContain('Still compiling…')
   viewer.message({ type: 'rendered', uri: 'file:///a.pdf' })
   expect(viewer.texts()).toBe('')
   expect(viewer.report()).toBe(false)
@@ -298,18 +297,6 @@ test('the loading screen counts the seconds spent compiling', async () => {
   expect(viewer.texts()).toContain('1 second so far')
   viewer.runTimers(1000)
   expect(viewer.texts()).toContain('2 seconds so far')
-})
-
-test('a slow load settles on one message and offers the issue tracker', async () => {
-  const viewer = await host()
-  viewer.message({ type: 'boot' })
-  viewer.runTimers(120)
-  expect(viewer.report()).toBe(false)
-  viewer.runTimers(10_000)
-  expect(viewer.report()).toBe(true)
-  expect(viewer.texts()).toContain('Still compiling…')
-  viewer.runTimers(5000)
-  expect(viewer.texts()).toContain('Still compiling…')
 })
 
 test('a new PDF stays hidden until its first page is rendered', async () => {
