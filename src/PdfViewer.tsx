@@ -80,6 +80,7 @@ export default function PdfViewer(props: Props) {
   const fade = useRef(new Animated.Value(0)).current
   const shade = useRef(new Animated.Value(1)).current
   const morph = useRef(new Animated.Value(1)).current
+  const growing = useRef(false)
   // Animated.timing has no reduce-motion switch of its own.
   const reducedMotion = useRef(false)
   const requested = useRef<string | null>(null)
@@ -136,6 +137,7 @@ export default function PdfViewer(props: Props) {
     if (!loading) return
     morph.stopAnimation()
     morph.setValue(1)
+    growing.current = false
     setShown(LOADING_MESSAGES[0])
     setMessage(0)
     setElapsed(0)
@@ -216,28 +218,38 @@ export default function PdfViewer(props: Props) {
     span: squashing ? 1 : MORPH_SPAN,
   }))
   useEffect(() => {
-    if (shown === headlineText) return
+    if (shown !== headlineText) {
+      if (reducedMotion.current) {
+        growing.current = false
+        morph.stopAnimation()
+        morph.setValue(1)
+        setShown(headlineText)
+        return
+      }
+      growing.current = true
+      Animated.timing(morph, {
+        toValue: 0,
+        duration: MORPH_OUT_MS,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setShown(headlineText)
+      })
+      return
+    }
+    // The grow waits for the new letters, so it never animates the old line.
+    if (!growing.current) return
+    growing.current = false
     if (reducedMotion.current) {
-      morph.stopAnimation()
       morph.setValue(1)
-      setShown(headlineText)
       return
     }
     Animated.timing(morph, {
-      toValue: 0,
-      duration: MORPH_OUT_MS,
-      easing: Easing.in(Easing.cubic),
+      toValue: 1,
+      duration: MORPH_IN_MS,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (!finished) return
-      setShown(headlineText)
-      Animated.timing(morph, {
-        toValue: 1,
-        duration: MORPH_IN_MS,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start()
-    })
+    }).start()
   }, [headlineText, morph, shown])
 
   useEffect(() => {
@@ -427,6 +439,9 @@ const s = StyleSheet.create({
   headlineRow: {
     marginTop: 22,
     flexDirection: 'row',
+    // Large system text wraps the line instead of running past the screen.
+    flexWrap: 'wrap',
+    justifyContent: 'center',
   },
   headline: {
     fontFamily: 'DMSans_600SemiBold',
