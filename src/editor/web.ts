@@ -26,6 +26,7 @@ import {
 import { localBytes } from './local'
 import type { EditorConfig } from './protocol'
 import type { Highlight } from './syntax'
+import { autoEdit } from './typing'
 
 declare global {
   interface Window {
@@ -170,6 +171,22 @@ const templatePlaceholders = ViewPlugin.fromClass(
   { decorations: (plugin) => plugin.decorations }
 )
 
+// List markers, backticks, and quotes act on the caret line. Enter arrives
+// through the keymap, other typed text through the input handler.
+function typing(view: EditorView, from: number, to: number, text: string) {
+  if (view.state.readOnly || from !== to) return false
+  const line = view.state.doc.lineAt(from)
+  const edit = autoEdit(line.text, from - line.from, text)
+  if (!edit) return false
+  view.dispatch({
+    changes: { from: line.from + edit.from, to: line.from + edit.to, insert: edit.insert },
+    selection: { anchor: line.from + edit.cursor },
+    userEvent: text === '\n' ? 'input' : 'input.type',
+    scrollIntoView: true,
+  })
+  return true
+}
+
 async function main(config: EditorConfig) {
   await font
   seedIssues(config.issues)
@@ -302,10 +319,20 @@ async function main(config: EditorConfig) {
               return true
             },
           },
+          {
+            key: 'Enter',
+            run: (view) => {
+              const { ranges, main } = view.state.selection
+              return ranges.length === 1 && typing(view, main.from, main.to, '\n')
+            },
+          },
           ...defaultKeymap,
           ...historyKeymap,
           indentWithTab,
         ]),
+        EditorView.inputHandler.of(
+          (view, from, to, text) => !view.composing && typing(view, from, to, text)
+        ),
         EditorView.updateListener.of((update) => {
           if (update.focusChanged)
             send({ type: 'focus', documentId, session, focused: update.view.hasFocus })
