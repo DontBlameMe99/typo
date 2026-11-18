@@ -90,12 +90,12 @@
       "updatedAt": "2026-11-18T01:46:37.942Z"
     },
     "search/100/names": {
-      "sha": "e8dcc62fcfe2d775a063fb81104ac1bbeff56c01",
+      "sha": "aae6695a10ee3de7760848ed942a01bc1e611331",
       "method": 2,
-      "medianMs": 0.016141999999973677,
-      "worstMedianMs": 0.016672999999997273,
+      "medianMs": 0.0242059999999924,
+      "worstMedianMs": 0.02453599999998346,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-18T01:46:37.942Z"
+      "updatedAt": "2026-11-18T16:50:45.274Z"
     },
     "search/1000/first-content": {
       "sha": "918c7ba45807c7e8a15bb1d23f9c4323dcfcc8b6",
