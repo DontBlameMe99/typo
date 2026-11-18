@@ -404,10 +404,15 @@ function uiBudget() {
   let started = performance.now()
   return {
     over: () => performance.now() - started >= 6,
-    yieldFrame: () => {
-      started = performance.now()
-      return new Promise<void>((resolve) => setTimeout(resolve, 0))
-    },
+    yieldFrame: () =>
+      new Promise<void>((resolve) =>
+        setTimeout(() => {
+          // Reset once the timer has fired, so its delay is not counted against
+          // the next slice and every entry after it yields again.
+          started = performance.now()
+          resolve()
+        }, 0)
+      ),
   }
 }
 
