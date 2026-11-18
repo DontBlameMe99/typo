@@ -218,12 +218,12 @@
       "updatedAt": "2026-11-18T01:46:37.942Z"
     },
     "startup/100/first-rows": {
-      "sha": "918c7ba45807c7e8a15bb1d23f9c4323dcfcc8b6",
+      "sha": "b944e5e544db92b83a6a10ff17234b574b3dbd82",
       "method": 2,
-      "medianMs": 0.1993370000000141,
-      "worstMedianMs": 0.20534299999962968,
+      "medianMs": 0.19734200000038982,
+      "worstMedianMs": 0.20257800000035786,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-18T12:50:57.141Z"
+      "updatedAt": "2026-11-18T14:55:43.695Z"
     },
     "startup/1000/first-rows": {
       "sha": "e8dcc62fcfe2d775a063fb81104ac1bbeff56c01",
@@ -282,12 +282,12 @@
       "updatedAt": "2026-11-18T01:46:37.942Z"
     },
     "pdf/20-pages/open": {
-      "sha": "c574385ba27012ea891154ade340b4b3f0a09070",
+      "sha": "b944e5e544db92b83a6a10ff17234b574b3dbd82",
       "method": 2,
-      "medianMs": 9.723007999999936,
-      "worstMedianMs": 10.525977999999668,
+      "medianMs": 8.740246000000297,
+      "worstMedianMs": 8.794590999999855,
       "budgetMs": 100,
-      "updatedAt": "2026-11-15T23:55:55.175Z"
+      "updatedAt": "2026-11-18T14:55:43.695Z"
     },
     "pdf/20-pages/page": {
       "sha": "03f37e3ef09b411e20f601b2e44e77e2ab3ff87f",
