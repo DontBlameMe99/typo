@@ -11,7 +11,6 @@ import ChevronUp from 'lucide-react-native/icons/chevron-up'
 import Circle from 'lucide-react-native/icons/circle'
 import CircleAlert from 'lucide-react-native/icons/circle-alert'
 import CircleCheck from 'lucide-react-native/icons/circle-check'
-import CircleX from 'lucide-react-native/icons/circle-x'
 import CodeXml from 'lucide-react-native/icons/code-xml'
 import ExternalLink from 'lucide-react-native/icons/external-link'
 import FileText from 'lucide-react-native/icons/file-text'
@@ -98,7 +97,6 @@ const icons = {
   palette: Palette,
   plus: Plus,
   close: X,
-  closeCircle: CircleX,
   check: Check,
   checkCircle: CircleCheck,
   star: Star,
