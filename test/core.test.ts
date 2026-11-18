@@ -333,6 +333,10 @@ describe('search', () => {
     ])
     search.update([note('Papers/alpha.typ', '#title[Papers Alpha]\nLEGO bricks')])
     expect(await search('papers alpha', 'all')).toHaveLength(1)
+    // Only exists after the edit, so this fails if the fold survived it.
+    expect((await search('bricks', 'content')).map((r) => r.note.path)).toEqual([
+      'Papers/alpha.typ',
+    ])
     expect((await search('lego bricks', 'content'))[0].note.path).toBe('Papers/alpha.typ')
   })
 
