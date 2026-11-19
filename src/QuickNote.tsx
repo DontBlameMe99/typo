@@ -1,11 +1,8 @@
-import { DMSans_400Regular, DMSans_600SemiBold, useFonts } from '@expo-google-fonts/dm-sans'
-import * as SplashScreen from 'expo-splash-screen'
 import type * as React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   AppState,
-  BackHandler,
   Keyboard,
   KeyboardAvoidingView,
   Pressable,
@@ -15,31 +12,17 @@ import {
   TextInput,
   View,
 } from 'react-native'
-import {
-  initialWindowMetrics,
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context'
 import { ErrorBanner } from './ErrorBanner'
 import { finishQuickNote } from './quick-note-native'
-import { ThemeProvider, useTheme } from './theme'
+import { QuickSheetRoot, QuickToolbar, useQuickSheet, useQuickStyles } from './quick-sheet'
+import { useTheme } from './theme'
 import type { Vault } from './types'
 import { createNote, readSavedVault, readTemplate } from './vault'
-
-const fonts = { DMSans_400Regular, DMSans_600SemiBold }
-
 export default function QuickNoteRoot() {
-  const [loaded, fontError] = useFonts(fonts)
-  useEffect(() => {
-    void SplashScreen.hideAsync().catch(() => {})
-  }, [])
-  if (!loaded && !fontError) return null
   return (
-    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-      <ThemeProvider>
-        <QuickNote />
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <QuickSheetRoot>
+      <QuickNote />
+    </QuickSheetRoot>
   )
 }
 
@@ -53,8 +36,8 @@ type TemplateResult = { source: string } | { error: unknown }
 
 function QuickNote() {
   const { colors, ready } = useTheme()
-  const s = useStyles()
-  const insets = useSafeAreaInsets()
+  const s = useQuickStyles()
+  const f = useFormStyles()
   const [state, setState] = useState<VaultState>({ kind: 'loading' })
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -95,24 +78,7 @@ function QuickNote() {
     finishQuickNote()
   }, [])
 
-  // A save can finish after the activity closes, so Back must not dismiss the
-  // sheet while it runs. Close is disabled for the same reason.
-  useEffect(() => {
-    if (!saving) return
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => true)
-    return () => subscription.remove()
-  }, [saving])
-
-  // The sheet is shown over the keyguard, so a draft must not survive the
-  // screen locking or the app going to the background. A running save keeps
-  // going in the shared runtime after the activity closes.
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'background') finishQuickNote()
-    })
-    return () => subscription.remove()
-  }, [])
-
+  useQuickSheet(close, saving)
   async function create() {
     if (state.kind !== 'ready' || !title.trim() || saving) return
     setSaving(true)
@@ -143,30 +109,18 @@ function QuickNote() {
   return (
     <KeyboardAvoidingView style={s.root} behavior="padding">
       <View style={s.backdrop}>
-        <View style={[s.card, { paddingBottom: insets.bottom + 12 }]}>
-          <View style={s.toolbar}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close quick note"
-              disabled={saving}
-              onPress={close}
-              style={({ pressed }) => [s.close, pressed && s.pressed]}
-            >
-              <Text style={s.closeText}>Close</Text>
-            </Pressable>
-            <Text style={s.heading}>New note</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Create note"
-              disabled={!canCreate}
-              onPress={() => void create()}
-              style={({ pressed }) => [s.create, pressed && s.pressed, !canCreate && s.createOff]}
-            >
-              <Text style={[s.createText, !canCreate && s.createTextOff]}>
-                {saving ? 'Creating…' : 'Create'}
-              </Text>
-            </Pressable>
-          </View>
+        <View style={s.card}>
+          <QuickToolbar
+            title="New note"
+            actionLabel="Create"
+            busyLabel="Creating…"
+            canSubmit={canCreate}
+            saving={saving}
+            closeLabel="Close quick note"
+            actionAccessibilityLabel="Create note"
+            onClose={close}
+            onSubmit={() => void create()}
+          />
 
           {state.kind === 'loading' ? (
             <View style={s.center}>
@@ -188,7 +142,7 @@ function QuickNote() {
           ) : (
             <ScrollView
               style={s.flex}
-              contentContainerStyle={s.form}
+              contentContainerStyle={f.form}
               keyboardShouldPersistTaps="handled"
             >
               {error && (
@@ -212,9 +166,9 @@ function QuickNote() {
                 returnKeyType="next"
                 submitBehavior="submit"
                 onSubmitEditing={() => bodyRef.current?.focus()}
-                style={s.title}
+                style={f.title}
               />
-              <View style={s.divider} />
+              <View style={f.divider} />
               <TextInput
                 ref={bodyRef}
                 accessibilityLabel="Note body"
@@ -229,7 +183,7 @@ function QuickNote() {
                 multiline
                 textAlignVertical="top"
                 cursorColor={colors.accent}
-                style={s.body}
+                style={f.body}
               />
             </ScrollView>
           )}
@@ -243,54 +197,10 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : 'Could not create the note.'
 }
 
-function useStyles() {
+function useFormStyles() {
   const { colors } = useTheme()
   return StyleSheet.create({
-    root: { flex: 1 },
-    backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.45)' },
-    card: {
-      flex: 1,
-      marginTop: 96,
-      borderTopLeftRadius: 28,
-      borderTopRightRadius: 28,
-      backgroundColor: colors.paper,
-    },
-    flex: { flex: 1 },
-    toolbar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-      paddingTop: 16,
-      paddingHorizontal: 16,
-      paddingBottom: 10,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.line,
-    },
-    heading: {
-      flex: 1,
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 22,
-      letterSpacing: -0.4,
-      color: colors.ink,
-      textAlign: 'center',
-    },
-    close: { minWidth: 64, height: 44, justifyContent: 'center' },
-    closeText: { fontFamily: 'DMSans_600SemiBold', fontSize: 15, color: colors.muted },
-    create: {
-      minWidth: 96,
-      height: 44,
-      paddingHorizontal: 20,
-      borderRadius: 22,
-      backgroundColor: colors.accent,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    createOff: { backgroundColor: colors.surface },
-    createText: { fontFamily: 'DMSans_600SemiBold', fontSize: 16, color: colors.onAccent },
-    createTextOff: { color: colors.muted },
-    pressed: { opacity: 0.6 },
     form: { paddingTop: 24, paddingHorizontal: 20, paddingBottom: 40, flexGrow: 1 },
-    errorInset: { paddingHorizontal: 4, marginBottom: 12 },
     title: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 32,
@@ -309,22 +219,5 @@ function useStyles() {
       lineHeight: 27,
       color: colors.ink,
     },
-    center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 20 },
-    notice: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 16,
-      lineHeight: 24,
-      color: colors.muted,
-      textAlign: 'center',
-    },
-    noticeButton: {
-      height: 44,
-      paddingHorizontal: 24,
-      borderRadius: 22,
-      backgroundColor: colors.soft,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    noticeButtonText: { fontFamily: 'DMSans_600SemiBold', fontSize: 16, color: colors.ink },
   })
 }

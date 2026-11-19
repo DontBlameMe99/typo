@@ -5,6 +5,7 @@ import { inlineJson } from './editor/document'
 import { type SearchHit, SearchTransport } from './search/protocol'
 import type { Note, SearchMode, SearchResult } from './types'
 import { webRuntime } from './web-runtime'
+import { useWebViewForegroundReload } from './webview-resume'
 
 // The runtime lives in its own WebView process, which the OS can kill without
 // telling anyone, and a killed runtime looks exactly like a slow one. A query
@@ -44,6 +45,12 @@ export function NoteSearch(props: Props) {
     }
   }, [])
   const restart = useCallback(() => setSession((value) => value + 1), [])
+  useWebViewForegroundReload(() => {
+    if (booted) {
+      disarm()
+      restart()
+    }
+  }, !!uri)
   const fail = useCallback(
     (message: string) => {
       disarm()

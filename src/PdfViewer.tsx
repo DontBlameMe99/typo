@@ -18,6 +18,7 @@ import { inlineJson } from './editor/document'
 import { ReportIssue } from './ReportIssue'
 import { useTheme } from './theme'
 import { afterPaint, webRuntime } from './web-runtime'
+import { useWebViewForegroundReload } from './webview-resume'
 
 const SPINNER_DELAY = 120
 const MESSAGE_DELAY = 5000
@@ -71,6 +72,7 @@ export default function PdfViewer(props: Props) {
   const [uri, setUri] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [displayed, setDisplayed] = useState<string | null>(null)
+  const [session, setSession] = useState(0)
   const [waiting, setWaiting] = useState(false)
   const [message, setMessage] = useState(0)
   const [shown, setShown] = useState(LOADING_MESSAGES[0])
@@ -114,6 +116,12 @@ export default function PdfViewer(props: Props) {
       canceled = true
     }
   }, [])
+  useWebViewForegroundReload(() => {
+    requested.current = null
+    setReady(false)
+    setDisplayed(null)
+    setSession((value) => value + 1)
+  }, !!uri)
 
   useEffect(() => {
     if (ready) return
@@ -279,6 +287,7 @@ export default function PdfViewer(props: Props) {
     <View style={[{ flex: 1 }, props.style, { backgroundColor: palette.crust }]}>
       {uri && (
         <WebView<object>
+          key={session}
           ref={web}
           source={{ uri }}
           style={{ flex: 1, backgroundColor: palette.crust, opacity: source && !showing ? 0 : 1 }}
@@ -294,6 +303,9 @@ export default function PdfViewer(props: Props) {
           onShouldStartLoadWithRequest={(request) =>
             request.url === uri || request.url === 'about:blank'
           }
+          onLoadStart={() => {
+            setReady(false)
+          }}
           onError={() => props.onError(new Error('The offline PDF viewer could not load.'))}
           onRenderProcessGone={() =>
             props.onError(new Error('The PDF viewer stopped. Try reopening the PDF.'))

@@ -41,6 +41,12 @@ import {
 } from '../library-rows'
 import { TypoMark } from '../Mark'
 import { NoteSearch } from '../NoteSearch'
+import {
+  clearQuickAppendTarget,
+  type QuickAppendTarget,
+  readQuickAppendTarget,
+  storeQuickAppendTarget,
+} from '../quick-append-config'
 import { loadSortSync, storeSort } from '../sort'
 import { markStartup, reportStartup } from '../startup'
 import { useTheme } from '../theme'
@@ -134,6 +140,13 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
   const cachedRows =
     !!launch.index && (launch.index.notes.length > 0 || launch.index.folders.length > 1)
   const [vault, setVault] = useState<Vault | null>(launch.vault)
+  const [quickTarget, setQuickTarget] = useState<QuickAppendTarget | null>(() => {
+    try {
+      return readQuickAppendTarget()
+    } catch {
+      return null
+    }
+  })
   const [notes, setNotes] = useState<Note[]>(launch.index?.notes ?? EMPTY_NOTES)
   const [folders, setFolders] = useState<string[]>(launch.index?.folders ?? [''])
   const [folder, setFolder] = useState('')
@@ -273,6 +286,15 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
           const scannedFolders = result.folders.filter((path) => !isTrashing(path))
           setNotes((previous) => reconcileNotes(previous, scannedNotes))
           setFolders((previous) => (sameList(previous, scannedFolders) ? previous : scannedFolders))
+          const refreshSession = (session: NoteSession | null) => {
+            if (!session) return session
+            const fresh = scannedNotes.find((note) => note.uri === session.note.uri)
+            return fresh && fresh.source !== session.note.source
+              ? { ...session, note: fresh, openError: undefined }
+              : session
+          }
+          setSelected((current) => refreshSession(current))
+          setPrepared((current) => refreshSession(current))
           if (templateVersion.current === templateVersionAtStart) {
             const templates = scannedNotes.filter((note) => isRootTemplate(note.path))
             const folder = scannedFolders.some((path) => path.toLowerCase() === 'template.typ')
@@ -451,6 +473,15 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
       if (vaultRef.current?.uri !== next.uri) {
         trashing.current.clear()
         settledTrash.current = []
+        try {
+          if (readQuickAppendTarget()?.vaultUri !== next.uri) {
+            void clearQuickAppendTarget().catch(() => {})
+            setQuickTarget(null)
+          }
+        } catch {
+          void clearQuickAppendTarget().catch(() => {})
+          setQuickTarget(null)
+        }
       }
       setVault(next)
       vaultRef.current = next
@@ -1596,13 +1627,26 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
       )}
       {settingsOpen && vault && (
         <Settings
+          vault={vault}
           vaultName={vault.name}
+          notes={notes}
+          quickTarget={quickTarget}
           picking={picking}
           onChangeFolder={() => {
             closeSettings()
             // The picker and the vault setup have to be visible, and neither
             // can be while Settings covers the library.
             void chooseVault()
+          }}
+          onSaveQuickTarget={(target) => {
+            setQuickTarget(target)
+            void storeQuickAppendTarget(target).catch((cause: unknown) =>
+              setError(errorText(cause))
+            )
+          }}
+          onClearQuickTarget={() => {
+            setQuickTarget(null)
+            void clearQuickAppendTarget().catch((cause: unknown) => setError(errorText(cause)))
           }}
           onClose={closeSettings}
         />

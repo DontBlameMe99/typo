@@ -10,9 +10,31 @@
         <action android:name="android.service.quicksettings.action.QS_TILE" />
       </intent-filter>
     </service>
+    <service
+      android:name="expo.modules.typoquicknote.QuickAppendTileService"
+      android:exported="true"
+      android:icon="@drawable/typo_tile_append"
+      android:label="@string/typo_quick_append_tile"
+      android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+      <intent-filter>
+        <action android:name="android.service.quicksettings.action.QS_TILE" />
+      </intent-filter>
+    </service>
 
     <activity
       android:name="expo.modules.typoquicknote.QuickNoteActivity"
+      android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|smallestScreenSize"
+      android:excludeFromRecents="true"
+      android:exported="false"
+      android:launchMode="singleInstance"
+      android:screenOrientation="portrait"
+      android:showWhenLocked="true"
+      android:taskAffinity=""
+      android:theme="@style/Theme.Typo.QuickNote"
+      android:turnScreenOn="true"
+      android:windowSoftInputMode="adjustResize" />
+    <activity
+      android:name="expo.modules.typoquicknote.QuickAppendActivity"
       android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|smallestScreenSize"
       android:excludeFromRecents="true"
       android:exported="false"

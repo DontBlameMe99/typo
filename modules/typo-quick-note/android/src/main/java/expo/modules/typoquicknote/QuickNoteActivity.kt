@@ -6,7 +6,7 @@ import android.view.WindowManager
 import com.facebook.react.ReactActivity
 import java.lang.ref.WeakReference
 
-class QuickNoteActivity : ReactActivity() {
+open class QuickNoteActivity : ReactActivity() {
   override fun getMainComponentName(): String = "quickNote"
 
   override fun onCreate(savedInstanceState: Bundle?) {

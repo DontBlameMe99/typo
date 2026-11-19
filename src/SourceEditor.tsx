@@ -17,6 +17,7 @@ import type { EditorIssue } from './editor/issues'
 import { applyEditorChange, editorMessage, normalizeSource } from './editor/protocol'
 import { useTheme } from './theme'
 import { webRuntime } from './web-runtime'
+import { useWebViewForegroundReload } from './webview-resume'
 
 export type SourceEditorHandle = {
   // Reports whether the page could be asked to focus, since an editor that is
@@ -53,6 +54,7 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
     const bootValue = useRef<string | null>(null)
     const bootDocument = useRef<string | null>(null)
     const session = useRef(0)
+    const bootedLoad = useRef(false)
     const synced = useRef(false)
     const documentId = useRef(props.documentId)
     const failure = useRef<string | null>(null)
@@ -63,6 +65,7 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
     }, [])
     const [uri, setUri] = useState<string | null>(null)
     const [ready, setReady] = useState(false)
+    const [nativeSession, setNativeSession] = useState(0)
     const theme = {
       background: colors.paper,
       foreground: colors.ink,
@@ -123,6 +126,11 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
         cancelled = true
       }
     }, [fail])
+    useWebViewForegroundReload(() => {
+      bootedLoad.current = false
+      setReady(false)
+      setNativeSession((value) => value + 1)
+    }, !!uri)
 
     useLayoutEffect(() => {
       const switched = documentId.current !== props.documentId
@@ -189,6 +197,7 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
         {uri && (
           <GestureDetector gesture={native}>
             <WebView<object>
+              key={nativeSession}
               ref={web}
               source={{ uri }}
               style={{ flex: 1, backgroundColor: colors.paper }}
@@ -201,8 +210,13 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
               onShouldStartLoadWithRequest={(request) =>
                 request.url === uri || request.url === 'about:blank'
               }
+              onLoadStart={() => {
+                bootedLoad.current = false
+                setReady(false)
+              }}
               onLoadEnd={() => {
-                if (ready) return
+                if (bootedLoad.current) return
+                bootedLoad.current = true
                 bootValue.current = normalizeSource(latest.current.value)
                 bootDocument.current = latest.current.documentId
                 inject(
@@ -214,10 +228,11 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
                 fail('The editor could not load. Your file has not been changed.')
               }}
               onRenderProcessGone={() => {
+                bootedLoad.current = false
                 setReady(false)
                 ++session.current
                 latest.current.onFocusChange(false)
-                web.current?.reload()
+                setNativeSession((value) => value + 1)
                 fail('The editor stopped and is restarting. Your file has not been changed.')
               }}
               onMessage={(event) => {
@@ -225,6 +240,8 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
                   const message = editorMessage(event.nativeEvent.data, latest.current.documentId)
                   if (!message) return
                   if (message.type === 'boot') {
+                    if (bootedLoad.current) return
+                    bootedLoad.current = true
                     bootValue.current = normalizeSource(latest.current.value)
                     bootDocument.current = latest.current.documentId
                     inject(

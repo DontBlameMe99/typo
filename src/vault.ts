@@ -1,5 +1,6 @@
 import { Directory, File, FileMode } from 'expo-file-system'
 import * as FileSystem from 'expo-file-system/legacy'
+import { appendToSection } from './append'
 import {
   buildNoteSource,
   DEFAULT_TEMPLATE,
@@ -973,6 +974,73 @@ export async function createNote(
     title: extractTitle(source, filename),
     source,
     modifiedAt: modifiedAt(await entryInfo(uri)),
+  }
+}
+
+async function noteFileAtPath(
+  vault: Vault,
+  path: string
+): Promise<{ uri: string; path: string; name: string }> {
+  const segments = notePathSegments(path)
+  const parent = await resolveNoteDirectory(vault, segments.slice(0, -1), 'append to')
+  const filename = segments.at(-1) ?? ''
+  const entries = await listedEntries(
+    parent.uri,
+    parent.path || vault.name,
+    true,
+    'full',
+    (name) => name.toLowerCase() === filename.toLowerCase()
+  )
+  const matches = entries.filter((entry) => !entry.info.isDirectory)
+  if (matches.length > 1) {
+    throw new Error(`Cannot append to "${path}": more than one note has that name.`)
+  }
+  const match = matches[0]
+  if (!match) throw new Error(`Cannot append to "${path}": the note does not exist.`)
+  return {
+    uri: match.uri,
+    path: parent.path ? `${parent.path}/${match.name}` : match.name,
+    name: match.name,
+  }
+}
+
+function noteFromSource(uri: string, path: string, name: string, source: string): Note {
+  return {
+    uri,
+    path,
+    title: extractTitle(source, name),
+    source,
+    modifiedAt: null,
+  }
+}
+
+export async function readNoteAtPath(vault: Vault, path: string): Promise<Note> {
+  try {
+    const file = await noteFileAtPath(vault, path)
+    const source = await readNoteSource(file.uri, () => false)
+    return noteFromSource(file.uri, file.path, file.name, source)
+  } catch (cause) {
+    throw new Error(`Cannot read "${path}": ${message(cause)}`)
+  }
+}
+
+export async function appendToNoteAtPath(
+  vault: Vault,
+  path: string,
+  section: string,
+  text: string
+): Promise<Note> {
+  try {
+    const file = await noteFileAtPath(vault, path)
+    const source = await readNoteSource(file.uri, () => false)
+    const next = appendToSection(source, section, text)
+    await writeSource(file.uri, next)
+    return {
+      ...noteFromSource(file.uri, file.path, file.name, next),
+      modifiedAt: modifiedAt(await entryInfo(file.uri)),
+    }
+  } catch (cause) {
+    throw new Error(`Cannot append to "${path}": ${message(cause)}`)
   }
 }
 

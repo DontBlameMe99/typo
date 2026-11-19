@@ -64,8 +64,9 @@ imported names. Tap the ghost text or press Tab to accept. PDF text can be
 selected, and URL links open in the browser.
 
 Typo compiles with bundled fonts and fetches missing public packages from
-`packages.typst.org`. Add the Quick Settings tile to start a note from
-anywhere.
+`packages.typst.org`. Add the Quick Settings tiles to start a note from
+anywhere or append to a chosen note section. Set the append target in Settings,
+under Quick append.
 
 ## Template
 

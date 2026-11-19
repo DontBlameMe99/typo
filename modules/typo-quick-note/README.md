@@ -1,9 +1,9 @@
 # TypoQuickNote
 
-Android-only local Expo module for the "New note" Quick Settings tile. Expo autolinking finds it in `modules` without a package dependency or config plugin.
+Android-only local Expo module for the "New note" and "Append note" Quick Settings tiles. Expo autolinking finds it in `modules` without a package dependency or config plugin.
 
-`QuickNoteTileService` opens `QuickNoteActivity` over the keyguard. API 34 and newer use `startActivityAndCollapse(PendingIntent)`, older versions the deprecated `Intent` overload. The tile reads `typo-vault.json` from the app's files directory, the same selection `src/vault.ts` owns, and reports `STATE_UNAVAILABLE` until a vault is selected. Taps do nothing until a vault is selected.
+`QuickTileService` opens a translucent activity over the keyguard. API 34 and newer use `startActivityAndCollapse(PendingIntent)`, older versions the deprecated `Intent` overload. Both tiles read `typo-vault.json` from the app's files directory, the same selection `src/vault.ts` owns, and report `STATE_UNAVAILABLE` until a vault is selected. The append tile also requires `typo-quick-append.json`, the target written by `src/quick-append-config.ts`. Taps do nothing until those files exist.
 
-`QuickNoteActivity` is a translucent `ReactActivity` that renders the `quickNote` component registered in `index.ts`, so it shares the app's React host and JS runtime. Back and `finish()` close it once the note is written.
+`QuickNoteActivity` and `QuickAppendActivity` are translucent `ReactActivity` classes that render the `quickNote` and `quickAppend` components registered in `index.ts`, so they share the app's React host and JS runtime. Back and `finish()` close them once the note is written.
 
 Rebuild the Android app after changing this module. Expo Go does not include it.
