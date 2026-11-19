@@ -377,6 +377,7 @@ const { packageArchive } = await import('../src/compiler/packages')
 const { pdfStorage } = await import('../src/compiler/pdf-storage')
 const { loadVaultIndex, loadVaultIndexSync, storeVaultIndex } = await import('../src/library-cache')
 const { loadFavorites, loadFavoritesSync, storeFavorites } = await import('../src/favorites')
+const { loadSortSync, storeSort } = await import('../src/sort')
 
 beforeEach(() => {
   detailedMetadataReads = 0
@@ -764,6 +765,28 @@ test('favorites persist per vault in private documents', async () => {
   expect(await loadFavorites(vault)).toEqual(['a.typ'])
   files.set(uri, { source: '{broken' })
   expect(await loadFavorites(vault)).toEqual([])
+})
+
+test('note sort survives a fresh library launch', async () => {
+  expect(loadSortSync()).toBe('name-asc')
+
+  await storeSort('modified-desc')
+
+  expect(loadSortSync()).toBe('modified-desc')
+  expect(writeAsStringAsync).toHaveBeenCalledWith(
+    'file:///private/documents/typo-sort.json',
+    JSON.stringify({ version: 1, sort: 'modified-desc' })
+  )
+})
+
+test('an unreadable or unknown note sort falls back to the default', () => {
+  files.set('file:///private/documents/typo-sort.json', { source: '{not json' })
+  expect(loadSortSync()).toBe('name-asc')
+
+  files.set('file:///private/documents/typo-sort.json', {
+    source: JSON.stringify({ sort: 'size-desc' }),
+  })
+  expect(loadSortSync()).toBe('name-asc')
 })
 
 test('scan bounds source reads and reports every completed note', async () => {

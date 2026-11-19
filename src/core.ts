@@ -215,6 +215,12 @@ type ContentEntry = {
 }
 
 export type NoteSort = 'name-asc' | 'name-desc' | 'modified-desc' | 'modified-asc'
+export const noteSortValues: readonly NoteSort[] = [
+  'name-asc',
+  'name-desc',
+  'modified-desc',
+  'modified-asc',
+]
 
 type SortEntry = {
   title: string

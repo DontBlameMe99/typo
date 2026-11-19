@@ -41,6 +41,7 @@ import {
 } from '../library-rows'
 import { TypoMark } from '../Mark'
 import { NoteSearch } from '../NoteSearch'
+import { loadSortSync, storeSort } from '../sort'
 import { markStartup, reportStartup } from '../startup'
 import { useTheme } from '../theme'
 import type { Note, SearchMode, SearchResult, Vault } from '../types'
@@ -147,7 +148,7 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
   const [query, setQuery] = useState('')
   const queryRef = useRef(query)
   queryRef.current = query
-  const [sort, setSort] = useState<NoteSort>('name-asc')
+  const [sort, setSort] = useState<NoteSort>(loadSortSync)
   const [sortOpen, setSortOpen] = useState(false)
   const [selected, setSelected] = useState<NoteSession | null>(null)
   const [prepared, setPrepared] = useState<NoteSession | null>(null)
@@ -1612,6 +1613,7 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
           onChange={(value) => {
             if (value === sort) return
             setSort(value)
+            void storeSort(value).catch(() => {})
           }}
           onClose={() => setSortOpen(false)}
         />
