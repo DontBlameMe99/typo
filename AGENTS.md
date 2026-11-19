@@ -76,6 +76,20 @@ doc files.
 - When anything will become public, be it explaining GIFs in PRs or other
   sources of media, **always** use fabricated demo data.
 
+## Checks
+
+`bun` and `wasm-opt` exist only inside the flake. `adb` is on `PATH`, but
+run every check under the flake anyway:
+
+```sh
+nix develop -c bun run typecheck
+nix develop -c bun run lint
+nix develop -c bun test
+```
+
+Never pin a `/nix/store/*-bun*/bin` path. Outside the dev shell the offline
+build test fails for a missing `wasm-opt` and looks pre-existing.
+
 ## Pull Requests
 
 - UI changes need before/after images. Motion or timing needs a short video.
@@ -86,3 +100,6 @@ doc files.
 
 If it would help if a user tests the change, set it up using the
 `mobile-testing` skill and ask the user to do so.
+
+Never report a visual change as fixed without a screenshot of that exact state.
+If no device is available, open with "Unverified on device" and stop.

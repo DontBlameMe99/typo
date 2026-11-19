@@ -33,6 +33,21 @@ Deleting the worktree stops its server on its own, within a minute. `start`
 also prunes dead reservations and restarts a wedged server on its port, so
 there is no stop or restart step.
 
+## Evidence
+
+There is no PIL. Use the binaries on `PATH`:
+
+```sh
+magick in.png -crop 740x70+60+580 +repage out.png
+magick in.png -format %c histogram:info:- | sort -rn | head
+```
+
+Use the T3 device tools (`device_list`, `device_open`, `device_screenshot`)
+directly. Never `adb -s emulator-5554`. After two failed opens, stop and report
+blocked.
+
+`html_preview` cannot show a device screen. Send the png as an attachment.
+
 ## Native changes
 
 Splash, icons, permissions, and `modules/typo-vault` cannot be tested through
