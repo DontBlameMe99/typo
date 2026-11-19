@@ -1,16 +1,16 @@
 {
   "method": 2,
-  "sha": "aae6695a10ee3de7760848ed942a01bc1e611331",
-  "bestMs": 1335,
-  "medianMs": 1549,
+  "sha": "319fe7c449ac4b54a1d943efb836076ca5acc30f",
+  "bestMs": 1105,
+  "medianMs": 1392,
   "phases": {
-    "bundle": 186,
-    "commit": 278,
-    "fonts": 199,
-    "library": 206,
-    "paint": 865,
-    "reveal": 278,
-    "theme": 188,
-    "visible": 285
+    "bundle": 204,
+    "commit": 416,
+    "fonts": 217,
+    "library": 222,
+    "paint": 739,
+    "reveal": 416,
+    "theme": 208,
+    "visible": 421
   }
 }
