@@ -18,20 +18,20 @@
       "updatedAt": "2026-11-09T13:41:47.726Z"
     },
     "compiler/20-pages/cold": {
-      "sha": "e8dcc62fcfe2d775a063fb81104ac1bbeff56c01",
+      "sha": "1295785112250704339f953e23017b2d771df6a9",
       "method": 2,
-      "medianMs": 6.885315000000446,
-      "worstMedianMs": 7.252792000000227,
+      "medianMs": 6.253511000000344,
+      "worstMedianMs": 6.39494299999933,
       "budgetMs": 100,
-      "updatedAt": "2026-11-18T01:46:37.942Z"
+      "updatedAt": "2026-11-20T02:19:45.823Z"
     },
     "compiler/20-pages/warm": {
-      "sha": "7d1d86ff4aa9ab31518d67ae8c042ac1b13ff2df",
+      "sha": "1295785112250704339f953e23017b2d771df6a9",
       "method": 2,
-      "medianMs": 5.873692000000119,
-      "worstMedianMs": 6.287723999999798,
+      "medianMs": 3.1713780000000042,
+      "worstMedianMs": 3.3044529999997394,
       "budgetMs": 33.4,
-      "updatedAt": "2026-11-06T18:25:07.434Z"
+      "updatedAt": "2026-11-20T02:19:45.823Z"
     },
     "compiler/initialize": {
       "sha": "5237aed48bb33c8441f7f3044fa361e1d5ea4666",
