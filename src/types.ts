@@ -13,6 +13,7 @@ export type Note = {
   modifiedAt: number | null
   pdfUri?: string
   pdfHash?: string
+  sharedHash?: string
 }
 
 const hashes = new WeakMap<Note, { source: string; hash: string }>()
@@ -22,7 +23,7 @@ export function hasCurrentPdf(note: Note): boolean {
   const cached = hashes.get(note)
   const hash = cached?.source === note.source ? cached.hash : sha256(note.source)
   hashes.set(note, { source: note.source, hash })
-  return hash === note.pdfHash
+  return note.pdfHash === (note.sharedHash ? sha256(`${note.sharedHash}${hash}\n`) : hash)
 }
 
 export type SearchMode = 'all' | 'names' | 'content'

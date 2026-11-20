@@ -373,6 +373,7 @@ export function reconcileNotes(previous: Note[], next: Note[]): Note[] {
       old.title === note.title &&
       old.pdfUri === note.pdfUri &&
       old.pdfHash === note.pdfHash &&
+      old.sharedHash === note.sharedHash &&
       old.modifiedAt === note.modifiedAt
       ? old
       : note

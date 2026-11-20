@@ -1976,6 +1976,39 @@ test('repairing a stale hash does not touch the PDF', async () => {
   expect(files.get(uriFor('out/note.pdf'))).toBe(pdf)
 })
 
+test('hash sidecars combine the note hash with the shared stamp', async () => {
+  const source = '#title[Note]\nBody'
+  const note: Note = {
+    uri: addFile('note.typ', source),
+    path: 'note.typ',
+    title: 'Note',
+    source,
+    modifiedAt: null,
+  }
+  const shared = sha256('style and bibliography')
+  await createPdfWriter(vault).hash(note, shared)
+  expect(files.get(uriFor('out/hashes/note.sha256'))?.source).toBe(
+    `${sha256(`${shared}${sha256(source)}\n`)}\n${shared}\n`
+  )
+})
+
+test('scan reads the shared stamp from a hash sidecar', async () => {
+  const source = '= Note'
+  addFile('note.typ', source)
+  const out = addDirectory('out')
+  addFile('out/note.pdf', '%PDF-1.7', out)
+  const hashes = addDirectory('out/hashes', out)
+  const shared = sha256('style and bibliography')
+  addFile(
+    'out/hashes/note.sha256',
+    `${sha256(`${shared}${sha256(source)}\n`)}\n${shared}\n`,
+    hashes
+  )
+  const notes = await scanVault(vault)
+  expect(notes[0]?.sharedHash).toBe(shared)
+  expect(notes[0] && hasCurrentPdf(notes[0])).toBe(true)
+})
+
 test('PDF output lookup reads metadata only for the target path', async () => {
   const source = '#title[Note]\nBody'
   const uri = addFile('note.typ', source)
@@ -2077,6 +2110,7 @@ test('PDF manifests and private bytes survive storage recreation and remain vaul
   const uri = await cache.cache('content-key', pdfBase64())
   const record = {
     sourceHash: 'source',
+    sharedHash: 'shared',
     fontsHash: 'fonts',
     dependencies: { 'style/lib.typ': 'style', 'missing.typ': null },
     uri,
@@ -2095,7 +2129,13 @@ test('missing or corrupt PDF cache records are cache misses and invalid PDFs are
   expect(await cache.read('note.typ')).toBeNull()
   await expect(cache.cache('bad', 'not a PDF')).rejects.toThrow('not return a PDF')
   const uri = await cache.cache('good', pdfBase64())
-  await cache.save('note.typ', { sourceHash: 'source', fontsHash: 'fonts', dependencies: {}, uri })
+  await cache.save('note.typ', {
+    sourceHash: 'source',
+    sharedHash: 'shared',
+    fontsHash: 'fonts',
+    dependencies: {},
+    uri,
+  })
   files.delete(uri)
   expect(await cache.read('note.typ')).toBeNull()
   expect(await cache.stamp(uri)).toBeNull()
@@ -2107,7 +2147,13 @@ test('missing or corrupt PDF cache records are cache misses and invalid PDFs are
 test('a cached record is statted once for the validation that follows it', async () => {
   const cache = pdfStorage(root)
   const uri = await cache.cache('stamp-key', pdfBase64())
-  await cache.save('note.typ', { sourceHash: 's', fontsHash: 'f', dependencies: {}, uri })
+  await cache.save('note.typ', {
+    sourceHash: 's',
+    sharedHash: 'shared',
+    fontsHash: 'f',
+    dependencies: {},
+    uri,
+  })
   sizeMetadataReads = 0
   expect(await cache.read('note.typ')).not.toBeNull()
   expect(await cache.stamp(uri)).not.toBeNull()
@@ -2119,7 +2165,13 @@ test('a cached record is statted once for the validation that follows it', async
 test('an observed stamp expires so a deleted cache file is not validated', async () => {
   const cache = pdfStorage(root)
   const uri = await cache.cache('stamp-age', pdfBase64())
-  await cache.save('note.typ', { sourceHash: 's', fontsHash: 'f', dependencies: {}, uri })
+  await cache.save('note.typ', {
+    sourceHash: 's',
+    sharedHash: 'shared',
+    fontsHash: 'f',
+    dependencies: {},
+    uri,
+  })
   sizeMetadataReads = 0
   expect(await cache.read('note.typ')).not.toBeNull()
   try {
@@ -2137,6 +2189,7 @@ test('PDF cache prunes orphan drafts before writes without delaying cache reads'
   const retained = await cache.cache('saved', pdfBase64())
   await cache.save('note.typ', {
     sourceHash: 'source',
+    sharedHash: 'shared',
     fontsHash: 'fonts',
     dependencies: {},
     uri: retained,

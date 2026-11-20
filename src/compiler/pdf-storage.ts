@@ -4,7 +4,7 @@ import { fingerprint } from './fingerprint'
 import type { PdfRecord } from './workspace'
 
 // Bump when compiler behavior, bundled fonts, or dependency tracking changes.
-const CACHE_VERSION = 'typst-0.8.0-rc3-2'
+const CACHE_VERSION = 'typst-0.8.0-rc3-3'
 
 export function pdfStorage(vaultUri: string) {
   if (!FileSystem.cacheDirectory) throw new Error('Private cache storage is unavailable.')
@@ -67,6 +67,7 @@ export function pdfStorage(vaultUri: string) {
         const record = JSON.parse(await FileSystem.readAsStringAsync(manifest(path)))
         if (
           typeof record.sourceHash !== 'string' ||
+          typeof record.sharedHash !== 'string' ||
           typeof record.fontsHash !== 'string' ||
           !record.dependencies ||
           typeof record.dependencies !== 'object' ||
