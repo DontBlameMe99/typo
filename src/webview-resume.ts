@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as ReactNative from 'react-native'
 import { quickTileSession } from './quick-tile-session'
+import { initialWebViewResumeState, nextWebViewResumeState } from './webview-resume-state'
 
 type AppStateLike = {
   currentState: string
@@ -17,19 +18,11 @@ export function useWebViewForegroundReload(reload: () => void, enabled = true): 
   current.current = reload
   useEffect(() => {
     if (!enabled || !appState) return
-    let backgrounded = appState.currentState !== 'active'
-    let handled = quickTileSession()
-    const subscription = appState.addEventListener('change', (state) => {
-      if (state !== 'active') {
-        backgrounded = true
-        return
-      }
-      if (!backgrounded) return
-      backgrounded = false
-      const opened = quickTileSession()
-      if (opened === handled) return
-      handled = opened
-      current.current()
+    let state = initialWebViewResumeState(quickTileSession(), appState.currentState)
+    const subscription = appState.addEventListener('change', (next) => {
+      const transition = nextWebViewResumeState(state, next, quickTileSession())
+      state = transition.state
+      if (transition.reload) current.current()
     })
     return () => subscription.remove()
   }, [enabled])

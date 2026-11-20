@@ -54,7 +54,6 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
     const bootValue = useRef<string | null>(null)
     const bootDocument = useRef<string | null>(null)
     const session = useRef(0)
-    const bootedLoad = useRef(false)
     const synced = useRef(false)
     const documentId = useRef(props.documentId)
     const failure = useRef<string | null>(null)
@@ -127,7 +126,7 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
       }
     }, [fail])
     useWebViewForegroundReload(() => {
-      bootedLoad.current = false
+      ++session.current
       setReady(false)
       setNativeSession((value) => value + 1)
     }, !!uri)
@@ -211,24 +210,13 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
                 request.url === uri || request.url === 'about:blank'
               }
               onLoadStart={() => {
-                bootedLoad.current = false
                 setReady(false)
-              }}
-              onLoadEnd={() => {
-                if (bootedLoad.current) return
-                bootedLoad.current = true
-                bootValue.current = normalizeSource(latest.current.value)
-                bootDocument.current = latest.current.documentId
-                inject(
-                  `window.typoStart?.(${inlineJson({ documentId: latest.current.documentId, source: latest.current.value, session: session.current, editable: latest.current.editable, template: latest.current.template, theme, issues: latest.current.issues })})`
-                )
               }}
               onError={() => {
                 setReady(false)
                 fail('The editor could not load. Your file has not been changed.')
               }}
               onRenderProcessGone={() => {
-                bootedLoad.current = false
                 setReady(false)
                 ++session.current
                 latest.current.onFocusChange(false)
@@ -240,8 +228,6 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
                   const message = editorMessage(event.nativeEvent.data, latest.current.documentId)
                   if (!message) return
                   if (message.type === 'boot') {
-                    if (bootedLoad.current) return
-                    bootedLoad.current = true
                     bootValue.current = normalizeSource(latest.current.value)
                     bootDocument.current = latest.current.documentId
                     inject(
