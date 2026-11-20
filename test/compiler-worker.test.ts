@@ -1,5 +1,6 @@
 import { beforeAll, expect, test } from 'bun:test'
 import type { CompileRequest } from '../src/compiler/protocol'
+import { fromBase64, toBase64 } from '../src/editor/local'
 
 type Message = { type: string; id?: number; message?: string; base64?: string }
 
@@ -49,4 +50,11 @@ test('the worker reports Typst diagnostics apart from runtime failures', async (
   const runtime = await compile({ ...request, id: 2, path: '../escape.typ' })
   expect(runtime.type).toBe('error')
   expect(runtime.id).toBe(2)
+})
+
+test('base64 decoding preserves bytes across lengths', () => {
+  for (const length of [0, 1, 2, 3, 255, 256, 1000]) {
+    const bytes = Uint8Array.from({ length }, (_, index) => index % 251)
+    expect(fromBase64(toBase64(bytes))).toEqual(bytes)
+  }
 })

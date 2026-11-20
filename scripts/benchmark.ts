@@ -2,7 +2,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
 import { createCompiler, initializeCompiler } from '../src/compiler/engine'
 import { fingerprint } from '../src/compiler/fingerprint'
 import { PdfWorkspace } from '../src/compiler/workspace'
-import { createNoteSearch, sortNotes } from '../src/core'
+import { createNoteSearch, notePreview, sortNotes } from '../src/core'
 import { applyEditorChange, editorMessage } from '../src/editor/protocol'
 import { TypstSyntax, typstLanguage } from '../src/editor/syntax'
 import { parseVaultIndex, serializeVaultIndex } from '../src/library-index'
@@ -185,6 +185,19 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
         const result = await incremental('probability', 'all')
         if (result.length !== 1000) throw new Error('Incomplete search results')
       }
+    }
+  )
+  const previewNotes = notesFor(1000)
+  await measure(
+    {
+      name: 'library/1000/first-previews',
+      criterion: 'build a thousand card previews within 100 ms',
+      budgetMs: 100,
+      samples: 20,
+      warmup: 1,
+    },
+    () => {
+      for (const note of previewNotes) notePreview({ ...note })
     }
   )
   const editorBase = Array.from(

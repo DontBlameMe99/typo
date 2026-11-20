@@ -15,8 +15,12 @@ export function localBytes(path: string): Promise<Uint8Array> {
   })
 }
 
-export const fromBase64 = (value: string) =>
-  Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
+export function fromBase64(value: string): Uint8Array {
+  const decoded = atob(value)
+  const bytes = new Uint8Array(decoded.length)
+  for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index)
+  return bytes
+}
 
 export function toBase64(bytes: Uint8Array): string {
   const chunks: string[] = []

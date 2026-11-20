@@ -57,6 +57,7 @@ function HighlightedText({
 }) {
   const s = useStyles()
   const { colors } = useTheme()
+  const hitStyle = [s.highlight, { backgroundColor: rgba(colors.accent, 0.28) }]
   const needle = query.trim().toLocaleLowerCase()
   if (!needle) {
     return (
@@ -109,7 +110,7 @@ function HighlightedText({
         const key = `${cursor}:${part.hit ? 'hit' : 'text'}`
         cursor += part.text.length
         return part.hit ? (
-          <Text key={key} style={[s.highlight, { backgroundColor: rgba(colors.accent, 0.28) }]}>
+          <Text key={key} style={hitStyle}>
             {part.text}
           </Text>
         ) : (

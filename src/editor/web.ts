@@ -1,5 +1,5 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { Compartment, EditorState, StateEffect } from '@codemirror/state'
+import { type ChangeSet, Compartment, EditorState, StateEffect } from '@codemirror/state'
 import {
   Decoration,
   type DecorationSet,
@@ -248,10 +248,15 @@ async function main(config: EditorConfig) {
       constructor(view: EditorView) {
         this.highlight(view)
       }
-      highlight(view: EditorView) {
-        syntax.request(view.state.doc, view.viewport, (ranges) => {
-          if (this.alive) view.dispatch({ effects: highlighted.of(ranges) })
-        })
+      highlight(view: EditorView, changes?: ChangeSet) {
+        syntax.request(
+          view.state.doc,
+          view.viewport,
+          (ranges) => {
+            if (this.alive) view.dispatch({ effects: highlighted.of(ranges) })
+          },
+          changes
+        )
       }
       update(update: ViewUpdate) {
         if (update.docChanged) {
@@ -270,7 +275,8 @@ async function main(config: EditorConfig) {
             recheckGhost(update.view)
           }
         }
-        if (update.docChanged || update.viewportChanged) this.highlight(update.view)
+        if (update.docChanged || update.viewportChanged)
+          this.highlight(update.view, update.docChanged ? update.changes : undefined)
       }
       destroy() {
         this.alive = false

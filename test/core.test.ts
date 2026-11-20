@@ -320,6 +320,15 @@ describe('search', () => {
     expect(result.snippet).toBe('line three')
   })
 
+  test('a fuzzy hit is refreshed after a line is added above it', async () => {
+    const search = createNoteSearch([note('a.typ', 'line one\nln two\nline three')])
+    expect((await search('lntwo', 'content'))[0].line).toBe(2)
+    search.update([note('a.typ', 'line zero\nline one\nln two')])
+    const [result] = await search('lntwo', 'content')
+    expect(result.line).toBe(3)
+    expect(result.snippet).toBe('ln two')
+  })
+
   // Multi-word queries compare folded terms against the folded name, so a term
   // only has to differ in case or accent to be dropped by a raw comparison.
   test('an edit is matched against its folded name and content', async () => {

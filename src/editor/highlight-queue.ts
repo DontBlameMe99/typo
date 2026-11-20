@@ -1,10 +1,12 @@
-import type { Text } from '@codemirror/state'
+import type { ChangeSet, Text } from '@codemirror/state'
+import type { EditorChange } from './protocol'
 import type { Highlight } from './syntax'
 
 export type HighlightRequest = {
   type: 'highlight'
   id: number
   source?: string
+  changes?: EditorChange[]
   range: { from: number; to: number }
 }
 
@@ -17,7 +19,16 @@ type Pending = {
   id: number
   doc: Text
   range: { from: number; to: number }
+  changes: ChangeSet | null
   apply(ranges: Highlight[]): void
+}
+
+function changeList(set: ChangeSet, doc: Text): EditorChange[] {
+  const changes: EditorChange[] = []
+  set.iterChanges((fromA, toA, fromB, toB) =>
+    changes.push({ from: fromA, to: toA, insert: doc.sliceString(fromB, toB) })
+  )
+  return changes
 }
 
 export class HighlightQueue {
@@ -35,9 +46,15 @@ export class HighlightQueue {
     this.pump()
   }
 
-  request(doc: Text, range: Pending['range'], apply: Pending['apply']) {
+  request(doc: Text, range: Pending['range'], apply: Pending['apply'], changes?: ChangeSet) {
     if (this.disposed) return
-    this.pending = { id: ++this.sequence, doc, range, apply }
+    let carried = changes ?? null
+    if (this.pending) {
+      if (this.pending.changes && carried) carried = this.pending.changes.compose(carried)
+      else if (!carried && doc !== this.pending.doc) carried = null
+      else carried = this.pending.changes
+    }
+    this.pending = { id: ++this.sequence, doc, range, changes: carried, apply }
     this.pump()
   }
 
@@ -61,12 +78,16 @@ export class HighlightQueue {
     const next = this.pending
     this.pending = null
     this.active = next
-    this.send({
+    const request: HighlightRequest = {
       type: 'highlight',
       id: next.id,
       range: next.range,
-      ...(next.doc !== this.sent && { source: next.doc.toString() }),
-    })
+    }
+    if (next.doc !== this.sent) {
+      if (next.changes && this.sent) request.changes = changeList(next.changes, next.doc)
+      else request.source = next.doc.toString()
+    }
+    this.send(request)
     this.sent = next.doc
   }
 }

@@ -89,6 +89,7 @@ export function notePreview(note: Note, limit = 220): string {
   const cached = previews.get(note)
   if (cached?.source === note.source && cached.limit === limit) return cached.text
   const lines: string[] = []
+  let length = 0
   let directiveDepth = 0
   let fenced = false
   let blockComment = false
@@ -131,8 +132,11 @@ export function notePreview(note: Note, limit = 220): string {
       .replace(/[*_`#$[\]]/gu, '')
       .replace(/\s+/gu, ' ')
       .trim()
-    if (text) lines.push(text)
-    if (lines.join(' ').length > limit) break
+    if (text) {
+      lines.push(text)
+      length += text.length + (lines.length > 1 ? 1 : 0)
+      if (length > limit) break
+    }
   }
   const joined = lines.join(' ').trim()
   const cut = joined.lastIndexOf(' ', limit)
@@ -396,13 +400,16 @@ function isAsciiText(text: string): boolean {
   return read === text.length && written === read
 }
 
-function foldSearchText(text: string): string {
-  if (isAsciiText(text)) return text.toLowerCase()
+const UPPERCASE = /[A-Z]/u
+
+function foldSearchText(text: string, plain = isAsciiText(text)): string {
+  if (plain) return UPPERCASE.test(text) ? text.toLowerCase() : text
   return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
 }
 
 function nameEntry(note: Note, text: string): NameEntry {
-  return { note, text, folded: foldSearchText(text), plain: isAsciiText(text) }
+  const plain = isAsciiText(text)
+  return { note, text, folded: foldSearchText(text, plain), plain }
 }
 
 // Cooperative yielding: hand the frame back once a slide has run for 6ms.
@@ -677,6 +684,14 @@ function lineHit(entry: ContentEntry, folded: string, term: string): ContentHit 
   const info = lineAt(folded, starts, lineOf(starts, at, 0))
   return contentHit(entry, folded, term, info, at - info.left, 0)
 }
+
+const HIT_CACHE_LIMIT = 8
+
+function dropOldest<K, V>(map: Map<K, V>): void {
+  const oldest = map.keys().next()
+  if (!oldest.done) map.delete(oldest.value)
+}
+
 export type NoteSearch = ((
   query: string,
   mode: SearchMode,
@@ -694,6 +709,32 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   let content: Promise<ContentEntry[]> | undefined
   let version = 0
   let request = 0
+  // Search-as-you-type repeats the same query across keystrokes. One map per
+  // query keeps reuse cheap without allocating state for every note on the first
+  // search after launch.
+  const hitCache = new Map<string, Map<string, { text: string; hit: ContentHit | null }>>()
+  const cachedHit = (
+    key: string,
+    entry: ContentEntry,
+    text: string,
+    term: string,
+    lower: string,
+    kind: 'literal' | 'fuzzy'
+  ): ContentHit | null => {
+    let byNote = hitCache.get(key)
+    if (!byNote) {
+      if (hitCache.size === HIT_CACHE_LIMIT) dropOldest(hitCache)
+      byNote = new Map()
+      hitCache.set(key, byNote)
+    }
+    const path = entry.note.path
+    const cached = byNote.get(path)
+    if (cached?.text === text) return cached.hit
+    const hit =
+      kind === 'literal' ? literalHit(entry, text, term, lower) : fuzzyHit(entry, text, term, lower)
+    byNote.set(path, { text, hit })
+    return hit
+  }
 
   const entryFor = (note: Note): ContentEntry => ({
     note,
@@ -746,7 +787,12 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     let size = 0
     for (const note of snapshot) {
       const source = note.source
-      built.push({ note, text: source, folded: foldSearchText(source), starts: undefined })
+      built.push({
+        note,
+        text: source,
+        folded: foldSearchText(source),
+        starts: undefined,
+      })
       size += source.length
       if ((built.length & 63) === 0 && budget.over()) {
         // Handing the frame back costs a timer round trip, so only take it when
@@ -862,6 +908,8 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     }
 
     const first = folded[0]
+    const literalKey = JSON.stringify(['literal', folded, lower])
+    const fuzzyKey = JSON.stringify(['fuzzy', folded, lower])
     if (mode !== 'content') {
       for (const { item, score } of names.find(value))
         add(item.note, item.text, undefined, item.folded.includes(folded) ? 0 : 2, score, 0)
@@ -876,11 +924,11 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
           const foldedText = foldedOf(entry)
           // A note without the query's first character can match neither way.
           if (foldedText.indexOf(first) >= 0) {
-            const literal = literalHit(entry, foldedText, folded, lower)
+            const literal = cachedHit(literalKey, entry, foldedText, folded, lower, 'literal')
             if (literal)
               add(entry.note, literal.text, literal.line, 1, literal.score, literal.offset)
             else if (containsAll(foldedText, folded)) {
-              const fuzzy = fuzzyHit(entry, foldedText, folded, lower)
+              const fuzzy = cachedHit(fuzzyKey, entry, foldedText, folded, lower, 'fuzzy')
               if (fuzzy) add(entry.note, fuzzy.text, fuzzy.line, 3, fuzzy.score, fuzzy.offset)
             }
           }
@@ -915,6 +963,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     all = null
     version++
     request++
+    if (renamed) hitCache.clear()
     if (entries) {
       entries = patch(entries, next)
       content = Promise.resolve(entries)

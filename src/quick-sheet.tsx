@@ -1,7 +1,7 @@
 import { DMSans_400Regular, DMSans_600SemiBold, useFonts } from '@expo-google-fonts/dm-sans'
 import * as SplashScreen from 'expo-splash-screen'
 import type * as React from 'react'
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { AppState, BackHandler, Pressable, StyleSheet, Text, View } from 'react-native'
 import {
   initialWindowMetrics,
@@ -105,7 +105,11 @@ export function QuickToolbar({
 
 export function useQuickStyles() {
   const { colors } = useTheme()
-  const insets = useSafeAreaInsets()
+  const { bottom } = useSafeAreaInsets()
+  return useMemo(() => quickStyles(colors, bottom), [colors, bottom])
+}
+
+function quickStyles(colors: ReturnType<typeof useTheme>['colors'], bottom: number) {
   return StyleSheet.create({
     root: { flex: 1 },
     backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.45)' },
@@ -115,7 +119,7 @@ export function useQuickStyles() {
       borderTopLeftRadius: 28,
       borderTopRightRadius: 28,
       backgroundColor: colors.paper,
-      paddingBottom: insets.bottom + 12,
+      paddingBottom: bottom + 12,
     },
     flex: { flex: 1 },
     toolbar: {

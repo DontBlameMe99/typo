@@ -149,6 +149,10 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
   })
   const [notes, setNotes] = useState<Note[]>(launch.index?.notes ?? EMPTY_NOTES)
   const [folders, setFolders] = useState<string[]>(launch.index?.folders ?? [''])
+  const notesRef = useRef(notes)
+  notesRef.current = notes
+  const foldersRef = useRef(folders)
+  foldersRef.current = folders
   const [folder, setFolder] = useState('')
   const [folderStack, setFolderStack] = useState<string[]>([''])
   const [startupReady, setStartupReady] = useState(launch.vault === null || cachedRows)
@@ -531,13 +535,15 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
   const searchFailure = useRef<string | null>(null)
   const [searchPending, setSearchPending] = useState(false)
   const searchBusy = searchPending || deferredQuery !== query
-  const results = useMemo(() => {
-    const current = new Map(notes.map((note) => [note.uri, note]))
-    return searchResults.flatMap((result) => {
-      const note = current.get(result.note.uri)
-      return note ? [{ ...result, note }] : []
-    })
-  }, [notes, searchResults])
+  const notesByUri = useMemo(() => new Map(notes.map((note) => [note.uri, note])), [notes])
+  const results = useMemo(
+    () =>
+      searchResults.flatMap((result) => {
+        const note = notesByUri.get(result.note.uri)
+        return note ? [{ ...result, note }] : []
+      }),
+    [notesByUri, searchResults]
+  )
   const isSearching = query.trim().length > 0
   const sortOption =
     noteSorts.find((option) => option.ascValue === sort || option.descValue === sort) ??
@@ -741,8 +747,8 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
         const prefix = `${entry.path}/`
         const inside = (path: string) => path === entry.path || path.startsWith(prefix)
         const removedFavorites = favoritesRef.current.filter(inside)
-        const removedNotes = notes.filter((note) => inside(note.path))
-        const removedFolders = folders.filter(inside)
+        const removedNotes = notesRef.current.filter((note) => inside(note.path))
+        const removedFolders = foldersRef.current.filter(inside)
         setNotes((previous) => previous.filter((note) => !inside(note.path)))
         setFolders((previous) => previous.filter((path) => !inside(path)))
         setFavorites((previous) => previous.filter((path) => !inside(path)))
@@ -793,7 +799,7 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
         item
       )
     },
-    [folders, index, notes, stopIndex]
+    [index, stopIndex]
   )
   const undoLastTrash = useCallback(() => {
     const pending = trashUndo
