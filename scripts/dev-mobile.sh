@@ -345,11 +345,11 @@ start_server() {
   # worktree and a directory in a primary checkout.
   # shellcheck disable=SC2016
   local watcher='if [ -e "$1/.git" ]; then
-    ( while [ -e "$1/.git" ] && kill -0 $$; do sleep "$2"; done; kill -TERM 0 ) &
+    ( while [ -e "$1/.git" ] && kill -0 $$; do sleep "$2"; done; kill -TERM 0 ) 10>&- &
   else
     echo "dev-mobile: no .git under $1, this server will not stop itself." >&2
   fi
-  ( sleep "$3"; kill -TERM -- -$$ 2>/dev/null || kill -TERM $$ 2>/dev/null || true; sleep 10; kill -KILL -- -$$ 2>/dev/null || kill -KILL $$ 2>/dev/null || true ) &
+  ( trap "" TERM; sleep "$3"; kill -TERM -- -$$ 2>/dev/null || kill -TERM $$ 2>/dev/null || true; for _ in {1..50}; do kill -0 $$ 2>/dev/null || exit 0; sleep 0.2; done; kill -KILL -- -$$ 2>/dev/null || kill -KILL $$ 2>/dev/null || true ) 10>&- &
   shift 3
   exec "$@"'
   local launcher=(
@@ -358,6 +358,7 @@ start_server() {
   setsid env REACT_NATIVE_PACKAGER_HOSTNAME="$host" EXPO_NO_TELEMETRY=1 \
     "${launcher[@]}" 8>&- 9>&- >"$log" 2>&1 </dev/null &
   local pid=$!
+  exec 10>&-
   printf '%s\n' "$pid" >"$ports_dir/$port/pid.$$.tmp"
   mv "$ports_dir/$port/pid.$$.tmp" "$ports_dir/$port/pid"
 
