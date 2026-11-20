@@ -2,9 +2,11 @@ import { hasCurrentPdf, type Note } from '../types'
 import { fingerprint, fingerprintAsync } from './fingerprint'
 import { CompilerInputs } from './inputs'
 import { type CompileInput, type CompileResult, isDiagnosticsFailure } from './protocol'
+import { sharedStamp } from './shared'
 
 export type PdfRecord = {
   sourceHash: string
+  sharedHash: string
   fontsHash: string
   dependencies: Record<string, string | null>
   uri: string
@@ -16,6 +18,7 @@ type Snapshot = {
   files: Files
   contents: Map<string, string>
   hashes: Map<string, string>
+  sharedHash: string
   fontsHash: string
 }
 type Job = { key: string; run(): Promise<void> }
@@ -51,8 +54,8 @@ type Storage = {
   cache(key: string, base64: string): Promise<string>
   base64(uri: string): Promise<string>
   stamp(uri: string): Promise<string | null>
-  write(note: Note, base64: string): Promise<string>
-  hash(note: Note): Promise<void>
+  write(note: Note, base64: string, sharedHash: string): Promise<string>
+  hash(note: Note, sharedHash: string): Promise<void>
 }
 
 export class PdfWorkspace {
@@ -116,7 +119,14 @@ export class PdfWorkspace {
 
   setNotes(notes: Note[]) {
     const previous = this.notes
-    const changedNotes = notes.filter((note) => previous.get(note.uri)?.source !== note.source)
+    const changedNotes = notes.filter((note) => {
+      const previousNote = previous.get(note.uri)
+      return (
+        previousNote?.source !== note.source ||
+        previousNote?.pdfHash !== note.pdfHash ||
+        previousNote?.sharedHash !== note.sharedHash
+      )
+    })
     const structural = notes.some(
       (note) => !previous.has(note.uri) || previous.get(note.uri)?.path !== note.path
     )
@@ -125,11 +135,11 @@ export class PdfWorkspace {
     const paths = new Set(notes.map((note) => note.path))
     for (const path of this.errors.keys())
       if (path !== 'inputs' && !paths.has(path)) this.errors.delete(path)
-    for (const note of this.notes.values()) if (hasCurrentPdf(note)) this.errors.delete(note.path)
+    for (const note of this.notes.values()) if (this.current(note)) this.errors.delete(note.path)
     if (changed) {
       if (this.snapshot)
         for (const note of changedNotes)
-          if (!hasCurrentPdf(note)) void this.render(note, note.source, false).catch(() => {})
+          if (!this.current(note)) void this.render(note, note.source, false).catch(() => {})
       // An autosave changes one note. The compiler receives that source directly,
       // so a full vault read can wait for the periodic refresh.
       if (structural) void this.refresh()
@@ -162,6 +172,7 @@ export class PdfWorkspace {
             }
             if (this.disposed) return
           }
+          const sharedHash = sharedStamp(hashes)
           const fontsHash = fingerprint(
             JSON.stringify([...hashes].filter(([path]) => FONT_FILE.test(path)))
           )
@@ -169,6 +180,7 @@ export class PdfWorkspace {
             files,
             contents: new Map(files.map((file) => [file.path, file.base64])),
             hashes,
+            sharedHash,
             fontsHash,
           }
           this.revision++
@@ -176,10 +188,11 @@ export class PdfWorkspace {
           for (const listener of this.inputListeners) listener()
         }
         for (const note of this.notes.values())
-          if (!hasCurrentPdf(note)) void this.render(note, note.source, false).catch(() => {})
+          if (!this.current(note)) void this.render(note, note.source, false).catch(() => {})
       } catch (cause) {
         // A vault-wide read failure must not count against notes that need no compile.
-        if ([...this.notes.values()].every(hasCurrentPdf)) this.errors.delete('inputs')
+        if ([...this.notes.values()].every((note) => this.current(note)))
+          this.errors.delete('inputs')
         else this.errors.set('inputs', String(cause))
         for (const listener of this.inputListeners) listener()
       } finally {
@@ -211,9 +224,14 @@ export class PdfWorkspace {
     )
   }
 
+  private current(note: Note) {
+    return hasCurrentPdf(note) && (!this.snapshot || note.sharedHash === this.snapshot.sharedHash)
+  }
+
   private matches(record: PdfRecord, sourceHash: string, snapshot: Snapshot) {
     return (
       record.sourceHash === sourceHash &&
+      record.sharedHash === snapshot.sharedHash &&
       record.fontsHash === snapshot.fontsHash &&
       Object.entries(record.dependencies).every(
         ([path, hash]) => (snapshot.hashes.get(path) ?? null) === hash
@@ -307,10 +325,17 @@ export class PdfWorkspace {
                 .map((path) => [path, snapshot.hashes.get(path) ?? null])
             )
             const cacheKey = fingerprint(
-              JSON.stringify([note.path, sourceHash, snapshot.fontsHash, dependencies])
+              JSON.stringify([
+                note.path,
+                sourceHash,
+                snapshot.sharedHash,
+                snapshot.fontsHash,
+                dependencies,
+              ])
             )
             record = {
               sourceHash,
+              sharedHash: snapshot.sharedHash,
               fontsHash: snapshot.fontsHash,
               dependencies,
               uri: await this.options.storage.cache(cacheKey, result.base64),
@@ -327,7 +352,7 @@ export class PdfWorkspace {
               if (!output || (await this.options.storage.stamp(output.uri)) !== output.stamp) {
                 const base64 = await this.options.storage.base64(record.uri)
                 if (this.disposed || this.notes.get(note.uri)?.source !== source) return
-                const uri = await this.options.storage.write(saved, base64)
+                const uri = await this.options.storage.write(saved, base64, snapshot.sharedHash)
                 const stamp = await this.options.storage.stamp(uri)
                 if (!stamp) throw new Error('Cannot verify the stored PDF.')
                 record.output = { uri, stamp }
@@ -339,7 +364,7 @@ export class PdfWorkspace {
                 this.persisted.add(record)
               }
               if (this.disposed || this.notes.get(note.uri)?.source !== source) return
-              await this.options.storage.hash(saved)
+              await this.options.storage.hash(saved, snapshot.sharedHash)
               if (record.output && saved.pdfUri !== record.output.uri)
                 this.options.onPdf?.({ ...saved, pdfUri: record.output.uri })
               this.errors.delete(note.path)

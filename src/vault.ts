@@ -602,6 +602,7 @@ export async function scanVaultLibrary(
   const seen = new Set<string>()
   const notes: Note[] = []
   const hashes = new Map<string, string>()
+  const sharedHashes = new Map<string, string>()
   const late: Pending[] = []
   const deferred: Pending[] = []
   let fallback = false
@@ -755,8 +756,10 @@ export async function scanVaultLibrary(
     async ({ uri, stem }) => {
       if (cancelled()) throw new Error('Indexing cancelled.')
       try {
-        const value = (await readNoteSource(uri, cancelled)).trim().toLowerCase()
-        if (/^[0-9a-f]{64}$/u.test(value)) hashes.set(stem, value)
+        const lines = (await readNoteSource(uri, cancelled)).trim().toLowerCase().split(/\s+/u)
+        if (!/^[0-9a-f]{64}$/u.test(lines[0] ?? '')) return
+        hashes.set(stem, lines[0])
+        if (/^[0-9a-f]{64}$/u.test(lines[1] ?? '')) sharedHashes.set(stem, lines[1])
       } catch (error) {
         if (cancelled()) throw error
         // A missing or unreadable hash leaves the PDF stale.
@@ -769,7 +772,9 @@ export async function scanVaultLibrary(
       .map((note) => {
         const stem = note.path.replace(/\.typ$/iu, '')
         const pdf = pdfs.get(`${stem}.pdf`)
-        return pdf ? { ...note, pdfUri: pdf, pdfHash: hashes.get(stem) } : note
+        return pdf
+          ? { ...note, pdfUri: pdf, pdfHash: hashes.get(stem), sharedHash: sharedHashes.get(stem) }
+          : note
       })
       .sort((a, b) => a.path.localeCompare(b.path)),
     folders: [...folders].sort((a, b) => a.localeCompare(b)),
@@ -1711,19 +1716,27 @@ export async function loadCompileFiles(
 export function createPdfWriter(vault: Vault) {
   const listings: OutputListings = new Map()
   return {
-    write: (note: Note, base64: string) => writeCompiledPdf(vault, note, base64, listings),
-    hash: (note: Note) => writePdfHash(vault, note, listings),
+    write: (note: Note, base64: string, sharedHash?: string) =>
+      writeCompiledPdf(vault, note, base64, listings, sharedHash),
+    hash: (note: Note, sharedHash?: string) => writePdfHash(vault, note, listings, sharedHash),
   }
+}
+
+function hashFileValue(note: Note, sharedHash?: string): string {
+  const sourceHash = sha256(note.source)
+  const value = sharedHash ? sha256(`${sharedHash}${sourceHash}\n`) : sourceHash
+  return sharedHash ? `${value}\n${sharedHash}\n` : `${value}\n`
 }
 
 export async function writePdfHash(
   vault: Vault,
   note: Note,
-  listings?: OutputListings
+  listings?: OutputListings,
+  sharedHash?: string
 ): Promise<void> {
   const output = pdfOutput(note.path)
   const root = await ensureVaultDirectory(vault.uri, 'out', vault.name, listings)
-  await writeHashFile(root, output, `${sha256(note.source)}\n`, listings)
+  await writeHashFile(root, output, hashFileValue(note, sharedHash), listings)
 }
 
 async function writeHashFile(
@@ -1757,7 +1770,8 @@ export async function writeCompiledPdf(
   vault: Vault,
   note: Note,
   pdfBase64: string,
-  listings?: OutputListings
+  listings?: OutputListings,
+  sharedHash?: string
 ): Promise<string> {
   const output = pdfOutput(note.path)
   assertPdfBase64(pdfBase64)
@@ -1809,7 +1823,7 @@ export async function writeCompiledPdf(
     } catch (error) {
       throw new Error(`Cannot write the compiled PDF to "${output.path}": ${message(error)}`)
     }
-    await writeHashFile(root, output, `${sha256(note.source)}\n`, listings)
+    await writeHashFile(root, output, hashFileValue(note, sharedHash), listings)
     return destination
   } catch (cause) {
     listings?.clear()

@@ -210,13 +210,43 @@ test('dependency hashes invalidate affected notes while unrelated edits reuse ca
   expect(f.writes).toHaveLength(2)
   f.files([{ path: 'style/lib.typ', base64: 'new style' }])
   await idle(workspace)
-  expect(f.calls.map((call) => call.path)).toEqual(['one.typ', 'two.typ', 'one.typ'])
+  expect(f.calls.map((call) => call.path)).toEqual(['one.typ', 'two.typ', 'one.typ', 'two.typ'])
   f.files([
     { path: 'style/lib.typ', base64: 'new style' },
     { path: 'missing.typ', base64: 'newly added override' },
   ])
   await idle(workspace)
-  expect(f.calls).toHaveLength(4)
+  expect(f.calls).toHaveLength(5)
+  workspace.dispose()
+})
+
+test('shared style and bibliography changes recompile notes without dependencies', async () => {
+  const f = fixture()
+  f.files([
+    { path: 'style/lib.typ', base64: 'old style' },
+    { path: 'bibliography.yml', base64: 'old refs' },
+  ])
+  f.compile(async () => ({ base64: 'JVBERi0x', dependencies: [] }))
+  const workspace = f.create()
+  workspace.setNotes([note('one.typ'), note('two.typ')])
+  await idle(workspace)
+  expect(f.calls).toHaveLength(2)
+  const firstStamp = f.manifests.get('one.typ')?.sharedHash
+
+  f.files([
+    { path: 'style/lib.typ', base64: 'new style' },
+    { path: 'bibliography.yml', base64: 'old refs' },
+  ])
+  await idle(workspace)
+  expect(f.calls.map((call) => call.path)).toEqual(['one.typ', 'two.typ', 'one.typ', 'two.typ'])
+  expect(f.manifests.get('one.typ')?.sharedHash).not.toBe(firstStamp)
+
+  f.files([
+    { path: 'style/lib.typ', base64: 'new style' },
+    { path: 'bibliography.yml', base64: 'new refs' },
+  ])
+  await idle(workspace)
+  expect(f.calls).toHaveLength(6)
   workspace.dispose()
 })
 
@@ -461,7 +491,8 @@ test('notes with a current vault PDF are not compiled or rewritten', async () =>
   const compiled: Note = {
     ...note('one.typ'),
     pdfUri: 'content://out/one.typ.pdf',
-    pdfHash: sha256('= Test'),
+    pdfHash: sha256(`${sha256('')}${sha256('= Test')}\n`),
+    sharedHash: sha256(''),
   }
   const stale: Note = {
     ...note('two.typ'),
@@ -475,6 +506,25 @@ test('notes with a current vault PDF are not compiled or rewritten', async () =>
   expect(workspace.status.errors).toBe(0)
   await workspace.render(compiled, '= Edited')
   expect(f.calls.map((call) => call.path)).toEqual(['two.typ', 'one.typ'])
+  workspace.dispose()
+})
+
+test('a changed shared stamp makes a current vault PDF compile again', async () => {
+  const f = fixture()
+  const workspace = f.create()
+  const current: Note = {
+    ...note('one.typ'),
+    pdfUri: 'content://out/one.typ.pdf',
+    pdfHash: sha256(`${sha256('')}${sha256('= Test')}\n`),
+    sharedHash: sha256(''),
+  }
+  workspace.setNotes([current])
+  await idle(workspace)
+  expect(f.calls).toHaveLength(0)
+
+  workspace.setNotes([{ ...current, sharedHash: sha256('changed') }])
+  await idle(workspace)
+  expect(f.calls.map((call) => call.path)).toEqual(['one.typ'])
   workspace.dispose()
 })
 
