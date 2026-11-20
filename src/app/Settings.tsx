@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ScrollViewInstance } from 'react-native'
 import { Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Reanimated, {
@@ -37,6 +38,14 @@ const APPEARANCE_MODE_OPTIONS: readonly { value: AppearanceMode; label: string }
   { value: 'dark', label: 'Dark' },
 ]
 
+const SETTINGS_TABS = [
+  { value: 'interface', label: 'Interface' },
+  { value: 'library', label: 'Library' },
+  { value: 'about', label: 'About' },
+] as const
+
+type SettingsTab = (typeof SETTINGS_TABS)[number]['value']
+
 export function Settings({
   vault,
   vaultName,
@@ -62,6 +71,8 @@ export function Settings({
   const { settings, updateSettings, palette, colors, persistenceError } = useTheme()
   const [customOpen, setCustomOpen] = useState(false)
   const [quickOpen, setQuickOpen] = useState(false)
+  const [tab, setTab] = useState<SettingsTab>('interface')
+  const scroll = useRef<ScrollViewInstance>(null)
   const dismiss = useRef<(after?: () => void) => void>(() => {})
   const custom = settings.customAccent
   const open = (url: string) => {
@@ -83,51 +94,52 @@ export function Settings({
     <>
       <Screen onClose={onClose} swipeBack dismissRef={dismiss}>
         <View style={s.screen}>
-          <ScrollView contentContainerStyle={s.settingsBody}>
-            <Text style={s.settingsHeading}>Settings</Text>
-            <View style={s.settingsGroup}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Notes folder: ${vaultName}. Choose folder`}
-                disabled={picking}
-                onPress={onChangeFolder}
-                style={({ pressed }) => [
-                  s.sheetRow,
-                  s.settingsRow,
-                  pressed && s.rowPressed,
-                  picking && s.disabled,
-                ]}
-              >
-                <Icon name="folderOpen" size={20} color={colors.muted} />
-                <View style={s.sheetRowText}>
-                  <Text style={s.sheetRowTitle}>Notes folder</Text>
-                  <Text numberOfLines={1} style={s.sheetRowPath}>
-                    {vaultName}
-                  </Text>
-                </View>
-                <Icon name="swap" size={18} color={colors.muted} />
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={
-                  quickTarget
-                    ? `Quick append target: ${quickAppendLabel(quickTarget)}. Choose target`
-                    : 'Quick append target not set. Choose target'
-                }
-                onPress={() => setQuickOpen(true)}
-                style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
-              >
-                <Icon name="edit" size={20} color={colors.muted} />
-                <View style={s.sheetRowText}>
-                  <Text style={s.sheetRowTitle}>Quick append</Text>
-                  <Text numberOfLines={1} style={s.sheetRowPath}>
-                    {quickTarget ? quickAppendLabel(quickTarget) : 'Not set'}
-                  </Text>
-                </View>
-                <Icon name="chevronRight" size={18} color={colors.muted} />
-              </Pressable>
-            </View>
-            <View style={s.settingsGroup}>
+          <ScrollView ref={scroll} contentContainerStyle={s.settingsBody}>
+            {tab === 'library' ? (
+              <View style={s.settingsGroup}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Notes folder: ${vaultName}. Choose folder`}
+                  disabled={picking}
+                  onPress={onChangeFolder}
+                  style={({ pressed }) => [
+                    s.sheetRow,
+                    s.settingsRow,
+                    pressed && s.rowPressed,
+                    picking && s.disabled,
+                  ]}
+                >
+                  <Icon name="folderOpen" size={20} color={colors.muted} />
+                  <View style={s.sheetRowText}>
+                    <Text style={s.sheetRowTitle}>Notes folder</Text>
+                    <Text numberOfLines={1} style={s.sheetRowPath}>
+                      {vaultName}
+                    </Text>
+                  </View>
+                  <Icon name="swap" size={18} color={colors.muted} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    quickTarget
+                      ? `Quick append target: ${quickAppendLabel(quickTarget)}. Choose target`
+                      : 'Quick append target not set. Choose target'
+                  }
+                  onPress={() => setQuickOpen(true)}
+                  style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
+                >
+                  <Icon name="edit" size={20} color={colors.muted} />
+                  <View style={s.sheetRowText}>
+                    <Text style={s.sheetRowTitle}>Quick append</Text>
+                    <Text numberOfLines={1} style={s.sheetRowPath}>
+                      {quickTarget ? quickAppendLabel(quickTarget) : 'Not set'}
+                    </Text>
+                  </View>
+                  <Icon name="chevronRight" size={18} color={colors.muted} />
+                </Pressable>
+              </View>
+            ) : null}
+            <View style={[s.settingsGroup, tab !== 'interface' && s.hiddenTab]}>
               <PillTabs
                 options={APPEARANCE_MODE_OPTIONS}
                 value={settings.mode}
@@ -224,75 +236,96 @@ export function Settings({
               </Pressable>
               {persistenceError && <Text style={s.errorText}>{persistenceError}</Text>}
             </View>
-            <View style={s.settingsGroup}>
-              <View style={[s.sheetRow, s.settingsRow]}>
-                <Icon name="info" size={20} color={colors.muted} />
-                <View style={s.sheetRowText}>
-                  <Text style={s.sheetRowTitle}>Version</Text>
+            {tab === 'about' ? (
+              <View style={s.settingsGroup}>
+                <View style={[s.sheetRow, s.settingsRow]}>
+                  <Icon name="info" size={20} color={colors.muted} />
+                  <View style={s.sheetRowText}>
+                    <Text style={s.sheetRowTitle}>Version</Text>
+                  </View>
+                  <Text style={s.aboutValue}>{appVersion}</Text>
                 </View>
-                <Text style={s.aboutValue}>{appVersion}</Text>
+                <Pressable
+                  accessibilityRole="link"
+                  accessibilityLabel={
+                    shortCommit
+                      ? `Commit ${shortCommit}. Opens in your browser`
+                      : 'Development build'
+                  }
+                  disabled={!shortCommit}
+                  onPress={() => {
+                    if (appCommit) open(commitUrl(appCommit))
+                  }}
+                  style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
+                >
+                  <Icon name="commit" size={20} color={colors.muted} />
+                  <View style={s.sheetRowText}>
+                    <Text style={s.sheetRowTitle}>Commit</Text>
+                    <Text numberOfLines={1} style={s.sheetRowPath}>
+                      {shortCommit ?? 'Development build'}
+                    </Text>
+                  </View>
+                  {shortCommit ? <Icon name="external" size={16} color={colors.muted} /> : null}
+                </Pressable>
+                <Pressable
+                  accessibilityRole="link"
+                  accessibilityLabel="Report an issue. Opens in your browser"
+                  onPress={() => open(issuesUrl)}
+                  style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
+                >
+                  <Icon name="bug" size={20} color={colors.muted} />
+                  <View style={s.sheetRowText}>
+                    <Text style={s.sheetRowTitle}>Report an issue</Text>
+                    <Text numberOfLines={1} style={s.sheetRowPath}>
+                      {issuesUrl.replace('https://', '')}
+                    </Text>
+                  </View>
+                  <Icon name="external" size={16} color={colors.muted} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="link"
+                  accessibilityLabel="Source code. Opens in your browser"
+                  onPress={() => open(repositoryUrl)}
+                  style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
+                >
+                  <Icon name="code" size={20} color={colors.muted} />
+                  <View style={s.sheetRowText}>
+                    <Text style={s.sheetRowTitle}>Source</Text>
+                    <Text numberOfLines={1} style={s.sheetRowPath}>
+                      {repositoryUrl.replace('https://', '')}
+                    </Text>
+                  </View>
+                  <Icon name="external" size={16} color={colors.muted} />
+                </Pressable>
               </View>
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel={
-                  shortCommit ? `Commit ${shortCommit}. Opens in your browser` : 'Development build'
-                }
-                disabled={!shortCommit}
-                onPress={() => {
-                  if (appCommit) open(commitUrl(appCommit))
-                }}
-                style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
-              >
-                <Icon name="commit" size={20} color={colors.muted} />
-                <View style={s.sheetRowText}>
-                  <Text style={s.sheetRowTitle}>Commit</Text>
-                  <Text numberOfLines={1} style={s.sheetRowPath}>
-                    {shortCommit ?? 'Development build'}
-                  </Text>
-                </View>
-                {shortCommit ? <Icon name="external" size={16} color={colors.muted} /> : null}
-              </Pressable>
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel="Report an issue. Opens in your browser"
-                onPress={() => open(issuesUrl)}
-                style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
-              >
-                <Icon name="bug" size={20} color={colors.muted} />
-                <View style={s.sheetRowText}>
-                  <Text style={s.sheetRowTitle}>Report an issue</Text>
-                  <Text numberOfLines={1} style={s.sheetRowPath}>
-                    {issuesUrl.replace('https://', '')}
-                  </Text>
-                </View>
-                <Icon name="external" size={16} color={colors.muted} />
-              </Pressable>
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel="Source code. Opens in your browser"
-                onPress={() => open(repositoryUrl)}
-                style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
-              >
-                <Icon name="code" size={20} color={colors.muted} />
-                <View style={s.sheetRowText}>
-                  <Text style={s.sheetRowTitle}>Source</Text>
-                  <Text numberOfLines={1} style={s.sheetRowPath}>
-                    {repositoryUrl.replace('https://', '')}
-                  </Text>
-                </View>
-                <Icon name="external" size={16} color={colors.muted} />
-              </Pressable>
-            </View>
+            ) : null}
           </ScrollView>
-          <View style={s.barShell}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close settings"
-              onPress={() => dismiss.current()}
-              style={({ pressed }) => [s.barButton, s.barButtonFloating, pressed && s.pressed]}
-            >
-              <Icon name="close" size={24} color={colors.ink} />
-            </Pressable>
+          <View style={s.noteDockShell}>
+            <View style={s.noteDock}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close settings"
+                onPress={() => dismiss.current()}
+                style={({ pressed }) => [s.barButton, s.barButtonFloating, pressed && s.pressed]}
+              >
+                <Icon name="close" size={24} color={colors.ink} />
+              </Pressable>
+              <PillTabs
+                options={SETTINGS_TABS}
+                value={tab}
+                onSelect={(next) => {
+                  scroll.current?.scrollTo({ y: 0, animated: false })
+                  setTab(next)
+                }}
+                style={s.noteSegments}
+                itemStyle={s.noteSegment}
+                textStyle={s.settingsSegmentText}
+                pillStyle={{ backgroundColor: colors.accent, borderRadius: 19 }}
+                inset={5}
+                activeColor={colors.onAccent}
+                idleColor={colors.ink}
+              />
+            </View>
           </View>
         </View>
       </Screen>

@@ -313,19 +313,21 @@ export function PillTabs<T extends string>({
     left.value = timing(box.x, SLIDE_TIMING)
     width.value = timing(box.width, SLIDE_TIMING)
   }, [boxes, left, selected, width])
-  const pill = useAnimatedStyle(() => ({
-    width: width.value,
-    transform: [{ translateX: left.value }],
-  }))
+  const pill = useAnimatedStyle(
+    () => ({
+      width: width.value,
+      transform: [{ translateX: left.value }],
+      opacity: withTiming(measured ? 1 : 0, {
+        duration: 150,
+        reduceMotion: ReduceMotion.System,
+      }),
+    }),
+    [measured]
+  )
   return (
     <View style={style}>
       <Reanimated.View
-        style={[
-          { position: 'absolute', left: 0, top: inset, bottom: inset },
-          pillStyle,
-          pill,
-          { opacity: measured ? 1 : 0 },
-        ]}
+        style={[{ position: 'absolute', left: 0, top: inset, bottom: inset }, pillStyle, pill]}
       />
       {options.map((option, at) => (
         <Pressable

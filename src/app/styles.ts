@@ -1031,6 +1031,11 @@ function makeStyles(colors: ThemeColors) {
       fontSize: 16,
       color: colors.ink,
     },
+    settingsSegmentText: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 14,
+      color: colors.ink,
+    },
     templateErrorCard: {
       position: 'absolute',
       left: 16,
@@ -1104,20 +1109,12 @@ function makeStyles(colors: ThemeColors) {
     },
     moveButtonDisabled: { backgroundColor: colors.surface },
     moveButtonTextDisabled: { color: colors.muted },
-    settingsHeading: {
-      paddingTop: 8,
-      paddingHorizontal: 8,
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 32,
-      lineHeight: 40,
-      letterSpacing: -0.8,
-      color: colors.ink,
-    },
     settingsBody: {
       paddingHorizontal: 16,
       paddingBottom: 24,
     },
-    settingsGroup: { marginTop: 32 },
+    settingsGroup: { marginTop: 16 },
+    hiddenTab: { display: 'none' },
     settingsRow: { marginHorizontal: 0, paddingLeft: 8, paddingRight: 8, gap: 16 },
     modeRow: {
       flexDirection: 'row',
