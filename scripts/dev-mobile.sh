@@ -349,7 +349,7 @@ start_server() {
   else
     echo "dev-mobile: no .git under $1, this server will not stop itself." >&2
   fi
-  ( trap "" TERM; sleep "$3"; kill -TERM -- -$$ 2>/dev/null || kill -TERM $$ 2>/dev/null || true; for _ in {1..50}; do kill -0 $$ 2>/dev/null || exit 0; sleep 0.2; done; kill -KILL -- -$$ 2>/dev/null || kill -KILL $$ 2>/dev/null || true ) 10>&- &
+  ( trap "expire=1" TERM; for _ in $(seq 1 "$3"); do [ -n "${expire:-}" ] && break; kill -0 $$ 2>/dev/null || exit 0; sleep 1; done; kill -TERM -- -$$ 2>/dev/null || kill -TERM $$ 2>/dev/null || true; for _ in {1..50}; do kill -0 $$ 2>/dev/null || exit 0; sleep 0.2; done; kill -KILL -- -$$ 2>/dev/null || kill -KILL $$ 2>/dev/null || true ) 10>&- &
   shift 3
   exec "$@"'
   local launcher=(
