@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   AppState,
@@ -202,6 +202,10 @@ function message(error: unknown): string {
 
 function useFormStyles() {
   const { colors } = useTheme()
+  return useMemo(() => formStyles(colors), [colors])
+}
+
+function formStyles(colors: ReturnType<typeof useTheme>['colors']) {
   return StyleSheet.create({
     form: { paddingTop: 24, paddingHorizontal: 20, paddingBottom: 40, flexGrow: 1 },
     target: {

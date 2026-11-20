@@ -50,6 +50,10 @@ export function normalizeSource(source: string): string {
 export function applyEditorChange(source: string, edit: EditorChange): string {
   if (!change(edit) || edit.to > source.length)
     throw new Error('The editor sent an invalid change.')
+  if (edit.from === edit.to) {
+    if (edit.from === source.length) return source + edit.insert
+    if (edit.from === 0) return edit.insert + source
+  }
   return source.slice(0, edit.from) + edit.insert + source.slice(edit.to)
 }
 

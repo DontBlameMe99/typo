@@ -616,7 +616,8 @@ export async function scanVaultLibrary(
     if (!onBatch) return
     if (publishedNotes === notes.length && publishedFolders === folders.size) return
     if (publishedNotes !== notes.length) {
-      sortedNotes = [...notes].sort((a, b) => a.path.localeCompare(b.path))
+      // The app re-sorts partial notes for display, so a fresh array is enough.
+      sortedNotes = [...notes]
       publishedNotes = notes.length
     }
     onBatch(

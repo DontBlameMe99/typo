@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Reanimated, {
   ReduceMotion,
@@ -19,7 +19,7 @@ export function ErrorBanner({
   onDismiss?: () => void
 }) {
   const { colors } = useTheme()
-  const s = styles(colors)
+  const s = useMemo(() => styles(colors), [colors])
   const reveal = useSharedValue(0)
   useEffect(() => {
     reveal.value = withTiming(1, { duration: 200, reduceMotion: ReduceMotion.System })

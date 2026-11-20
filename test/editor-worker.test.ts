@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { Text } from '@codemirror/state'
+import { EditorState, Text } from '@codemirror/state'
 import {
   HighlightQueue,
   type HighlightRequest,
@@ -50,6 +50,46 @@ test('scrolling does not transfer the same document again', () => {
     id: 2,
     range: { from: 10, to: doc.length },
   })
+})
+
+test('edits transfer only the change after the first document', () => {
+  const sent: HighlightRequest[] = []
+  const queue = new HighlightQueue((request) => sent.push(request))
+  const before = Text.of(['hello'])
+  const after = Text.of(['hello!'])
+  const changes = EditorState.create({ doc: before }).update({
+    changes: { from: 5, insert: '!' },
+  }).changes
+  queue.ready()
+  queue.request(before, range, () => {})
+  queue.complete(1, [])
+  queue.request(after, range, () => {}, changes)
+  expect(sent[1]).toEqual({
+    type: 'highlight',
+    id: 2,
+    range,
+    changes: [{ from: 5, to: 5, insert: '!' }],
+  })
+})
+
+test('coalesced edits send one change list in reverse order', () => {
+  const sent: HighlightRequest[] = []
+  const queue = new HighlightQueue((request) => sent.push(request))
+  const before = Text.of(['abc'])
+  const first = EditorState.create({ doc: before }).update({ changes: { from: 1, insert: 'X' } })
+  const second = first.state.update({ changes: { from: 4, insert: 'Y' } })
+  queue.ready()
+  queue.request(before, range, () => {})
+  queue.request(first.state.doc, range, () => {}, first.changes)
+  queue.request(second.state.doc, range, () => {}, second.changes)
+  queue.complete(1, [])
+  const changes = sent[1].changes ?? []
+  let source = before.toString()
+  for (let index = changes.length - 1; index >= 0; index--) {
+    const change = changes[index]
+    source = source.slice(0, change.from) + change.insert + source.slice(change.to)
+  }
+  expect(source).toBe('aXbcY')
 })
 
 test('disposed highlighting drops callbacks and queued work', () => {
@@ -109,9 +149,21 @@ test('the real editor worker parses edits and reuses source for viewport-only re
         .map((item) => ({ ...item, from: Math.max(item.from, viewport.from) }))
         .filter((item) => item.from < item.to)
     )
-    const changed = await ask({
+    const edited = `${source.slice(0, -2)}// Changed`
+    const editedRange = { from: 0, to: edited.length }
+    const viaChange = await ask({
       type: 'highlight',
       id: 3,
+      changes: [{ from: source.length - 2, to: source.length, insert: '// Changed' }],
+      range: editedRange,
+    })
+    if (viaChange.type !== 'highlights') throw new Error(`Unexpected response: ${viaChange.type}`)
+    const fresh = await ask({ type: 'highlight', id: 4, source: edited, range: editedRange })
+    if (fresh.type !== 'highlights') throw new Error(`Unexpected response: ${fresh.type}`)
+    expect(viaChange.ranges).toEqual(fresh.ranges)
+    const changed = await ask({
+      type: 'highlight',
+      id: 5,
       source: '// New note 📝',
       range: { from: 0, to: 14 },
     })

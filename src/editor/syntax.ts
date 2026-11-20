@@ -181,10 +181,10 @@ export class TypstSyntax {
             newEndPosition: pointAt(starts, span.newEndIndex),
           })
         )
-        tree = this.parser.parse((index) => parseChunk(source, index), this.tree)
+        tree = this.parser.parse((index) => parseChunk(source, index, starts), this.tree)
       } else {
         starts = lineStarts(source)
-        tree = this.parser.parse((index) => parseChunk(source, index), null)
+        tree = this.parser.parse((index) => parseChunk(source, index, starts), null)
       }
       if (!tree) throw new Error('Unable to parse this note.')
       this.tree?.delete()
@@ -238,16 +238,19 @@ export class TypstSyntax {
   }
 }
 
-// The wasm side copies a chunk into a fixed 10 KB UTF-16 buffer, so a chunk must
-// stay well under 5 K characters. Small chunks also keep the copy proportional to
-// the text the lexer actually consumes.
-const CHUNK = 64
+// Tree-sitter asks for text at the position it is parsing, a token at a time.
+// Returning whole lines keeps each copy close to what the lexer consumes. Line
+// starts come from the caller, so a long line needs no repeated newline scan;
+// the wasm callback buffer still caps how much one line can copy.
+const MAX_CHUNK = 4096
 
-function parseChunk(source: string, index: number) {
-  const end = Math.min(index + CHUNK, source.length)
+function parseChunk(source: string, index: number, starts: number[]) {
+  const next = firstAfter(starts, index)
+  let end = next < starts.length ? starts[next] : source.length
+  if (end - index > MAX_CHUNK) end = index + MAX_CHUNK
   if (end < source.length) {
     const code = source.charCodeAt(end)
-    if (code >= 0xdc00 && code <= 0xdfff) return source.slice(index, end + 1)
+    if (code >= 0xdc00 && code <= 0xdfff) end++
   }
   return source.slice(index, end)
 }

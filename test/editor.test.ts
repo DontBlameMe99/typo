@@ -59,6 +59,30 @@ test('style assertions skip tokens inside supplementary Unicode identifiers', ()
   }
 })
 
+test('parses a long line whose chunk cap lands inside a surrogate pair', () => {
+  const head = '#let x = '
+  const source = `${head}${'a'.repeat(4095 - head.length)}𝔸\n= End`
+  const syntax = new TypstSyntax(language)
+  try {
+    const highlights = syntax.highlights(source)
+    expectStyle(source, highlights, '#let', 'keyword')
+    expectStyle(source, highlights, '= End', 'heading')
+  } finally {
+    syntax.destroy()
+  }
+})
+
+test('parses a line much longer than the chunk cap', () => {
+  const source = `${'a'.repeat(100000)}\n= End`
+  const syntax = new TypstSyntax(language)
+  try {
+    const highlights = syntax.highlights(source)
+    expectStyle(source, highlights, '= End', 'heading')
+  } finally {
+    syntax.destroy()
+  }
+})
+
 test('highlights imports, content calls, table options, and markup like Typst source', () => {
   const source = `#import "style/lib.typ": *
 #show: template
@@ -404,6 +428,7 @@ test('editor changes replace one span and reject out-of-bounds edits', () => {
   expect(applyEditorChange('hello world', { from: 6, to: 11, insert: 'there' })).toBe('hello there')
   expect(applyEditorChange('a📝b', { from: 1, to: 3, insert: '🎉' })).toBe('a🎉b')
   expect(applyEditorChange('abc', { from: 3, to: 3, insert: '!' })).toBe('abc!')
+  expect(applyEditorChange('abc', { from: 0, to: 0, insert: '!' })).toBe('!abc')
   expect(() => applyEditorChange('abc', { from: 0, to: 4, insert: '' })).toThrow('invalid change')
   expect(() => applyEditorChange('abc', { from: 2, to: 1, insert: '' })).toThrow('invalid change')
 })

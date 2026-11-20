@@ -1,4 +1,5 @@
 import type { HighlightRequest, HighlightResponse } from './highlight-queue'
+import { applyEditorChange } from './protocol'
 import { TypstSyntax, typstLanguage } from './syntax'
 
 type Input = HighlightRequest | { type: 'init'; runtime: Uint8Array; grammar: Uint8Array }
@@ -18,6 +19,9 @@ endpoint.onmessage = async (event) => {
     } else {
       if (!syntax) throw new Error('Syntax highlighting is not ready.')
       if (request.source !== undefined) source = request.source
+      else if (request.changes)
+        for (let index = request.changes.length - 1; index >= 0; index--)
+          source = applyEditorChange(source, request.changes[index])
       endpoint.postMessage({
         type: 'highlights',
         id: request.id,
