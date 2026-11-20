@@ -66,12 +66,12 @@
       "updatedAt": "2026-11-18T01:46:37.942Z"
     },
     "search/100/fuzzy": {
-      "sha": "f122cb7bcfb29792928652b4eef77c03af8fb9bd",
+      "sha": "40d4a34b8abc807f146d74502a6dc6098078ea33",
       "method": 2,
-      "medianMs": 0.059522000000015396,
-      "worstMedianMs": 0.06135099999994509,
+      "medianMs": 0.030595000000005257,
+      "worstMedianMs": 0.031793999999990774,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-20T11:57:20.157Z"
+      "updatedAt": "2026-11-20T21:13:42.661Z"
     },
     "search/100/literal": {
       "sha": "f122cb7bcfb29792928652b4eef77c03af8fb9bd",
@@ -90,12 +90,12 @@
       "updatedAt": "2026-11-18T01:46:37.942Z"
     },
     "search/100/names": {
-      "sha": "f122cb7bcfb29792928652b4eef77c03af8fb9bd",
+      "sha": "40d4a34b8abc807f146d74502a6dc6098078ea33",
       "method": 2,
-      "medianMs": 0.02641900000000419,
-      "worstMedianMs": 0.027561999999988984,
+      "medianMs": 0.016568000000006577,
+      "worstMedianMs": 0.01697299999997881,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-20T11:57:20.157Z"
+      "updatedAt": "2026-11-20T21:13:42.661Z"
     },
     "search/1000/first-content": {
       "sha": "918c7ba45807c7e8a15bb1d23f9c4323dcfcc8b6",
