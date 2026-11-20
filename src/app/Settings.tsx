@@ -11,6 +11,7 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg'
 import { appCommit, appVersion, commitUrl, issuesUrl, repositoryUrl } from '../about'
 import { contrastRatio, hexToHsl, hslToHex, parseHex } from '../color'
 import { Icon } from '../icons'
+import { type QuickAppendTarget, quickAppendLabel } from '../quick-append-config'
 import type { AppearanceMode, Flavor } from '../theme'
 import {
   accentNames,
@@ -20,7 +21,9 @@ import {
   palettes,
   useTheme,
 } from '../theme'
+import type { Note, Vault } from '../types'
 import { PillTabs, spring } from './motion'
+import { QuickAppendSheet } from './QuickAppendSheet'
 import { SWIPE_SPRING } from './shared'
 import { useStyles } from './styles'
 import { BottomSheet, Screen } from './ui'
@@ -35,19 +38,30 @@ const APPEARANCE_MODE_OPTIONS: readonly { value: AppearanceMode; label: string }
 ]
 
 export function Settings({
+  vault,
   vaultName,
+  notes,
+  quickTarget,
   picking,
   onChangeFolder,
+  onSaveQuickTarget,
+  onClearQuickTarget,
   onClose,
 }: {
+  vault: Vault
   vaultName: string
+  notes: Note[]
+  quickTarget: QuickAppendTarget | null
   picking: boolean
   onChangeFolder: () => void
+  onSaveQuickTarget: (target: QuickAppendTarget) => void
+  onClearQuickTarget: () => void
   onClose: () => void
 }) {
   const s = useStyles()
   const { settings, updateSettings, palette, colors, persistenceError } = useTheme()
   const [customOpen, setCustomOpen] = useState(false)
+  const [quickOpen, setQuickOpen] = useState(false)
   const dismiss = useRef<(after?: () => void) => void>(() => {})
   const custom = settings.customAccent
   const open = (url: string) => {
@@ -92,6 +106,25 @@ export function Settings({
                   </Text>
                 </View>
                 <Icon name="swap" size={18} color={colors.muted} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={
+                  quickTarget
+                    ? `Quick append target: ${quickAppendLabel(quickTarget)}. Choose target`
+                    : 'Quick append target not set. Choose target'
+                }
+                onPress={() => setQuickOpen(true)}
+                style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
+              >
+                <Icon name="edit" size={20} color={colors.muted} />
+                <View style={s.sheetRowText}>
+                  <Text style={s.sheetRowTitle}>Quick append</Text>
+                  <Text numberOfLines={1} style={s.sheetRowPath}>
+                    {quickTarget ? quickAppendLabel(quickTarget) : 'Not set'}
+                  </Text>
+                </View>
+                <Icon name="chevronRight" size={18} color={colors.muted} />
               </Pressable>
             </View>
             <View style={s.settingsGroup}>
@@ -263,6 +296,16 @@ export function Settings({
           </View>
         </View>
       </Screen>
+      {quickOpen && (
+        <QuickAppendSheet
+          vault={vault}
+          notes={notes}
+          current={quickTarget}
+          onSave={(target) => void onSaveQuickTarget(target)}
+          onClear={() => void onClearQuickTarget()}
+          onClose={() => setQuickOpen(false)}
+        />
+      )}
       {customOpen && (
         <CustomColorSheet
           initial={custom ?? colors.accent}

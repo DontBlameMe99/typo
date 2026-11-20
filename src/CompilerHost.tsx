@@ -14,6 +14,7 @@ import {
 import { CompilerTransport } from './compiler/transport'
 import { inlineJson } from './editor/document'
 import { webRuntime } from './web-runtime'
+import { useWebViewForegroundReload } from './webview-resume'
 
 export type CompilerHandle = { compile: (input: CompileInput) => Promise<CompileResult> }
 type Job = {
@@ -87,6 +88,9 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
         fail(loadError.current)
       })
   }, [fail])
+  useWebViewForegroundReload(() => {
+    if (booted && !job.current) restart()
+  }, !!uri)
   useImperativeHandle(ref, () => ({
     compile(input) {
       if (job.current)
