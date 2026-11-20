@@ -64,7 +64,11 @@ export function QuickAppendSheet({
       cardHeight={560}
       onClose={onClose}
     >
-      <ScrollView style={s.flex} contentContainerStyle={s.settingsBody}>
+      <ScrollView
+        style={s.flex}
+        contentContainerStyle={s.settingsBody}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={s.searchField}>
           <Icon name="search" size={18} color={colors.muted} />
           <TextInput

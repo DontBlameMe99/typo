@@ -8,6 +8,7 @@ import {
   SafeAreaProvider,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context'
+import { markQuickTileOpened } from './quick-tile-session'
 import { ThemeProvider, useTheme } from './theme'
 
 const fonts = { DMSans_400Regular, DMSans_600SemiBold }
@@ -15,6 +16,7 @@ const fonts = { DMSans_400Regular, DMSans_600SemiBold }
 export function QuickSheetRoot({ children }: { children: React.ReactNode }) {
   const [loaded, fontError] = useFonts(fonts)
   useEffect(() => {
+    markQuickTileOpened()
     void SplashScreen.hideAsync().catch(() => {})
   }, [])
   if (!loaded && !fontError) return null

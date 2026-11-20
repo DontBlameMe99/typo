@@ -1639,14 +1639,20 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
             void chooseVault()
           }}
           onSaveQuickTarget={(target) => {
+            const previous = quickTarget
             setQuickTarget(target)
-            void storeQuickAppendTarget(target).catch((cause: unknown) =>
+            void storeQuickAppendTarget(target).catch((cause: unknown) => {
+              setQuickTarget((current) => (current === target ? previous : current))
               setError(errorText(cause))
-            )
+            })
           }}
           onClearQuickTarget={() => {
+            const previous = quickTarget
             setQuickTarget(null)
-            void clearQuickAppendTarget().catch((cause: unknown) => setError(errorText(cause)))
+            void clearQuickAppendTarget().catch((cause: unknown) => {
+              setQuickTarget((current) => current ?? previous)
+              setError(errorText(cause))
+            })
           }}
           onClose={closeSettings}
         />

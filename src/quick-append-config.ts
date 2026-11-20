@@ -47,7 +47,9 @@ export function readQuickAppendTarget(): QuickAppendTarget | null {
 
 export async function storeQuickAppendTarget(target: QuickAppendTarget): Promise<void> {
   const next = validate(target)
-  await FileSystem.writeAsStringAsync(configPath(), JSON.stringify(next))
+  const pending = new File(`${configPath()}.writing`)
+  await pending.write(JSON.stringify(next))
+  await pending.move(new File(configPath()), { overwrite: true })
 }
 
 export async function clearQuickAppendTarget(): Promise<void> {

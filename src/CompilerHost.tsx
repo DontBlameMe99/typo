@@ -89,7 +89,7 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
       })
   }, [fail])
   useWebViewForegroundReload(() => {
-    if (booted) restart()
+    if (booted && !job.current) restart()
   }, !!uri)
   useImperativeHandle(ref, () => ({
     compile(input) {

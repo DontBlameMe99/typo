@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import * as ReactNative from 'react-native'
+import { quickTileSession } from './quick-tile-session'
 
 type AppStateLike = {
   currentState: string
@@ -8,15 +9,16 @@ type AppStateLike = {
 
 const appState = (ReactNative as { AppState?: AppStateLike }).AppState
 
-// An app resumed from a Quick Settings tile can come back with WebView native
-// instances that were released while the main activity was behind the tile.
-// React state still says they are ready, so their pages never boot again.
+// A tile opens a second activity while the main one is behind it. Its WebViews
+// can come back with released native instances, so those sessions need a fresh
+// page. Ordinary app switches must keep the existing editor state.
 export function useWebViewForegroundReload(reload: () => void, enabled = true): void {
   const current = useRef(reload)
   current.current = reload
   useEffect(() => {
     if (!enabled || !appState) return
     let backgrounded = appState.currentState !== 'active'
+    let handled = quickTileSession()
     const subscription = appState.addEventListener('change', (state) => {
       if (state !== 'active') {
         backgrounded = true
@@ -24,6 +26,9 @@ export function useWebViewForegroundReload(reload: () => void, enabled = true): 
       }
       if (!backgrounded) return
       backgrounded = false
+      const opened = quickTileSession()
+      if (opened === handled) return
+      handled = opened
       current.current()
     })
     return () => subscription.remove()

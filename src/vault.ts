@@ -794,6 +794,25 @@ async function writeSource(uri: string, source: string): Promise<void> {
   }
 }
 
+const noteWrites = new Map<string, Promise<void>>()
+
+async function withNoteWrite<T>(uri: string, work: () => Promise<T>): Promise<T> {
+  const previous = noteWrites.get(uri) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const tail = previous.then(() => current)
+  noteWrites.set(uri, tail)
+  await previous
+  try {
+    return await work()
+  } finally {
+    release()
+    if (noteWrites.get(uri) === tail) noteWrites.delete(uri)
+  }
+}
+
 function newFolderName(value: string): string {
   const name = value.normalize('NFC').trim()
   if (!name) throw new Error('Give the folder a name.')
@@ -1032,13 +1051,15 @@ export async function appendToNoteAtPath(
 ): Promise<Note> {
   try {
     const file = await noteFileAtPath(vault, path)
-    const source = await readNoteSource(file.uri, () => false)
-    const next = appendToSection(source, section, text)
-    await writeSource(file.uri, next)
-    return {
-      ...noteFromSource(file.uri, file.path, file.name, next),
-      modifiedAt: modifiedAt(await entryInfo(file.uri)),
-    }
+    return await withNoteWrite(file.uri, async () => {
+      const source = await readNoteSource(file.uri, () => false)
+      const next = appendToSection(source, section, text)
+      await writeSource(file.uri, next)
+      const stamp = await entryInfo(file.uri)
+        .then(modifiedAt)
+        .catch(() => null)
+      return { ...noteFromSource(file.uri, file.path, file.name, next), modifiedAt: stamp }
+    })
   } catch (cause) {
     throw new Error(`Cannot append to "${path}": ${message(cause)}`)
   }
@@ -1423,20 +1444,22 @@ export async function readNote(note: Note): Promise<Note> {
 
 export async function saveNote(note: Note, source: string): Promise<Note> {
   if (isRootTemplate(note.path)) validateNoteTemplate(source)
-  const current = await FileSystem.readAsStringAsync(note.uri)
-  if (current !== note.source) {
-    throw new Error(
-      `Cannot save "${note.path}": the file changed outside this editor, possibly through Syncthing. Return to the notes list and reopen it before saving to avoid overwriting those changes.`
-    )
-  }
-  await writeSource(note.uri, source)
-  return {
-    uri: note.uri,
-    path: note.path,
-    title: extractTitle(source, note.path.slice(note.path.lastIndexOf('/') + 1)),
-    source,
-    modifiedAt: modifiedAt(await entryInfo(note.uri)),
-  }
+  return withNoteWrite(note.uri, async () => {
+    const current = await FileSystem.readAsStringAsync(note.uri)
+    if (current !== note.source) {
+      throw new Error(
+        `Cannot save "${note.path}": the file changed outside this editor, possibly through Syncthing. Return to the notes list and reopen it before saving to avoid overwriting those changes.`
+      )
+    }
+    await writeSource(note.uri, source)
+    return {
+      uri: note.uri,
+      path: note.path,
+      title: extractTitle(source, note.path.slice(note.path.lastIndexOf('/') + 1)),
+      source,
+      modifiedAt: modifiedAt(await entryInfo(note.uri)),
+    }
+  })
 }
 
 async function pruneSourceCache(directory: string): Promise<void> {
