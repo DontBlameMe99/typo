@@ -19,6 +19,21 @@ die() {
   exit 1
 }
 
+# The lock is held on fd 10 through exec, so the kernel releases the slot when
+# the server exits, even if no agent stops it.
+acquire_slot() {
+  local i
+  mkdir -p "$slot_dir"
+  for ((i = 1; i <= slot_count; i++)); do
+    exec 10>"$slot_dir/slot-$i" || continue
+    if flock -n 10; then
+      return 0
+    fi
+    exec 10>&-
+  done
+  die "All $slot_count dev server slots are in use. Wait for a lease to expire or stop a server."
+}
+
 usage() {
   sed -n '5,7p' "$script_path" | sed 's/^# \{0,1\}//'
 }
@@ -50,6 +65,10 @@ ports_dir="$cache_dir/ports"
 reserved_port=""
 picked_port=""
 
+
+slot_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dev-server-slots"
+slot_count=4
+server_ttl=3600
 cleanup_port_reservation() {
   if [[ -n $reserved_port ]]; then
     rm -rf "${ports_dir:?}/${reserved_port:?}"
@@ -318,6 +337,7 @@ start_server() {
   log="$log_dir/$port.log"
   local expo_args=(start --host lan --port "$port" --go)
 
+  acquire_slot
   echo "Starting Metro on port $port..."
   # A watcher in the server's session kills the group once .git is gone, so a
   # deleted worktree never leaves Metro behind. Poll .git, never the root:
@@ -325,18 +345,20 @@ start_server() {
   # worktree and a directory in a primary checkout.
   # shellcheck disable=SC2016
   local watcher='if [ -e "$1/.git" ]; then
-    ( while [ -e "$1/.git" ] && kill -0 $$; do sleep "$2"; done; kill -TERM 0 ) &
+    ( while [ -e "$1/.git" ] && kill -0 $$; do sleep "$2"; done; kill -TERM 0 ) 10>&- &
   else
     echo "dev-mobile: no .git under $1, this server will not stop itself." >&2
   fi
-  shift 2
+  ( trap "" TERM; sleep "$3"; kill -TERM -- -$$ 2>/dev/null || kill -TERM $$ 2>/dev/null || true; for _ in {1..50}; do kill -0 $$ 2>/dev/null || exit 0; sleep 0.2; done; kill -KILL -- -$$ 2>/dev/null || kill -KILL $$ 2>/dev/null || true ) 10>&- &
+  shift 3
   exec "$@"'
   local launcher=(
-    bash -c "$watcher" _ "$root" 60 "$root/node_modules/.bin/expo" "${expo_args[@]}"
+    bash -c "$watcher" _ "$root" 60 "$server_ttl" "$root/node_modules/.bin/expo" "${expo_args[@]}"
   )
   setsid env REACT_NATIVE_PACKAGER_HOSTNAME="$host" EXPO_NO_TELEMETRY=1 \
     "${launcher[@]}" 8>&- 9>&- >"$log" 2>&1 </dev/null &
   local pid=$!
+  exec 10>&-
   printf '%s\n' "$pid" >"$ports_dir/$port/pid.$$.tmp"
   mv "$ports_dir/$port/pid.$$.tmp" "$ports_dir/$port/pid"
 
