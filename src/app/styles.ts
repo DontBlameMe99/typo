@@ -3,9 +3,7 @@ import { StyleSheet } from 'react-native'
 import { CARD_HEIGHT, CHIP_HEIGHT, ROW_GAP } from '../library-rows'
 import type { ThemeColors } from '../theme'
 import { useTheme } from '../theme'
-import { LIBRARY_LIST_TOP, LIBRARY_PARENT_HEIGHT, MARK_SIZE, PANE_OVERLAP } from './shared'
-
-const PANE_FADE = 30 + PANE_OVERLAP
+import { LIBRARY_LIST_TOP, LIBRARY_PARENT_HEIGHT, MARK_SIZE } from './shared'
 
 const NOTE_DOCK_TOP = 12
 // Every screen closes, saves, or confirms from a bar this tall.
@@ -249,9 +247,6 @@ function makeStyles(colors: ThemeColors) {
     },
     swipePaneFavorite: { left: 0, paddingLeft: 20, justifyContent: 'flex-start' },
     swipePaneTrash: { right: 0, paddingRight: 20, justifyContent: 'flex-end' },
-    paneEdge: { position: 'absolute', top: 0, bottom: 0, width: PANE_FADE },
-    paneEdgeLeft: { left: 0 },
-    paneEdgeRight: { right: 0 },
     swipePaneContent: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     swipePaneLabel: { fontFamily: 'DMSans_600SemiBold', fontSize: 14 },
     swipeFill: { flex: 1 },

@@ -14,7 +14,6 @@ import Reanimated, {
   withSpring,
   withTiming,
 } from 'react-native-reanimated'
-import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg'
 import { rgba } from '../color'
 import { notePreview, noteTime } from '../core'
 import { Icon } from '../icons'
@@ -222,7 +221,6 @@ export const SearchResultRow = memo(
 // A row owns its pan so the translation, pane, and spring run on the UI
 // thread. React only hears about the chosen side and the arm threshold, never
 // about individual frames.
-let paneEdgeSequence = 0
 
 function SwipePane({
   pane,
@@ -239,7 +237,6 @@ function SwipePane({
 }) {
   const s = useStyles()
   const { colors } = useTheme()
-  const [edgeId] = useState(() => `pane-edge-${++paneEdgeSequence}`)
   const label = pane === 'favorite' ? (favorite ? 'Unpin' : 'Pin') : 'Trash'
   const tint =
     pane === 'favorite' ? colors.onAccent : luminance(colors.coral) > 0.179 ? '#000000' : '#ffffff'
@@ -276,26 +273,6 @@ function SwipePane({
           </>
         )}
       </Reanimated.View>
-      <View
-        pointerEvents="none"
-        style={[s.paneEdge, pane === 'favorite' ? s.paneEdgeRight : s.paneEdgeLeft]}
-      >
-        <Svg width="100%" height="100%">
-          <Defs>
-            <LinearGradient
-              id={edgeId}
-              x1={pane === 'favorite' ? '1' : '0'}
-              y1="0"
-              x2={pane === 'favorite' ? '0' : '1'}
-              y2="0"
-            >
-              <Stop offset="0" stopColor={colors.soft} stopOpacity={1} />
-              <Stop offset="1" stopColor={colors.soft} stopOpacity={0} />
-            </LinearGradient>
-          </Defs>
-          <Rect width="100%" height="100%" fill={`url(#${edgeId})`} />
-        </Svg>
-      </View>
     </Reanimated.View>
   )
 }
