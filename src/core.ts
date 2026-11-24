@@ -83,23 +83,40 @@ const DIRECTIVE = /^\s*#(?:set|show|import|include|let|title)\b/u
 const COMMENT = /^\s*\/\//u
 const HEADING = /^\s*=+\s*/u
 const BULLET = /^\s*[-+]\s+/u
+const PREVIEW_MARKUP = /#[A-Za-z][\w-]*(?:\([^)]*\))?\[|\\|[*_`#$[\]]/gu
+const PLAIN_PREVIEW = /^[A-Za-z0-9]+(?: [A-Za-z0-9.,:;!?()'/-]+)*$/u
 const previews = new WeakMap<Note, { source: string; limit: number; text: string }>()
 
 export function notePreview(note: Note, limit = 220): string {
   const cached = previews.get(note)
   if (cached?.source === note.source && cached.limit === limit) return cached.text
-  const lines: string[] = []
-  let length = 0
+  let preview = ''
   let directiveDepth = 0
   let fenced = false
   let blockComment = false
-  for (const line of note.source.split('\n')) {
-    const trimmed = line.trim()
+  let lineStart = 0
+  let lineEnd = note.source.indexOf('\n')
+  while (lineStart <= note.source.length) {
+    const raw = note.source.slice(lineStart, lineEnd < 0 ? note.source.length : lineEnd)
+    lineStart = lineEnd < 0 ? note.source.length + 1 : lineEnd + 1
+    lineEnd = note.source.indexOf('\n', lineStart)
     if (directiveDepth > 0) {
-      directiveDepth +=
-        (trimmed.match(/[[{(]/gu)?.length ?? 0) - (trimmed.match(/[\])}]/gu)?.length ?? 0)
+      directiveDepth += (raw.match(/[[{(]/gu)?.length ?? 0) - (raw.match(/[\])}]/gu)?.length ?? 0)
       continue
     }
+    if (!fenced && !blockComment && DIRECTIVE.test(raw)) {
+      directiveDepth = Math.max(
+        0,
+        (raw.match(/[[{(]/gu)?.length ?? 0) - (raw.match(/[\])}]/gu)?.length ?? 0)
+      )
+      continue
+    }
+    if (!fenced && !blockComment && PLAIN_PREVIEW.test(raw)) {
+      preview += `${preview ? ' ' : ''}${raw}`
+      if (preview.length > limit) break
+      continue
+    }
+    const trimmed = raw.trim()
     if (fenced) {
       if (trimmed.startsWith('```')) fenced = false
       continue
@@ -117,28 +134,18 @@ export function notePreview(note: Note, limit = 220): string {
       continue
     }
     if (!trimmed || COMMENT.test(trimmed)) continue
-    if (DIRECTIVE.test(trimmed)) {
-      directiveDepth = Math.max(
-        0,
-        (trimmed.match(/[[{(]/gu)?.length ?? 0) - (trimmed.match(/[\])}]/gu)?.length ?? 0)
-      )
-      continue
-    }
     const text = trimmed
       .replace(HEADING, '')
       .replace(BULLET, '')
-      .replace(/#[A-Za-z][\w-]*(?:\([^)]*\))?\[/gu, '')
-      .replace(/\\/gu, '')
-      .replace(/[*_`#$[\]]/gu, '')
+      .replace(PREVIEW_MARKUP, '')
       .replace(/\s+/gu, ' ')
       .trim()
     if (text) {
-      lines.push(text)
-      length += text.length + (lines.length > 1 ? 1 : 0)
-      if (length > limit) break
+      preview += `${preview ? ' ' : ''}${text}`
+      if (preview.length > limit) break
     }
   }
-  const joined = lines.join(' ').trim()
+  const joined = preview
   const cut = joined.lastIndexOf(' ', limit)
   const text =
     joined.length > limit ? `${joined.slice(0, cut > 0 ? cut : limit).trimEnd()}…` : joined
@@ -206,7 +213,10 @@ type NameEntry = {
   // Lowercasing is folding for ASCII, so a plain entry can only match a query
   // whose characters appear in it in order.
   plain: boolean
+  letters?: number
+  digits?: number
 }
+type NameMatch = { item: NameEntry; score: number }
 
 type ContentEntry = {
   note: Note
@@ -997,6 +1007,31 @@ const NAME_OPTIONS = {
   sort: false,
 }
 
+function cacheNameMasks(entry: NameEntry): void {
+  if (entry.letters !== undefined && entry.digits !== undefined) return
+  let letters = 0
+  let digits = 0
+  for (let index = 0; index < entry.folded.length; index++) {
+    const code = entry.folded.charCodeAt(index)
+    if (code >= 97 && code <= 122) letters |= 1 << (code - 97)
+    else if (code >= 48 && code <= 57) digits |= 1 << (code - 48)
+  }
+  entry.letters = letters
+  entry.digits = digits
+}
+
+function queryMasks(value: string): [number, number] | null {
+  let letters = 0
+  let digits = 0
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index)
+    if (code >= 97 && code <= 122) letters |= 1 << (code - 97)
+    else if (code >= 48 && code <= 57) digits |= 1 << (code - 48)
+    else return null
+  }
+  return [letters, digits]
+}
+
 // A name can only match when the query's characters appear in it in order, and
 // deciding that is much cheaper than the scoring pass FZF runs per entry. Only
 // candidates reach it, so a query with few candidates never needs the index over
@@ -1007,21 +1042,73 @@ function nameIndex(notes: readonly Note[]) {
     entries.push(nameEntry(note, note.title), nameEntry(note, note.path))
   }
   let index: Fzf<NameEntry[]> | undefined
+  let digitIndex: Map<number, NameEntry[]> | undefined
+  let digitIndexReady = false
+  const cache = new Map<string, NameMatch[]>()
+  const remember = (value: string, matches: NameMatch[]) => {
+    if (cache.size === 8) dropOldest(cache)
+    cache.set(value, matches)
+    return matches
+  }
+  const allPlain = entries.every((entry) => entry.plain)
+  const entriesForDigits = (mask: number): NameEntry[] | null => {
+    if (!mask) return entries
+    digitIndex ??= new Map()
+    if (!digitIndexReady) {
+      for (const entry of entries) {
+        cacheNameMasks(entry)
+        for (let digit = 0; digit < 10; digit++) {
+          const bit = 1 << digit
+          if (!((entry.digits ?? 0) & bit)) continue
+          const bucket = digitIndex.get(bit)
+          if (bucket) bucket.push(entry)
+          else digitIndex.set(bit, [entry])
+        }
+      }
+      digitIndexReady = true
+    }
+    let selected: NameEntry[] | null = null
+    for (let digit = 0; digit < 10; digit++) {
+      const bit = 1 << digit
+      if (!(mask & bit)) continue
+      const bucket = digitIndex.get(bit)
+      if (!bucket) return null
+      if (!selected || bucket.length < selected.length) selected = bucket
+    }
+    return selected
+  }
   const everything = () => (index ??= new Fzf(entries, NAME_OPTIONS))
   return {
     find(value: string) {
-      if (entries.length === 0) return []
+      const cached = cache.get(value)
+      if (cached) return cached
+      if (entries.length === 0) return remember(value, [])
       // Normalization can map characters this prefilter does not, so leave those
       // queries to FZF alone.
-      if (!isAsciiText(value)) return everything().find(value)
+      if (!isAsciiText(value)) return remember(value, everything().find(value))
       const needle = value.toLowerCase()
+      const masks = queryMasks(needle)
+      const pool = allPlain && masks?.[1] ? entriesForDigits(masks[1]) : entries
+      if (!pool) return remember(value, [])
       const candidates: NameEntry[] = []
-      for (const entry of entries) {
-        if (!entry.plain || isSubsequence(entry.folded, needle)) candidates.push(entry)
+      for (const entry of pool) {
+        if (!entry.plain) {
+          candidates.push(entry)
+          continue
+        }
+        if (masks) {
+          cacheNameMasks(entry)
+          if (
+            ((entry.letters ?? 0) & masks[0]) !== masks[0] ||
+            ((entry.digits ?? 0) & masks[1]) !== masks[1]
+          )
+            continue
+        }
+        if (isSubsequence(entry.folded, needle)) candidates.push(entry)
       }
-      if (candidates.length === 0) return []
-      if (candidates.length * 2 > entries.length) return everything().find(value)
-      return new Fzf(candidates, NAME_OPTIONS).find(value)
+      if (candidates.length === 0) return remember(value, [])
+      if (candidates.length * 2 > entries.length) return remember(value, everything().find(value))
+      return remember(value, new Fzf(candidates, NAME_OPTIONS).find(value))
     },
   }
 }

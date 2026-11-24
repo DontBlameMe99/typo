@@ -464,10 +464,12 @@ Body after the rule.`
       'code.typ',
       `#title[Code]
 /* hidden
+plain hidden
 comment */
 /* one line */
 \`\`\`typ
 #let a = 1
+plain raw prose
 \`\`\`
 Real prose.`
     )

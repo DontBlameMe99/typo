@@ -293,6 +293,99 @@ test('viewport highlighting matches full highlights and stays inside the visible
   }
 })
 
+function clippedHighlights(source: string, range: { from: number; to: number }) {
+  const syntax = new TypstSyntax(language)
+  try {
+    return syntax
+      .highlights(source)
+      .map((item) => ({
+        ...item,
+        from: Math.max(item.from, range.from),
+        to: Math.min(item.to, range.to),
+      }))
+      .filter((item) => item.from < item.to)
+  } finally {
+    syntax.destroy()
+  }
+}
+
+test('windowed reparses match a fresh full parse after edits', () => {
+  const lines = Array.from({ length: 300 }, (_, index) => `#let value${index} = ${index}`)
+  lines.splice(120, 0, '/* multiline', 'comment */', '```typst', '#raw(text)', '```')
+  lines.splice(230, 0, '= Heading *bold _nested_*', '$ frac(alpha, 2) $')
+  const source = lines.join('\n')
+  const incremental = new TypstSyntax(language)
+  try {
+    incremental.highlights(source, { from: 0, to: 1000 })
+    const deep = source.indexOf('#let value180')
+    incremental.highlights(source, { from: deep, to: deep + 1000 })
+    const edited = source
+      .replace('#let value180 = 180', '#let value180 = "📝"\n#let inserted = 1234')
+      .replace('#raw(text)', '#raw("🎉")')
+    for (const needle of ['#let value220', '#raw("🎉")', '= Heading', '$ frac']) {
+      const at = edited.indexOf(needle)
+      const range = { from: Math.max(0, at - 100), to: Math.min(edited.length, at + 500) }
+      expect(incremental.highlights(edited, range)).toEqual(clippedHighlights(edited, range))
+    }
+    const moved = edited.replace('= Heading', '= Changed')
+    const at = moved.indexOf('#let value280')
+    const range = { from: at, to: moved.length }
+    expect(incremental.highlights(moved, range)).toEqual(clippedHighlights(moved, range))
+    expect(
+      incremental.highlights(`${moved}\n#let tail = 99`, { from: at, to: moved.length + 16 })
+    ).toEqual(clippedHighlights(`${moved}\n#let tail = 99`, { from: at, to: moved.length + 16 }))
+  } finally {
+    incremental.destroy()
+  }
+})
+
+test('a partial opening parse stays exact when its visible prefix changes', () => {
+  const source = Array.from({ length: 1000 }, (_, index) => `#let value${index} = ${index}`).join(
+    '\n'
+  )
+  const incremental = new TypstSyntax(language)
+  try {
+    incremental.highlights(source, { from: 0, to: 1000 })
+    const edited = source.replace('#let value10 = 10', '#let value10 = "📝"\n#let extra = 42')
+    const range = { from: 0, to: 1000 }
+    expect(incremental.highlights(edited, range)).toEqual(clippedHighlights(edited, range))
+  } finally {
+    incremental.destroy()
+  }
+})
+test('a whitespace-only note stays highlighted after an edit', () => {
+  const syntax = new TypstSyntax(language)
+  try {
+    expect(syntax.highlights(' ')).toEqual([])
+    expect(syntax.highlights('  ')).toEqual([])
+    expect(syntax.highlights('  ', { from: 0, to: 1 })).toEqual([])
+  } finally {
+    syntax.destroy()
+  }
+})
+
+test('reusing a full tree after edits stays exact', () => {
+  const syntax = new TypstSyntax(language)
+  const fresh = new TypstSyntax(language)
+  try {
+    let source = Array.from({ length: 300 }, (_, index) => `#let value${index} = ${index}`).join(
+      '\n'
+    )
+    expect(syntax.highlights(source)).toEqual(fresh.highlights(source))
+    for (const [from, to, insert] of [
+      [0, 6, '#let first = "x"\n'],
+      [1000, 1010, '📝'],
+      [source.length, source.length, '= End'],
+    ] as const) {
+      source = source.slice(0, from) + insert + source.slice(to)
+      expect(syntax.highlights(source)).toEqual(fresh.highlights(source))
+    }
+  } finally {
+    syntax.destroy()
+    fresh.destroy()
+  }
+})
+
 test('syntax styles only change colors, never font metrics or wrapping', () => {
   const syntax = Object.fromEntries(
     [

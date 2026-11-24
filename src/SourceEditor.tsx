@@ -65,36 +65,39 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
     const [uri, setUri] = useState<string | null>(null)
     const [ready, setReady] = useState(false)
     const [nativeSession, setNativeSession] = useState(0)
-    const theme = {
-      background: colors.paper,
-      foreground: colors.ink,
-      muted: colors.muted,
-      accent: colors.accent,
-      gutter: palette.overlay0,
-      activeLine: rgba(palette.surface0, 0.55),
-      selection: palette.surface1,
-      surface: colors.soft,
-      line: colors.line,
-      error: colors.coral,
-      syntax: {
-        variable: palette.text,
-        property: palette.lavender,
-        function: palette.blue,
-        keyword: palette.mauve,
-        punctuation: palette.overlay2,
-        operator: palette.sky,
-        number: palette.peach,
-        string: palette.green,
-        raw: palette.teal,
-        comment: palette.overlay2,
-        heading: palette.blue,
-        strong: palette.red,
-        italic: palette.yellow,
-        link: palette.sapphire,
-        math: palette.yellow,
-      },
-    }
-    const themeJson = inlineJson(theme)
+    const theme = useMemo(
+      () => ({
+        background: colors.paper,
+        foreground: colors.ink,
+        muted: colors.muted,
+        accent: colors.accent,
+        gutter: palette.overlay0,
+        activeLine: rgba(palette.surface0, 0.55),
+        selection: palette.surface1,
+        surface: colors.soft,
+        line: colors.line,
+        error: colors.coral,
+        syntax: {
+          variable: palette.text,
+          property: palette.lavender,
+          function: palette.blue,
+          keyword: palette.mauve,
+          punctuation: palette.overlay2,
+          operator: palette.sky,
+          number: palette.peach,
+          string: palette.green,
+          raw: palette.teal,
+          comment: palette.overlay2,
+          heading: palette.blue,
+          strong: palette.red,
+          italic: palette.yellow,
+          link: palette.sapphire,
+          math: palette.yellow,
+        },
+      }),
+      [colors, palette]
+    )
+    const themeJson = useMemo(() => inlineJson(theme), [theme])
     const issuesJson = useMemo(() => inlineJson(props.issues), [props.issues])
     const inject = (script: string) => web.current?.injectJavaScript(`${script};true;`)
     // The gesture root view swallows the touches of an Android back gesture in
