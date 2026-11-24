@@ -271,6 +271,7 @@ export function PillTabs<T extends string>({
   style,
   itemStyle,
   textStyle,
+  maxFontSizeMultiplier,
   pillStyle,
   inset,
   activeColor,
@@ -282,6 +283,7 @@ export function PillTabs<T extends string>({
   style?: React.ComponentProps<typeof View>['style']
   itemStyle?: React.ComponentProps<typeof View>['style']
   textStyle?: React.ComponentProps<typeof Text>['style']
+  maxFontSizeMultiplier?: number
   pillStyle: React.ComponentProps<typeof View>['style']
   inset: number
   activeColor: string
@@ -352,6 +354,7 @@ export function PillTabs<T extends string>({
             activeColor={activeColor}
             idleColor={idleColor}
             style={textStyle}
+            maxFontSizeMultiplier={maxFontSizeMultiplier}
           >
             {option.label}
           </PillLabel>
@@ -367,6 +370,7 @@ function PillLabel({
   activeColor,
   idleColor,
   style,
+  maxFontSizeMultiplier,
   children,
 }: {
   position: SharedValue<number>
@@ -374,10 +378,15 @@ function PillLabel({
   activeColor: string
   idleColor: string
   style?: React.ComponentProps<typeof Text>['style']
+  maxFontSizeMultiplier?: number
   children: React.ReactNode
 }) {
   const color = useAnimatedStyle(() => ({
     color: interpolateColor(Math.abs(position.value - at), [0, 1], [activeColor, idleColor]),
   }))
-  return <Reanimated.Text style={[style, color]}>{children}</Reanimated.Text>
+  return (
+    <Reanimated.Text maxFontSizeMultiplier={maxFontSizeMultiplier} style={[style, color]}>
+      {children}
+    </Reanimated.Text>
+  )
 }

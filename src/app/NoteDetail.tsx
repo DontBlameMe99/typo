@@ -224,6 +224,7 @@ export function NoteDetail({
   }
   function switchMode(next: 'source' | 'pdf') {
     if (next === mode) return
+    if (findOpen) closeFind()
     editor.current?.blur()
     Keyboard.dismiss()
     if (next === 'pdf') setEditing(false)
@@ -339,6 +340,7 @@ export function NoteDetail({
     }
   }
   function closeFind() {
+    setSelection(undefined)
     setFindOpen(false)
     setFocusFind(false)
     Keyboard.dismiss()
@@ -358,9 +360,13 @@ export function NoteDetail({
     setSelection({ start: matches[next], end: matches[next] + find.length })
   }
 
-  // Back leaves editing before it leaves the note, so compile errors come back
+  // Back leaves Find before editing before the note, so the current step always closes first
   // instead of the note closing.
   function leave(fromEditor = editing) {
+    if (findOpen) {
+      closeFind()
+      return
+    }
     if (!fromEditor && !Keyboard.isVisible()) {
       dismiss.current()
       return
@@ -435,7 +441,7 @@ export function NoteDetail({
       visible={active}
       instantIn={instantIn}
       swipeBack
-      dismissOnSwipe={!editing}
+      dismissOnSwipe={!editing && !findOpen}
       dismissRef={dismiss}
     >
       <View style={s.screen}>
