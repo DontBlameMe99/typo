@@ -43,14 +43,16 @@ def visible_lines(body):
     kept = []
     for line in body.splitlines():
         content = BLOCKQUOTE.sub("", line)
+        item = LIST_ITEM.match(content)
         marker = FENCE.match(content.lstrip())
+        if not marker and item:
+            marker = FENCE.match(content[item.end():].lstrip())
         if fence is None:
             if marker:
                 fence = marker.group(1)
                 paragraph = False
                 list_indent = None
                 continue
-            item = LIST_ITEM.match(content)
             if item:
                 list_indent = len(item.group(0))
                 paragraph = True
