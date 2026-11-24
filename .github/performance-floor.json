@@ -74,20 +74,20 @@
       "updatedAt": "2026-11-24T18:19:02.740Z"
     },
     "search/100/literal": {
-      "sha": "f122cb7bcfb29792928652b4eef77c03af8fb9bd",
+      "sha": "13b01ed3d8ad06da505e34c4270b6c9bd2b4f69e",
       "method": 2,
-      "medianMs": 0.0332700000000159,
-      "worstMedianMs": 0.0347250000000372,
+      "medianMs": 0.02402599999999211,
+      "worstMedianMs": 0.02942400000000589,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-20T11:57:20.157Z"
+      "updatedAt": "2026-11-24T21:54:21.616Z"
     },
     "search/100/missing": {
-      "sha": "e8dcc62fcfe2d775a063fb81104ac1bbeff56c01",
+      "sha": "13b01ed3d8ad06da505e34c4270b6c9bd2b4f69e",
       "method": 2,
-      "medianMs": 0.014917999999966014,
-      "worstMedianMs": 0.015895000000000437,
+      "medianMs": 0.022382999999990716,
+      "worstMedianMs": 0.02296400000000176,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-18T01:46:37.942Z"
+      "updatedAt": "2026-11-24T21:54:21.616Z"
     },
     "search/100/names": {
       "sha": "8c643fc2c9e4110f7c4358f9eb8686ddf5794004",
