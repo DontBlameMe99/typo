@@ -139,6 +139,7 @@ export function Screen({
   const dragStart = useSharedValue(1)
   const dragging = useSharedValue(false)
   const dismissing = useSharedValue(false)
+  const canDismissBySwipe = useSharedValue(false)
   const [present, setPresent] = useState(visible)
   const [exiting, setExiting] = useState(false)
   const presentRef = useRef(visible)
@@ -234,17 +235,18 @@ export function Screen({
           'worklet'
           dragging.value = true
           dragStart.value = progress.value
+          canDismissBySwipe.value = dismissOnSwipe
           if (!dismissOnSwipe) runOnJS(requestClose)()
         })
         .onUpdate((event) => {
           'worklet'
-          if (!dismissOnSwipe || dismissing.value) return
+          if (!canDismissBySwipe.value || dismissing.value) return
           const next = dragStart.value + event.translationX / Math.max(width, 1)
           progress.value = Math.max(0, Math.min(1, next))
         })
         .onEnd((event) => {
           'worklet'
-          if (!dismissOnSwipe) {
+          if (!canDismissBySwipe.value) {
             dragging.value = false
             return
           }
@@ -267,7 +269,7 @@ export function Screen({
         .onFinalize((_event, success) => {
           'worklet'
           if (
-            dismissOnSwipe &&
+            canDismissBySwipe.value &&
             !success &&
             dragging.value &&
             !dismissing.value &&
@@ -280,6 +282,7 @@ export function Screen({
         }),
     [
       beginDismiss,
+      canDismissBySwipe,
       commit,
       dismissing,
       dismissOnSwipe,
@@ -395,7 +398,7 @@ export function BottomSheet({
     [busy, dismissing, finish, height, offset, reveal]
   )
   const requestDismiss = useCallback(() => {
-    if (busy) return
+    if (busy || closing.current) return
     if (request.current?.()) {
       dismissing.value = false
       offset.value = spring(0, SHEET_SPRING)
