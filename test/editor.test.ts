@@ -353,6 +353,38 @@ test('a partial opening parse stays exact when its visible prefix changes', () =
     incremental.destroy()
   }
 })
+test('a whitespace-only note stays highlighted after an edit', () => {
+  const syntax = new TypstSyntax(language)
+  try {
+    expect(syntax.highlights(' ')).toEqual([])
+    expect(syntax.highlights('  ')).toEqual([])
+    expect(syntax.highlights('  ', { from: 0, to: 1 })).toEqual([])
+  } finally {
+    syntax.destroy()
+  }
+})
+
+test('reusing a full tree after edits stays exact', () => {
+  const syntax = new TypstSyntax(language)
+  const fresh = new TypstSyntax(language)
+  try {
+    let source = Array.from({ length: 300 }, (_, index) => `#let value${index} = ${index}`).join(
+      '\n'
+    )
+    expect(syntax.highlights(source)).toEqual(fresh.highlights(source))
+    for (const [from, to, insert] of [
+      [0, 6, '#let first = "x"\n'],
+      [1000, 1010, '📝'],
+      [source.length, source.length, '= End'],
+    ] as const) {
+      source = source.slice(0, from) + insert + source.slice(to)
+      expect(syntax.highlights(source)).toEqual(fresh.highlights(source))
+    }
+  } finally {
+    syntax.destroy()
+    fresh.destroy()
+  }
+})
 
 test('syntax styles only change colors, never font metrics or wrapping', () => {
   const syntax = Object.fromEntries(

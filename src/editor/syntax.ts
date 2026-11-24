@@ -207,7 +207,7 @@ export class TypstSyntax {
       : undefined
     const tree = this.parser.parse(
       (index) => parseChunk(source, index, this.starts),
-      null,
+      range ? null : this.tree,
       includedRanges ? { includedRanges } : undefined
     )
     if (!tree) throw new Error('Unable to parse this note.')
@@ -239,11 +239,9 @@ export class TypstSyntax {
     let last = children.length - 1
     while (last >= 0 && children[last].startIndex >= range.to) last--
     while (last < children.length && last >= 0 && overlaps(children[last])) last++
+    if (children.length === 0) return { from: 0, to: this.source.length }
     const from = first < 0 ? 0 : children[first].startIndex
-    const to =
-      last >= children.length || children.length === 0
-        ? this.source.length
-        : children[last].endIndex
+    const to = last >= children.length ? this.source.length : children[last].endIndex
     return { from, to }
   }
 
