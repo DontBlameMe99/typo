@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Keyboard, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { listHeadings } from '../append'
 import { isRootTemplate } from '../core'
 import { Icon } from '../icons'
@@ -57,12 +57,22 @@ export function QuickAppendSheet({
     }
   }, [needle, note])
   const headings = sections.headings
+  const backToNotes = () => {
+    Keyboard.dismiss()
+    setNote(null)
+    setQuery('')
+  }
 
   return (
     <BottomSheet
       title={note ? 'Choose a section' : 'Choose a note'}
       cardHeight={560}
       onClose={onClose}
+      onRequestClose={() => {
+        if (!note) return false
+        backToNotes()
+        return true
+      }}
     >
       <ScrollView
         style={s.flex}
@@ -85,10 +95,7 @@ export function QuickAppendSheet({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Back to notes"
-              onPress={() => {
-                setNote(null)
-                setQuery('')
-              }}
+              onPress={backToNotes}
               style={({ pressed }) => [s.sheetRow, s.settingsRow, pressed && s.rowPressed]}
             >
               <Icon name="arrowLeft" size={20} color={colors.muted} />

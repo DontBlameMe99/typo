@@ -1,18 +1,20 @@
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import { issuesUrl } from './about'
 import { Icon } from './icons'
 import { useTheme } from './theme'
 
 export function ReportIssue() {
-  const { colors, palette } = useTheme()
+  const { colors } = useTheme()
   return (
     <Pressable
       accessibilityRole="link"
       accessibilityLabel="Report an issue. Opens in your browser"
-      onPress={() => void Linking.openURL(issuesUrl).catch(() => {})}
+      onPress={() =>
+        void Linking.openURL(issuesUrl).catch(() => Alert.alert('Cannot open link', issuesUrl))
+      }
       style={({ pressed }) => [
         styles.button,
-        { backgroundColor: palette.mantle },
+        { backgroundColor: colors.soft },
         pressed && styles.pressed,
       ]}
     >

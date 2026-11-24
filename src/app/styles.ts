@@ -522,13 +522,11 @@ function makeStyles(colors: ThemeColors) {
     sheetRowTitle: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 15,
-      lineHeight: 20,
       color: colors.ink,
     },
     sheetRowPath: {
       fontFamily: 'DMSans_400Regular',
       fontSize: 11,
-      lineHeight: 16,
       color: colors.muted,
     },
     aboutValue: {
@@ -1135,23 +1133,25 @@ function makeStyles(colors: ThemeColors) {
     },
     flavorRow: {
       flexDirection: 'row',
-      alignItems: 'center',
+      alignItems: 'stretch',
       gap: 8,
       paddingHorizontal: 4,
       marginTop: 16,
     },
-    flavorLight: { width: 78 },
+    flavorLight: { flex: 1, minWidth: 0, maxWidth: 100 },
     flavorDivider: {
       width: 1,
       alignSelf: 'stretch',
       backgroundColor: colors.line,
       marginHorizontal: 4,
     },
+    flavorDarkGroup: { flex: 3, minWidth: 0 },
     flavorDarkRow: {
+      flex: 1,
       flexDirection: 'row',
       gap: 8,
     },
-    flavorCard: { width: 78 },
+    flavorCard: { flex: 1, minWidth: 0, maxWidth: 100 },
     flavorPreview: {
       height: 60,
       borderRadius: 18,
@@ -1168,6 +1168,7 @@ function makeStyles(colors: ThemeColors) {
     },
     flavorBar: {
       width: 44,
+      maxWidth: '100%',
       height: 6,
       borderRadius: 3,
     },

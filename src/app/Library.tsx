@@ -469,7 +469,11 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
     setSaveError(null)
     try {
       const next = await pickVault()
-      if (!mounted.current || !next) return
+      if (!mounted.current) return
+      if (!next) {
+        if (!vaultRef.current) setError('No folder was selected. Choose a folder to get started.')
+        return
+      }
       generation.current++
       scanningRef.current = false
       favoritesReady.current = false
@@ -1242,51 +1246,62 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
         importantForAccessibility={libraryInteractive ? 'auto' : 'no-hide-descendants'}
       >
         {!vault ? (
-          <ScrollView contentContainerStyle={s.onboarding} keyboardShouldPersistTaps="handled">
-            <View style={s.onboardSpacer}>
-              <View style={s.onboardArt}>
-                <View style={s.onboardPaper}>
-                  <Text style={[s.onboardCode, { color: colors.accent }]}>{'== Observations'}</Text>
-                  <View style={s.onboardCodeGap} />
-                  <Text style={s.onboardCode}>Tide in early today.</Text>
-                  <Text style={s.onboardCode}>Light on the water.</Text>
-                  <View style={s.onboardCodeGap} />
-                  <Text style={[s.onboardCode, { color: palette.yellow }]}>
-                    {'$n -> infinity$'}
-                  </Text>
-                  <View style={s.onboardCodeGap} />
-                  <Text style={[s.onboardCode, { color: palette.blue }]}>{'#align(center)['}</Text>
-                  <Text style={[s.onboardCode, s.onboardCodeIndent]}>Still here.</Text>
-                  <Text style={[s.onboardCode, { color: palette.blue }]}>{']'}</Text>
-                  <Text style={[s.onboardCode, { color: palette.overlay2 }]}>
-                    {'// begin here'}
-                  </Text>
-                </View>
-                <View style={s.onboardPen}>
-                  <Icon name="edit" size={25} color={colors.onAccent} />
+          <>
+            {error && (
+              <View style={s.errorInset}>
+                <ErrorBanner message={error} onDismiss={() => setError(null)} />
+              </View>
+            )}
+            <ScrollView contentContainerStyle={s.onboarding} keyboardShouldPersistTaps="handled">
+              <View style={s.onboardSpacer}>
+                <View style={s.onboardArt}>
+                  <View style={s.onboardPaper}>
+                    <Text style={[s.onboardCode, { color: colors.accent }]}>
+                      {'== Observations'}
+                    </Text>
+                    <View style={s.onboardCodeGap} />
+                    <Text style={s.onboardCode}>Tide in early today.</Text>
+                    <Text style={s.onboardCode}>Light on the water.</Text>
+                    <View style={s.onboardCodeGap} />
+                    <Text style={[s.onboardCode, { color: palette.yellow }]}>
+                      {'$n -> infinity$'}
+                    </Text>
+                    <View style={s.onboardCodeGap} />
+                    <Text style={[s.onboardCode, { color: palette.blue }]}>
+                      {'#align(center)['}
+                    </Text>
+                    <Text style={[s.onboardCode, s.onboardCodeIndent]}>Still here.</Text>
+                    <Text style={[s.onboardCode, { color: palette.blue }]}>{']'}</Text>
+                    <Text style={[s.onboardCode, { color: palette.overlay2 }]}>
+                      {'// begin here'}
+                    </Text>
+                  </View>
+                  <View style={s.onboardPen}>
+                    <Icon name="edit" size={25} color={colors.onAccent} />
+                  </View>
                 </View>
               </View>
-            </View>
-            <Text style={s.onboardTitle}>{'Good things start\nwith a little note.'}</Text>
-            <Text style={s.onboardBody}>
-              Pick a folder to keep your notes in. They stay as plain .typ files you can open
-              anywhere.
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open a folder"
-              disabled={picking}
-              onPress={() => void chooseVault()}
-              style={({ pressed }) => [
-                s.onboardButton,
-                pressed && s.pressed,
-                picking && s.disabled,
-              ]}
-            >
-              <Icon name="folderOpen" size={22} color={colors.onAccent} />
-              <Text style={s.onboardButtonText}>Open a folder</Text>
-            </Pressable>
-          </ScrollView>
+              <Text style={s.onboardTitle}>{'Good things start\nwith a little note.'}</Text>
+              <Text style={s.onboardBody}>
+                Pick a folder to keep your notes in. They stay as plain .typ files you can open
+                anywhere.
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open a folder"
+                disabled={picking}
+                onPress={() => void chooseVault()}
+                style={({ pressed }) => [
+                  s.onboardButton,
+                  pressed && s.pressed,
+                  picking && s.disabled,
+                ]}
+              >
+                <Icon name="folderOpen" size={22} color={colors.onAccent} />
+                <Text style={s.onboardButtonText}>Open a folder</Text>
+              </Pressable>
+            </ScrollView>
+          </>
         ) : !setup || setupDone ? (
           <>
             {(error || saveError) && (
@@ -1489,6 +1504,7 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
                       disabled={isSearching}
                       hitSlop={8}
                       onPress={() => {
+                        if (backGate.blockOpening()) return
                         Keyboard.dismiss()
                         searchInput.current?.blur()
                         setSortOpen(true)

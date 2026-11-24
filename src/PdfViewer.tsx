@@ -2,6 +2,7 @@ import * as FileSystem from 'expo-file-system/legacy'
 import { useEffect, useRef, useState } from 'react'
 import {
   AccessibilityInfo,
+  Alert,
   Animated,
   Easing,
   Linking,
@@ -55,7 +56,7 @@ function selectionColor(accent: string, dark: boolean): string {
 function openLink(url: string) {
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1]
   if (!scheme || !LINK_PROTOCOLS.has(`${scheme.toLowerCase()}:`)) return
-  void Linking.openURL(url).catch(() => {})
+  void Linking.openURL(url).catch(() => Alert.alert('Cannot open link', url))
 }
 
 type Props = {

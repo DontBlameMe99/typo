@@ -9,7 +9,7 @@ const modules: Record<string, string> = {
       isReduceMotionEnabled:async()=>false,
       addEventListener:()=>({remove(){}})};
     export const StyleSheet={create:styles=>styles,hairlineWidth:1};
-    export const Linking={openURL:async()=>{}};
+    export const Linking={openURL:async()=>{}};export const Alert={alert:()=>{}};
     export const Easing={linear:value=>value,cubic:value=>value,in:value=>value,out:value=>value};
     class Value{constructor(value){this.value=value}setValue(value){this.value=value}stopAnimation(){}interpolate(){return 0}}
     const animation={start(callback){callback?.({finished:true})},stop(){}};

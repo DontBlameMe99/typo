@@ -259,6 +259,7 @@ export function FolderSheet({
               accessibilityLabel={`Go to ${vaultName} root`}
               disabled={busy}
               onPress={() => navigate('')}
+              hitSlop={{ top: 14, bottom: 14 }}
             >
               <Text style={[s.moveCrumb, current === '' && s.moveCrumbCurrent]}>{vaultName}</Text>
             </Pressable>
@@ -272,6 +273,7 @@ export function FolderSheet({
                     accessibilityLabel={`Go to ${crumb.path}`}
                     disabled={busy || last}
                     onPress={() => navigate(crumb.path)}
+                    hitSlop={{ top: 14, bottom: 14 }}
                   >
                     <Text style={[s.moveCrumb, last && s.moveCrumbCurrent]}>{crumb.name}</Text>
                   </Pressable>

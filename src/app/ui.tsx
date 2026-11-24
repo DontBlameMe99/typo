@@ -37,15 +37,14 @@ import { keyboardBehavior, SWIPE_SPRING } from './shared'
 import { useStyles } from './styles'
 
 const SHEET_SPRING = { damping: 34, mass: 0.8, overshootClamping: true, stiffness: 340 }
-// Sheets rise into place with a short travel, a fade, and a touch of blur.
+// Sheets rise into place with a short travel, a fade.
 const SHEET_REVEAL_EASE = Easing.bezier(0.22, 1, 0.36, 1)
 const SHEET_OPEN_DURATION = 400
 const SHEET_CLOSE_DURATION = 350
 const SHEET_REVEAL_TRAVEL = 160
-const SHEET_REVEAL_BLUR = 2
 const SCREEN_SPRING = { damping: 34, mass: 0.82, overshootClamping: true, stiffness: 320 }
 
-const SCREEN_EDGE_WIDTH = 22
+const SCREEN_EDGE_WIDTH = 40
 
 const backEdgeStyle = {
   position: 'absolute' as const,
@@ -376,13 +375,6 @@ export function BottomSheet({
     if (done) done()
     else close.current()
   }, [])
-  const commit = useCallback(() => {
-    if (closing.current) return
-    closing.current = true
-    dismissing.value = true
-    Keyboard.dismiss()
-    finish()
-  }, [dismissing, finish])
   const dismiss = useCallback(
     (done?: () => void) => {
       if (closing.current || busy) return
@@ -402,6 +394,15 @@ export function BottomSheet({
     },
     [busy, dismissing, finish, height, offset, reveal]
   )
+  const requestDismiss = useCallback(() => {
+    if (busy) return
+    if (request.current?.()) {
+      dismissing.value = false
+      offset.value = spring(0, SHEET_SPRING)
+      return
+    }
+    dismiss()
+  }, [busy, dismiss, dismissing, offset])
   useLayoutEffect(() => {
     if (dismissRef) dismissRef.current = dismiss
   }, [dismiss, dismissRef])
@@ -423,13 +424,11 @@ export function BottomSheet({
     keyboardHeight > 0 ? Math.max(200, height - keyboardHeight - top) : undefined
   useLayoutEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (busy) return true
-      if (request.current?.()) return true
-      dismiss()
+      requestDismiss()
       return true
     })
     return () => subscription.remove()
-  }, [busy, dismiss])
+  }, [requestDismiss])
   const drag = useMemo(
     () =>
       Gesture.Pan()
@@ -459,11 +458,7 @@ export function BottomSheet({
           if (!dragging.value || dismissing.value) return
           const projected = offset.value + event.velocityY * 0.08
           if (projected > Math.min(height * 0.22, 140) || event.velocityY > 850) {
-            dismissing.value = true
-            offset.value = timing(height, { duration: 200 }, (finished) => {
-              'worklet'
-              if (finished) runOnJS(commit)()
-            })
+            runOnJS(requestDismiss)()
           } else {
             offset.value = spring(0, SHEET_SPRING)
           }
@@ -476,7 +471,7 @@ export function BottomSheet({
           dragging.value = false
           handle.value = spring(1, SWIPE_SPRING)
         }),
-    [busy, commit, dismissing, dragging, handle, height, offset, start]
+    [busy, dismissing, dragging, handle, height, offset, requestDismiss, start]
   )
   const backdrop = useAnimatedStyle(() => ({
     // Fade in with the reveal, then follow the card while it is dragged down.
@@ -488,7 +483,6 @@ export function BottomSheet({
   const cardMotion = useAnimatedStyle(() => ({
     transform: [{ translateY: offset.value }],
     opacity: reveal.value,
-    filter: [{ blur: (1 - reveal.value) * SHEET_REVEAL_BLUR }],
   }))
   const handleMotion = useAnimatedStyle(() => ({ transform: [{ scaleX: handle.value }] }))
   const header = (
@@ -534,7 +528,7 @@ export function BottomSheet({
       <Pressable
         accessibilityLabel={`Dismiss ${title.toLowerCase()}`}
         disabled={busy}
-        onPress={() => dismiss()}
+        onPress={requestDismiss}
         style={StyleSheet.absoluteFill}
       />
       <KeyboardAvoidingView

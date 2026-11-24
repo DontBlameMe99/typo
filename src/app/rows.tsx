@@ -195,7 +195,7 @@ export const SearchResultRow = memo(
             {favorite ? (
               <Icon name="star" size={14} color={colors.accent} fill={colors.accent} />
             ) : null}
-            <Text numberOfLines={1} style={s.cardTime}>
+            <Text numberOfLines={1} maxFontSizeMultiplier={1.5} style={s.cardTime}>
               {folderPathLabel(parent, vaultName)}
             </Text>
           </View>
@@ -579,7 +579,11 @@ export const NoteCard = memo(
               {favorite ? (
                 <Icon name="star" size={14} color={colors.accent} fill={colors.accent} />
               ) : null}
-              {time ? <Text style={s.cardTime}>{time}</Text> : null}
+              {time ? (
+                <Text numberOfLines={1} maxFontSizeMultiplier={1.5} style={s.cardTime}>
+                  {time}
+                </Text>
+              ) : null}
             </View>
           ) : null}
         </View>

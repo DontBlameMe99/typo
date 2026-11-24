@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ScrollViewInstance } from 'react-native'
-import { Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import {
+  Alert,
+  Keyboard,
+  Linking,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Reanimated, {
   interpolateColor,
@@ -76,7 +85,7 @@ export function Settings({
   const dismiss = useRef<(after?: () => void) => void>(() => {})
   const custom = settings.customAccent
   const open = (url: string) => {
-    void Linking.openURL(url).catch(() => {})
+    void Linking.openURL(url).catch(() => Alert.alert('Cannot open link', url))
   }
   const shortCommit = appCommit ? appCommit.slice(0, 7) : null
   const amoled = useSharedValue(settings.amoled ? 1 : 0)
@@ -94,6 +103,13 @@ export function Settings({
     <>
       <Screen onClose={onClose} swipeBack dismissRef={dismiss}>
         <View style={s.screen}>
+          {persistenceError ? (
+            <View style={s.errorInset}>
+              <Text accessibilityLiveRegion="polite" style={[s.errorText, { flex: 0 }]}>
+                {persistenceError}
+              </Text>
+            </View>
+          ) : null}
           <ScrollView ref={scroll} contentContainerStyle={s.settingsBody}>
             {tab === 'library' ? (
               <View style={s.settingsGroup}>
@@ -147,6 +163,7 @@ export function Settings({
                 style={s.modeRow}
                 itemStyle={s.modeButton}
                 textStyle={s.modeText}
+                maxFontSizeMultiplier={1.25}
                 pillStyle={{ backgroundColor: colors.accent, borderRadius: 22 }}
                 inset={4}
                 activeColor={colors.onAccent}
@@ -161,7 +178,7 @@ export function Settings({
                   />
                 </View>
                 <View style={s.flavorDivider} />
-                <View style={s.flex}>
+                <View style={s.flavorDarkGroup}>
                   <View accessibilityRole="radiogroup" style={s.flavorDarkRow}>
                     {darkFlavorNames.map((flavor) => (
                       <FlavorOption
@@ -234,7 +251,6 @@ export function Settings({
                   <Reanimated.View style={[s.toggleThumb, toggleThumb]} />
                 </Reanimated.View>
               </Pressable>
-              {persistenceError && <Text style={s.errorText}>{persistenceError}</Text>}
             </View>
             {tab === 'about' ? (
               <View style={s.settingsGroup}>
@@ -320,6 +336,7 @@ export function Settings({
                 style={s.noteSegments}
                 itemStyle={s.noteSegment}
                 textStyle={s.settingsSegmentText}
+                maxFontSizeMultiplier={1}
                 pillStyle={{ backgroundColor: colors.accent, borderRadius: 19 }}
                 inset={5}
                 activeColor={colors.onAccent}
@@ -431,7 +448,11 @@ function FlavorOption({
         <View style={[s.flavorDot, { backgroundColor: dot }]} />
         <View style={[s.flavorBar, { backgroundColor: preview.text }]} />
       </View>
-      <Text style={[s.flavorText, selected && s.flavorTextSelected]}>
+      <Text
+        maxFontSizeMultiplier={1}
+        numberOfLines={1}
+        style={[s.flavorText, selected && s.flavorTextSelected]}
+      >
         {flavor === 'frappe' ? 'Frappé' : flavor.charAt(0).toUpperCase() + flavor.slice(1)}
       </Text>
     </Pressable>
