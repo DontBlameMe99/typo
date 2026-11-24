@@ -1,4 +1,4 @@
-import { Edit, Language, Parser, Query, type Tree } from 'web-tree-sitter'
+import { Edit, Language, type Node, Parser, Query, type Range, type Tree } from 'web-tree-sitter'
 import { typstHighlights } from './highlights'
 
 export type Highlight = { from: number; to: number; style: string }
@@ -152,48 +152,131 @@ const byPrecedence = (a: Span, b: Span) =>
 
 export class TypstSyntax {
   private tree: Tree | null = null
+  private viewTree: Tree | null = null
+  private viewRange = { from: 0, to: 0 }
+  private dirtyFrom = Infinity
+  private dirtyTo = Infinity
   private source = ''
   private starts = [0]
   private parser: Parser
   private query: Query
-
   constructor(language: Language) {
     this.parser = parserFor(language)
     this.query = queryFor(language)
   }
+  private updateSource(source: string): void {
+    if (source === this.source) return
+    if (this.tree) {
+      const span = changedSpan(this.source, source)
+      const oldEndPosition = pointAt(this.starts, span.oldEndIndex)
+      updateStarts(this.starts, source, span.startIndex, span.oldEndIndex, span.newEndIndex)
+      this.tree.edit(
+        new Edit({
+          ...span,
+          startPosition: pointAt(this.starts, span.startIndex),
+          oldEndPosition,
+          newEndPosition: pointAt(this.starts, span.newEndIndex),
+        })
+      )
+      const shifted = span.newEndIndex - span.oldEndIndex
+      const map = (at: number) =>
+        at <= span.startIndex ? at : at >= span.oldEndIndex ? at + shifted : span.newEndIndex
+      this.dirtyFrom = Math.min(map(this.dirtyFrom), span.startIndex)
+      this.dirtyTo = Math.max(map(this.dirtyTo), span.newEndIndex)
+    } else {
+      if (this.viewTree) {
+        const span = changedSpan(this.source, source)
+        updateStarts(this.starts, source, span.startIndex, span.oldEndIndex, span.newEndIndex)
+      } else this.starts = lineStarts(source)
+    }
+    this.viewTree?.delete()
+    this.viewTree = null
+    this.source = source
+  }
+
+  private parse(source: string, range?: { from: number; to: number }): Tree {
+    const includedRanges: Range[] | undefined = range
+      ? [
+          {
+            startIndex: range.from,
+            endIndex: range.to,
+            startPosition: pointAt(this.starts, range.from),
+            endPosition: pointAt(this.starts, range.to),
+          },
+        ]
+      : undefined
+    const tree = this.parser.parse(
+      (index) => parseChunk(source, index, this.starts),
+      null,
+      includedRanges ? { includedRanges } : undefined
+    )
+    if (!tree) throw new Error('Unable to parse this note.')
+    return tree
+  }
+
+  private setFullTree(tree: Tree): Tree {
+    this.viewTree?.delete()
+    this.viewTree = null
+    this.tree?.delete()
+    this.tree = tree
+    this.dirtyFrom = Infinity
+    this.dirtyTo = Infinity
+    return tree
+  }
+
+  // A full tree supplies safe top-level boundaries. Parsing between two of them
+  // keeps viewport colors identical without reparsing the rest of a huge note.
+  private windowRange(
+    tree: Tree,
+    range: { from: number; to: number }
+  ): { from: number; to: number } {
+    const children = tree.rootNode.children
+    const overlaps = (node: Node) =>
+      node.startIndex < this.dirtyTo && node.endIndex > this.dirtyFrom
+    let first = 0
+    while (first < children.length && children[first].endIndex <= range.from) first++
+    while (first >= 0 && first < children.length && overlaps(children[first])) first--
+    let last = children.length - 1
+    while (last >= 0 && children[last].startIndex >= range.to) last--
+    while (last < children.length && last >= 0 && overlaps(children[last])) last++
+    const from = first < 0 ? 0 : children[first].startIndex
+    const to =
+      last >= children.length || children.length === 0
+        ? this.source.length
+        : children[last].endIndex
+    return { from, to }
+  }
+
+  private treeFor(source: string, range: { from: number; to: number }): Tree {
+    this.updateSource(source)
+    if (this.viewTree && range.from >= this.viewRange.from && range.to <= this.viewRange.to)
+      return this.viewTree
+    if (this.tree && this.dirtyFrom === Infinity) return this.tree
+    if (!this.tree) {
+      if (range.from === 0 || (this.viewTree && range.from < this.viewRange.to)) {
+        const to = Math.min(source.length, range.to + 4096)
+        const tree = this.parse(source, { from: 0, to })
+        if (to === source.length) return this.setFullTree(tree)
+        this.viewTree = tree
+        this.viewRange = { from: 0, to }
+        return tree
+      }
+      return this.setFullTree(this.parse(source))
+    }
+    const window = this.windowRange(this.tree, range)
+    if (window.from === 0 && window.to === source.length)
+      return this.setFullTree(this.parse(source))
+    const tree = this.parse(source, window)
+    this.viewTree?.delete()
+    this.viewTree = tree
+    this.viewRange = window
+    return tree
+  }
 
   highlights(source: string, range = { from: 0, to: source.length }): Highlight[] {
-    if (!this.tree || source !== this.source) {
-      let starts: number[]
-      let tree: Tree | null
-      if (this.tree) {
-        const span = changedSpan(this.source, source)
-        starts = this.starts
-        // The end of the change is a position in the old text, so it is read
-        // before the starts array is patched to describe the new one.
-        const oldEndPosition = pointAt(starts, span.oldEndIndex)
-        updateStarts(starts, source, span.startIndex, span.oldEndIndex, span.newEndIndex)
-        this.tree.edit(
-          new Edit({
-            ...span,
-            startPosition: pointAt(starts, span.startIndex),
-            oldEndPosition,
-            newEndPosition: pointAt(starts, span.newEndIndex),
-          })
-        )
-        tree = this.parser.parse((index) => parseChunk(source, index, starts), this.tree)
-      } else {
-        starts = lineStarts(source)
-        tree = this.parser.parse((index) => parseChunk(source, index, starts), null)
-      }
-      if (!tree) throw new Error('Unable to parse this note.')
-      this.tree?.delete()
-      this.tree = tree
-      this.source = source
-      this.starts = starts
-    }
     if (range.from === range.to) return []
-    const captures = this.query.captures(this.tree.rootNode, {
+    const tree = this.treeFor(source, range)
+    const captures = this.query.captures(tree.rootNode, {
       startPosition: pointAt(this.starts, range.from),
       endPosition: pointAt(this.starts, range.to),
     })
@@ -234,6 +317,7 @@ export class TypstSyntax {
   }
 
   destroy() {
+    this.viewTree?.delete()
     this.tree?.delete()
   }
 }

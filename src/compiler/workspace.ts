@@ -157,15 +157,17 @@ export class PdfWorkspace {
           if (this.errors.delete('inputs')) for (const listener of this.inputListeners) listener()
         } else {
           const hashes = new Map<string, string>()
+          const contentHashes = new Map<string, string>()
           let lastYield = performance.now()
           for (const file of files) {
             const previousHash = previous?.hashes.get(file.path)
-            hashes.set(
-              file.path,
-              previousHash && previous?.contents.get(file.path) === file.base64
-                ? previousHash
-                : await fingerprintAsync(file.base64)
-            )
+            const unchanged = previousHash && previous?.contents.get(file.path) === file.base64
+            let hash = unchanged ? previousHash : contentHashes.get(file.base64)
+            if (!hash) {
+              hash = await fingerprintAsync(file.base64)
+              contentHashes.set(file.base64, hash)
+            }
+            hashes.set(file.path, hash)
             if (performance.now() - lastYield >= 8) {
               await new Promise<void>((resolve) => setTimeout(resolve, 0))
               lastYield = performance.now()
