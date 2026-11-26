@@ -2,7 +2,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
 import { createCompiler, initializeCompiler } from '../src/compiler/engine'
 import { fingerprint } from '../src/compiler/fingerprint'
 import { PdfWorkspace } from '../src/compiler/workspace'
-import { createNoteSearch, notePreview, sortNotes } from '../src/core'
+import { createNoteSearch, notePreview, noteTime, sortNotes } from '../src/core'
 import { applyEditorChange, editorMessage } from '../src/editor/protocol'
 import { TypstSyntax, typstLanguage } from '../src/editor/syntax'
 import { parseVaultIndex, serializeVaultIndex } from '../src/library-index'
@@ -198,6 +198,23 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
     },
     () => {
       for (const note of previewNotes) notePreview({ ...note })
+    }
+  )
+  const cardNow = Date.UTC(2026, 10, 25, 12)
+  const cardTimes = Array.from(
+    { length: 1000 },
+    (_, index) => cardNow - (6 + (index % 365)) * 86_400_000
+  )
+  await measure(
+    {
+      name: 'library/1000/card-dates',
+      criterion: 'format a thousand card dates within one frame',
+      budgetMs: FRAME_MS,
+      samples: 20,
+      warmup: 1,
+    },
+    () => {
+      for (const modifiedAt of cardTimes) noteTime(modifiedAt, cardNow)
     }
   )
   const editorBase = Array.from(

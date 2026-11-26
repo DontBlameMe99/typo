@@ -544,6 +544,7 @@ export const NoteCard = memo(
     onTrash,
   }: {
     result: SearchResult
+    dateRevision: number
     favorite: boolean
     onPressIn: (result: SearchResult) => void
     onPress: (result: SearchResult) => void
@@ -597,6 +598,7 @@ export const NoteCard = memo(
   },
   (previous, next) =>
     previous.result.note === next.result.note &&
+    previous.dateRevision === next.dateRevision &&
     previous.favorite === next.favorite &&
     previous.onPressIn === next.onPressIn &&
     previous.onPress === next.onPress &&

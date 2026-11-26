@@ -10,6 +10,7 @@ import {
   notePreview,
   noteTime,
   reconcileNotes,
+  resetDateFormatters,
   sortNotes,
 } from '../src/core'
 import type { Note } from '../src/types'
@@ -547,6 +548,29 @@ describe('relative note time', () => {
         year: 'numeric',
       })
     )
+  })
+  test('rebuilds shared date formatters when system settings change', () => {
+    const Original = Intl.DateTimeFormat
+    let constructions = 0
+    class CountingFormatter extends Original {
+      constructor(...args: ConstructorParameters<typeof Original>) {
+        super(...args)
+        constructions++
+      }
+    }
+    Intl.DateTimeFormat = CountingFormatter as unknown as typeof Intl.DateTimeFormat
+    try {
+      resetDateFormatters()
+      expect(constructions).toBe(3)
+      const expected = noteTime(new Date(2025, 9, 28, 9).getTime(), now)
+      expect(constructions).toBe(3)
+      resetDateFormatters()
+      expect(constructions).toBe(6)
+      expect(noteTime(new Date(2025, 9, 28, 9).getTime(), now)).toBe(expected)
+    } finally {
+      Intl.DateTimeFormat = Original
+      resetDateFormatters()
+    }
   })
   test('a clock that runs backwards still reads as just now', () => {
     expect(noteTime(now + 5_000, now)).toBe('Just now')

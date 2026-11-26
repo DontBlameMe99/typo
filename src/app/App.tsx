@@ -5,9 +5,10 @@ import { loadAsync as loadFontAssets } from 'expo-font'
 import * as SplashScreen from 'expo-splash-screen'
 import * as SystemUI from 'expo-system-ui'
 import { useCallback, useEffect, useState } from 'react'
-import { StatusBar, View } from 'react-native'
+import { AppState, StatusBar, View } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context'
+import { resetDateFormatters } from '../core'
 import { TypoMark } from '../Mark'
 import { markStartup } from '../startup'
 import { ThemeProvider, useTheme } from '../theme'
@@ -59,8 +60,21 @@ export default function App() {
 function AppShell({ loaded }: { loaded: boolean }) {
   const { colors, isDark, ready } = useTheme()
   const [libraryReady, setLibraryReady] = useState(false)
+  const [dateRevision, setDateRevision] = useState(0)
   const launched = loaded && ready && libraryReady
   const markLibraryReady = useCallback(() => setLibraryReady(true), [])
+  useEffect(() => {
+    // Activity recreation can preserve JS while the locale or time zone changes.
+    const refresh = () => {
+      resetDateFormatters()
+      setDateRevision((value) => value + 1)
+    }
+    refresh()
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refresh()
+    })
+    return () => subscription.remove()
+  }, [])
   useEffect(() => {
     void SystemUI.setBackgroundColorAsync(colors.paper).catch(() => {})
   }, [colors.paper])
@@ -77,7 +91,9 @@ function AppShell({ loaded }: { loaded: boolean }) {
         The library loads behind the launch screen, so its first frame is a painted list. It
         waits for the fonts because text measured without them stays wrapped once they load.
       */}
-      {ready && loaded ? <Library onReady={markLibraryReady} visible={launched} /> : null}
+      {ready && loaded ? (
+        <Library onReady={markLibraryReady} visible={launched} dateRevision={dateRevision} />
+      ) : null}
       {!launched && <LaunchScreen overlay />}
     </DialogHost>
   )

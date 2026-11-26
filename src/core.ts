@@ -157,6 +157,16 @@ const WEEKDAY = { weekday: 'short' } as const
 const MONTH_DAY = { month: 'short', day: 'numeric' } as const
 const MONTH_DAY_YEAR = { month: 'short', day: 'numeric', year: 'numeric' } as const
 
+let weekdayFormatter = new Intl.DateTimeFormat(undefined, WEEKDAY)
+let monthDayFormatter = new Intl.DateTimeFormat(undefined, MONTH_DAY)
+let monthDayYearFormatter = new Intl.DateTimeFormat(undefined, MONTH_DAY_YEAR)
+
+export function resetDateFormatters(): void {
+  weekdayFormatter = new Intl.DateTimeFormat(undefined, WEEKDAY)
+  monthDayFormatter = new Intl.DateTimeFormat(undefined, MONTH_DAY)
+  monthDayYearFormatter = new Intl.DateTimeFormat(undefined, MONTH_DAY_YEAR)
+}
+
 function startOfDay(time: number): number {
   const date = new Date(time)
   date.setHours(0, 0, 0, 0)
@@ -180,10 +190,9 @@ export function noteTime(modifiedAt: number | null, now = Date.now()): string {
   const days = dayDistance(now, modifiedAt)
   const date = new Date(modifiedAt)
   if (days === 1) return 'Yesterday'
-  if (days < 6) return date.toLocaleDateString(undefined, WEEKDAY)
-  if (date.getFullYear() === new Date(now).getFullYear())
-    return date.toLocaleDateString(undefined, MONTH_DAY)
-  return date.toLocaleDateString(undefined, MONTH_DAY_YEAR)
+  if (days < 6) return weekdayFormatter.format(date)
+  if (date.getFullYear() === new Date(now).getFullYear()) return monthDayFormatter.format(date)
+  return monthDayYearFormatter.format(date)
 }
 
 export function extractTitle(source: string, fallback: string): string {
