@@ -132,7 +132,15 @@ const readLaunchLibrary = (): LaunchLibrary => {
   }
 }
 
-export function Library({ onReady, visible }: { onReady: () => void; visible: boolean }) {
+export function Library({
+  onReady,
+  visible,
+  dateRevision,
+}: {
+  onReady: () => void
+  visible: boolean
+  dateRevision: number
+}) {
   const s = useStyles()
   const { top, right, bottom, left } = useSafeAreaInsets()
   const { colors, palette } = useTheme()
@@ -1118,6 +1126,7 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
       return (
         <NoteCard
           result={item.result}
+          dateRevision={dateRevision}
           favorite={favoritePaths.has(item.result.note.path)}
           onPressIn={prepareNote}
           onPress={openNote}
@@ -1128,6 +1137,7 @@ export function Library({ onReady, visible }: { onReady: () => void; visible: bo
       )
     },
     [
+      dateRevision,
       favoriteFolderItem,
       favoriteNoteItem,
       favoritePaths,
