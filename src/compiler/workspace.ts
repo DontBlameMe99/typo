@@ -220,9 +220,10 @@ export class PdfWorkspace {
   }
 
   render(note: Note, source: string, priority = true): Promise<PdfPreview> {
-    if (!priority) return this.enqueue(note, source, false)
-    return this.cachedPreview(note, source).then(
-      (preview) => preview ?? this.enqueue(note, source, true)
+    const sourceHash = fingerprint(source)
+    if (!priority) return this.enqueue(note, source, false, sourceHash)
+    return this.cachedPreview(note, source, sourceHash).then(
+      (preview) => preview ?? this.enqueue(note, source, true, sourceHash)
     )
   }
 
@@ -241,12 +242,15 @@ export class PdfWorkspace {
     )
   }
 
-  private async cachedPreview(note: Note, source: string): Promise<PdfPreview | null> {
+  private async cachedPreview(
+    note: Note,
+    source: string,
+    sourceHash: string
+  ): Promise<PdfPreview | null> {
     const snapshot = this.snapshot
     if (!snapshot || this.errors.has('inputs') || this.invalidated.has(note.path)) return null
     const failed = this.failures.get(note.path)
     if (failed?.source === source && failed.snapshot === snapshot) return null
-    const sourceHash = fingerprint(source)
     let record = this.records.get(note.path)
     if (!record || record.sourceHash !== sourceHash) {
       record = (await this.options.storage.read(note.path)) ?? undefined
@@ -351,9 +355,14 @@ export class PdfWorkspace {
     }
   }
 
-  private enqueue(note: Note, source: string, priority: boolean): Promise<PdfPreview> {
+  private enqueue(
+    note: Note,
+    source: string,
+    priority: boolean,
+    sourceHash: string
+  ): Promise<PdfPreview> {
     if (this.disposed) return Promise.reject(new Error('The workspace was closed.'))
-    const key = `${this.revision}:${note.uri}:${fingerprint(source)}`
+    const key = `${this.revision}:${note.uri}:${sourceHash}`
     const existing = this.pending.get(key)
     if (existing) {
       if (priority) {
@@ -381,7 +390,6 @@ export class PdfWorkspace {
             throw new Error(this.errors.get('inputs') || 'Cannot read compiler inputs.')
           const failed = this.failures.get(note.path)
           if (failed?.source === source && failed.snapshot === snapshot) throw failed.error
-          const sourceHash = fingerprint(source)
           let record = await this.readRecord(note, sourceHash, snapshot)
           if (!record) record = await this.compileRecord(note, source, sourceHash, snapshot)
           if (this.disposed) throw new Error('The workspace was closed.')
