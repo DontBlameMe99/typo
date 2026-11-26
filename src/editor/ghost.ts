@@ -21,14 +21,23 @@ const TAIL = 4_000
 
 const setGhost = StateEffect.define<GhostSuggestion | null>()
 
+// If highlighting stalls, stop retaining edit history and suppress ghost
+// suggestions until fresh syntax ranges arrive.
+const MAX_SYNTAX_STEPS = 32
 // The highlighting plugin already knows which spans are comments, strings,
 // and raw text. Keep its latest ranges so a caret inside a multi-line literal
 // does not need a second scan of the note.
-type SyntaxSnapshot = { doc: Text; ranges: readonly Highlight[] }
+type SyntaxStep = { changes: ChangeSet; inverse: ChangeSet }
+type SyntaxSnapshot = {
+  doc: Text
+  ranges: readonly Highlight[]
+  steps: SyntaxStep[]
+  stale: boolean
+}
 const syntaxSnapshots = new WeakMap<EditorView, SyntaxSnapshot>()
 
 export function setSyntaxRanges(view: EditorView, doc: Text, ranges: readonly Highlight[]) {
-  syntaxSnapshots.set(view, { doc, ranges })
+  syntaxSnapshots.set(view, { doc, ranges, steps: [], stale: false })
 }
 
 export function mapSyntaxRanges(view: EditorView, oldDoc: Text, doc: Text, changes: ChangeSet) {
@@ -37,19 +46,27 @@ export function mapSyntaxRanges(view: EditorView, oldDoc: Text, doc: Text, chang
     syntaxSnapshots.delete(view)
     return
   }
-  syntaxSnapshots.set(view, {
-    doc,
-    ranges: snapshot.ranges.map(({ from, to, style }) => ({
-      from: changes.mapPos(from, 1),
-      to: changes.mapPos(to, -1),
-      style,
-    })),
-  })
+  snapshot.doc = doc
+  if (snapshot.stale) return
+  if (snapshot.steps.length >= MAX_SYNTAX_STEPS) {
+    snapshot.steps.length = 0
+    snapshot.ranges = []
+    snapshot.stale = true
+    return
+  }
+  snapshot.steps.push({ changes, inverse: changes.invert(oldDoc) })
 }
 
 function inLiteral(view: EditorView, pos: number): boolean {
   const snapshot = syntaxSnapshots.get(view)
-  return snapshot?.doc === view.state.doc && isLiteralPosition(snapshot.ranges, pos)
+  return (
+    snapshot?.doc === view.state.doc &&
+    (snapshot.stale || isLiteralPosition(snapshot.ranges, pos, snapshot.steps))
+  )
+}
+
+export function isSyntaxStale(view: EditorView): boolean {
+  return syntaxSnapshots.get(view)?.stale === true
 }
 
 class GhostText extends WidgetType {
@@ -118,6 +135,10 @@ const ghostField = StateField.define<GhostSuggestion | null>({
 function acceptGhost(view: EditorView): boolean {
   const ghost = view.state.field(ghostField, false)
   if (!ghost) return false
+  if (isSyntaxStale(view)) {
+    view.dispatch({ effects: setGhost.of(null) })
+    return true
+  }
   view.dispatch({
     changes: { from: ghost.pos, insert: ghost.text },
     selection: { anchor: ghost.pos + ghost.text.length },
@@ -185,6 +206,15 @@ const ghostPlugin = ViewPlugin.fromClass(
         const ghost = update.state.field(ghostField, false)
         if (ghost && update.state.selection.main.head === ghost.pos) {
           this.cancel()
+          if (isSyntaxStale(this.view))
+            queueMicrotask(() => {
+              if (
+                !this.disposed &&
+                isSyntaxStale(this.view) &&
+                this.view.state.field(ghostField, false)
+              )
+                this.view.dispatch({ effects: setGhost.of(null) })
+            })
           return
         }
       }

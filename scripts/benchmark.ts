@@ -1,8 +1,11 @@
+import { type ChangeSet, EditorState } from '@codemirror/state'
 import type { PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
 import { createCompiler, initializeCompiler } from '../src/compiler/engine'
 import { fingerprint } from '../src/compiler/fingerprint'
 import { PdfWorkspace } from '../src/compiler/workspace'
 import { createNoteSearch, notePreview, noteTime, sortNotes } from '../src/core'
+import { mapSyntaxRanges, setSyntaxRanges } from '../src/editor/ghost'
+import { isLiteralPosition } from '../src/editor/literal'
 import { applyEditorChange, editorMessage } from '../src/editor/protocol'
 import { TypstSyntax, typstLanguage } from '../src/editor/syntax'
 import { parseVaultIndex, serializeVaultIndex } from '../src/library-index'
@@ -243,6 +246,79 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
         change.from = source.length
         change.to = source.length
       }
+    }
+  )
+  const rangeSource = 'a'.repeat(200_000)
+  const highlightRanges = Array.from({ length: 20_000 }, (_, index) => ({
+    from: index * 10,
+    to: index * 10 + 8,
+    style: index % 3 === 0 ? 'comment' : index % 3 === 1 ? 'string' : 'number',
+  }))
+  const rangeView = {} as Parameters<typeof setSyntaxRanges>[0]
+  await measure(
+    {
+      name: 'editor/20000-ranges/map-stalled',
+      criterion: 'record a thousand edits while highlighting is stalled',
+      budgetMs: TWO_FRAMES_MS,
+      samples: 5,
+      warmup: 1,
+    },
+    () => {
+      let state = EditorState.create({ doc: rangeSource })
+      setSyntaxRanges(rangeView, state.doc, highlightRanges)
+      for (let index = 0; index < 1000; index++) {
+        const transaction = state.update({
+          changes: { from: rangeSource.length + index, insert: 'x' },
+        })
+        state = transaction.state
+        mapSyntaxRanges(rangeView, transaction.startState.doc, state.doc, transaction.changes)
+      }
+    }
+  )
+  await measure(
+    {
+      name: 'editor/20000-ranges/map',
+      criterion: 'record a thousand edits with fresh ranges every 32 edits',
+      budgetMs: TWO_FRAMES_MS,
+      samples: 5,
+      warmup: 1,
+    },
+    () => {
+      let state = EditorState.create({ doc: rangeSource })
+      setSyntaxRanges(rangeView, state.doc, highlightRanges)
+      for (let index = 0; index < 1000; index++) {
+        const transaction = state.update({
+          changes: { from: rangeSource.length + index, insert: 'x' },
+        })
+        state = transaction.state
+        mapSyntaxRanges(rangeView, transaction.startState.doc, state.doc, transaction.changes)
+        if (index % 32 === 31) setSyntaxRanges(rangeView, state.doc, highlightRanges)
+      }
+    }
+  )
+  const literalSteps: { changes: ChangeSet; inverse: ChangeSet }[] = []
+  let literalState = EditorState.create({ doc: rangeSource })
+  for (let index = 0; index < 32; index++) {
+    const transaction = literalState.update({
+      changes: { from: rangeSource.length + index, insert: 'x' },
+    })
+    literalSteps.push({
+      changes: transaction.changes,
+      inverse: transaction.changes.invert(transaction.startState.doc),
+    })
+    literalState = transaction.state
+  }
+  await measure(
+    {
+      name: 'editor/20000-ranges/literal',
+      criterion: 'check a thousand caret positions with 32 pending edits',
+      budgetMs: FRAME_MS,
+      samples: 10,
+      warmup: 1,
+    },
+    () => {
+      for (let index = 0; index < 1000; index++)
+        isLiteralPosition(highlightRanges, (index * 19) % literalState.doc.length, literalSteps)
     }
   )
   const language = await typstLanguage(
