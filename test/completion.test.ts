@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { type ChangeSet, EditorState, Text } from '@codemirror/state'
+import type { EditorView } from '@codemirror/view'
 import {
   commandCompletion,
   commandCompletionAt,
   commandPrefix,
   localSymbols,
 } from '../src/editor/completion'
+import { isSyntaxStale, mapSyntaxRanges, setSyntaxRanges } from '../src/editor/ghost'
 import { isLiteralPosition } from '../src/editor/literal'
 
 const suggestion = (lineBefore: string, context = '', lineAfter = '') =>
@@ -160,6 +162,20 @@ describe('literal positions', () => {
       for (let pos = 0; pos <= state.doc.length; pos++)
         expect(isLiteralPosition(ranges, pos, steps)).toBe(isLiteralPosition(mapped, pos))
     }
+  })
+  test('drops stale syntax history and recovers with fresh ranges', () => {
+    const source = 'a'.repeat(100)
+    const view = {} as EditorView
+    let state = EditorState.create({ doc: source })
+    setSyntaxRanges(view, state.doc, [{ from: 10, to: 20, style: 'string' }])
+    for (let index = 0; index < 33; index++) {
+      const transaction = state.update({ changes: { from: source.length + index, insert: 'x' } })
+      state = transaction.state
+      mapSyntaxRanges(view, transaction.startState.doc, state.doc, transaction.changes)
+    }
+    expect(isSyntaxStale(view)).toBe(true)
+    setSyntaxRanges(view, state.doc, [{ from: 10, to: 20, style: 'string' }])
+    expect(isSyntaxStale(view)).toBe(false)
   })
 })
 

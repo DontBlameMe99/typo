@@ -257,8 +257,8 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
   const rangeView = {} as Parameters<typeof setSyntaxRanges>[0]
   await measure(
     {
-      name: 'editor/20000-ranges/map',
-      criterion: 'record a thousand edits without remapping every highlight',
+      name: 'editor/20000-ranges/map-stalled',
+      criterion: 'record a thousand edits while highlighting is stalled',
       budgetMs: TWO_FRAMES_MS,
       samples: 5,
       warmup: 1,
@@ -272,6 +272,27 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
         })
         state = transaction.state
         mapSyntaxRanges(rangeView, transaction.startState.doc, state.doc, transaction.changes)
+      }
+    }
+  )
+  await measure(
+    {
+      name: 'editor/20000-ranges/map',
+      criterion: 'record a thousand edits with fresh ranges every 32 edits',
+      budgetMs: TWO_FRAMES_MS,
+      samples: 5,
+      warmup: 1,
+    },
+    () => {
+      let state = EditorState.create({ doc: rangeSource })
+      setSyntaxRanges(rangeView, state.doc, highlightRanges)
+      for (let index = 0; index < 1000; index++) {
+        const transaction = state.update({
+          changes: { from: rangeSource.length + index, insert: 'x' },
+        })
+        state = transaction.state
+        mapSyntaxRanges(rangeView, transaction.startState.doc, state.doc, transaction.changes)
+        if (index % 32 === 31) setSyntaxRanges(rangeView, state.doc, highlightRanges)
       }
     }
   )

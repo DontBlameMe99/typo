@@ -65,6 +65,10 @@ function inLiteral(view: EditorView, pos: number): boolean {
   )
 }
 
+export function isSyntaxStale(view: EditorView): boolean {
+  return syntaxSnapshots.get(view)?.stale === true
+}
+
 class GhostText extends WidgetType {
   constructor(readonly text: string) {
     super()
@@ -131,6 +135,10 @@ const ghostField = StateField.define<GhostSuggestion | null>({
 function acceptGhost(view: EditorView): boolean {
   const ghost = view.state.field(ghostField, false)
   if (!ghost) return false
+  if (isSyntaxStale(view)) {
+    view.dispatch({ effects: setGhost.of(null) })
+    return true
+  }
   view.dispatch({
     changes: { from: ghost.pos, insert: ghost.text },
     selection: { anchor: ghost.pos + ghost.text.length },
@@ -198,6 +206,15 @@ const ghostPlugin = ViewPlugin.fromClass(
         const ghost = update.state.field(ghostField, false)
         if (ghost && update.state.selection.main.head === ghost.pos) {
           this.cancel()
+          if (isSyntaxStale(this.view))
+            queueMicrotask(() => {
+              if (
+                !this.disposed &&
+                isSyntaxStale(this.view) &&
+                this.view.state.field(ghostField, false)
+              )
+                this.view.dispatch({ effects: setGhost.of(null) })
+            })
           return
         }
       }
