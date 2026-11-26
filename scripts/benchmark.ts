@@ -528,6 +528,45 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
   } finally {
     workspace.dispose()
   }
+  const largeSource = 'abc'.repeat(170_000)
+  const largeNote: Note = {
+    uri: 'content://large',
+    path: 'large.typ',
+    title: 'Large note',
+    source: largeSource,
+    modifiedAt: 1,
+  }
+  await measure(
+    {
+      name: 'workspace/510kb/render',
+      criterion: 'hash a large note once per preview request',
+      budgetMs: TWO_FRAMES_MS,
+      samples: 10,
+      warmup: 1,
+    },
+    async () => {
+      const previewWorkspace = new PdfWorkspace({
+        readFiles: async () => [],
+        compile: async () => ({ base64: 'cGRm', dependencies: [] }),
+        storage: {
+          read: async () => null,
+          save: async () => {},
+          cache: async () => 'file://record',
+          base64: async () => 'cGRm',
+          stamp: async () => 'stamp',
+          write: async () => 'file://output',
+          hash: async () => {},
+        },
+      })
+      try {
+        await previewWorkspace.refresh()
+        const preview = await previewWorkspace.render(largeNote, largeSource)
+        if (!preview.uri) throw new Error('Missing preview')
+      } finally {
+        previewWorkspace.dispose()
+      }
+    }
+  )
   // The first library frame after launch: parsing the cached index and building
   // the root rows. Native reads are outside this measurement, so a regression
   // here is JS work that blocks the first paint on every device.
