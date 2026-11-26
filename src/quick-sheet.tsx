@@ -179,3 +179,47 @@ function quickStyles(colors: ReturnType<typeof useTheme>['colors'], bottom: numb
     errorInset: { paddingHorizontal: 4, marginBottom: 12 },
   })
 }
+
+export function useQuickFormStyles(bodyMinHeight: number) {
+  const { colors } = useTheme()
+  return useMemo(() => formStyles(colors, bodyMinHeight), [colors, bodyMinHeight])
+}
+
+export function quickErrorText(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback
+}
+
+function formStyles(colors: ReturnType<typeof useTheme>['colors'], bodyMinHeight: number) {
+  return StyleSheet.create({
+    form: { paddingTop: 24, paddingHorizontal: 20, paddingBottom: 40, flexGrow: 1 },
+    title: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 32,
+      lineHeight: 38,
+      letterSpacing: -0.8,
+      color: colors.ink,
+      padding: 0,
+    },
+    divider: { height: 1, backgroundColor: colors.line, marginVertical: 16 },
+    target: {
+      paddingBottom: 16,
+      marginBottom: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+    },
+    targetText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 14,
+      color: colors.muted,
+    },
+    body: {
+      flex: 1,
+      minHeight: bodyMinHeight,
+      padding: 0,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 18,
+      lineHeight: 27,
+      color: colors.ink,
+    },
+  })
+}

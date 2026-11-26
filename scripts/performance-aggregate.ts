@@ -2,23 +2,16 @@
 
 import { mkdir, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { Measurement } from './benchmark'
 
 const input = process.argv[2] ?? 'performance/raw'
 const output = process.argv[3] ?? 'performance'
 const rounds = Number(process.argv[4] ?? 3)
 const RUN = /^([0-9a-f]{40})-(\d+)\.json$/u
 
-type Result = {
-  name: string
-  criterion: string
-  budgetMs: number
-  samples: number
-  repeat: number
-  medianMs: number
+type Result = Measurement & {
   worstMedianMs: number
-  p95Ms: number
   worstP95Ms: number
-  maxTimerGapMs: number
   worstTimerGapMs: number
   noisePercent: number
 }

@@ -1,14 +1,8 @@
 import { expect, test } from 'bun:test'
 import { SearchTransport } from '../src/search/protocol'
-import type { Note } from '../src/types'
+import { makeNote } from './helpers/note'
 
-const note: Note = {
-  uri: 'content://one',
-  path: 'one.typ',
-  title: 'One',
-  source: '= One',
-  modifiedAt: null,
-}
+const note = makeNote()
 
 test('search sends source once and sends only queries on subsequent keystrokes', () => {
   const transport = new SearchTransport()

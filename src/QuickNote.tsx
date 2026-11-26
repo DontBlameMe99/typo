@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   AppState,
@@ -7,14 +7,20 @@ import {
   KeyboardAvoidingView,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native'
 import { ErrorBanner } from './ErrorBanner'
 import { finishQuickNote } from './quick-note-native'
-import { QuickSheetRoot, QuickToolbar, useQuickSheet, useQuickStyles } from './quick-sheet'
+import {
+  QuickSheetRoot,
+  QuickToolbar,
+  quickErrorText,
+  useQuickFormStyles,
+  useQuickSheet,
+  useQuickStyles,
+} from './quick-sheet'
 import { useTheme } from './theme'
 import type { Vault } from './types'
 import { createNote, readSavedVault, readTemplate } from './vault'
@@ -37,7 +43,7 @@ type TemplateResult = { source: string } | { error: unknown }
 function QuickNote() {
   const { colors, ready } = useTheme()
   const s = useQuickStyles()
-  const f = useFormStyles()
+  const f = useQuickFormStyles(180)
   const [state, setState] = useState<VaultState>({ kind: 'loading' })
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -65,7 +71,8 @@ function QuickNote() {
         )
         setState({ kind: 'ready', vault })
       } catch (cause) {
-        if (alive.current) setState({ kind: 'error', message: message(cause) })
+        if (alive.current)
+          setState({ kind: 'error', message: quickErrorText(cause, 'Could not create the note.') })
       }
     })()
     return () => {
@@ -97,7 +104,7 @@ function QuickNote() {
         finishQuickNote()
         return
       }
-      setError(message(cause))
+      setError(quickErrorText(cause, 'Could not create the note.'))
       setSaving(false)
     }
   }
@@ -191,37 +198,4 @@ function QuickNote() {
       </View>
     </KeyboardAvoidingView>
   )
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : 'Could not create the note.'
-}
-
-function useFormStyles() {
-  const { colors } = useTheme()
-  return useMemo(() => formStyles(colors), [colors])
-}
-
-function formStyles(colors: ReturnType<typeof useTheme>['colors']) {
-  return StyleSheet.create({
-    form: { paddingTop: 24, paddingHorizontal: 20, paddingBottom: 40, flexGrow: 1 },
-    title: {
-      fontFamily: 'DMSans_600SemiBold',
-      fontSize: 32,
-      lineHeight: 38,
-      letterSpacing: -0.8,
-      color: colors.ink,
-      padding: 0,
-    },
-    divider: { height: 1, backgroundColor: colors.line, marginVertical: 16 },
-    body: {
-      flex: 1,
-      minHeight: 180,
-      padding: 0,
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 18,
-      lineHeight: 27,
-      color: colors.ink,
-    },
-  })
 }

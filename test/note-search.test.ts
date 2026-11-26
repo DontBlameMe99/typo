@@ -2,6 +2,7 @@ import { expect, mock, test } from 'bun:test'
 import { runInNewContext } from 'node:vm'
 import type { ComponentProps } from 'react'
 import type { NoteSearch } from '../src/NoteSearch'
+import { makeNote } from './helpers/note'
 
 const bundle = await Bun.build({
   entrypoints: ['src/NoteSearch.tsx'],
@@ -343,13 +344,7 @@ test('a query typed before the first boot still gets a deadline', async () => {
 })
 
 test('a note change during a search does not push the deadline back', async () => {
-  const note = {
-    uri: 'content://one',
-    path: 'one.typ',
-    title: 'One',
-    source: '= One',
-    modifiedAt: null,
-  }
+  const note = makeNote()
   const api = search({ notes: [note], query: 'query', mode: 'all' })
   await api.settle()
   api.boot()

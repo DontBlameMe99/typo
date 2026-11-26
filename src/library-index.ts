@@ -17,7 +17,14 @@ export type VaultIndex = {
   folders: string[]
 }
 
-export function parseVaultIndex(text: string, vault: Vault): VaultIndex | null {
+type IndexHeader = {
+  notes: Note[]
+  folders: string[]
+  lengths: number[]
+  offset: number
+}
+
+function readIndexHeader(text: string, vault: Vault): IndexHeader | null {
   const end = text.indexOf('\n')
   // A header line always precedes the sources. Anything else is a cache written
   // by another build or a truncated file, which reads as no cache and rebuilds
@@ -33,11 +40,19 @@ export function parseVaultIndex(text: string, vault: Vault): VaultIndex | null {
     if (lengths.length !== notes.length) return null
     for (let index = 0; index < folders.length; index++)
       if (typeof folders[index] !== 'string') return null
-    const prefix = `${vault.uri}/document/`
-    let offset = end + 1
-    for (let index = 0; index < notes.length; index++) {
-      const note = notes[index]
-      const length = lengths[index]
+    return { notes, folders, lengths, offset: end + 1 }
+  } catch {
+    return null
+  }
+}
+
+function hydrateIndexSources(header: IndexHeader, text: string, vault: Vault): VaultIndex | null {
+  const prefix = `${vault.uri}/document/`
+  let offset = header.offset
+  try {
+    for (let index = 0; index < header.notes.length; index++) {
+      const note = header.notes[index]
+      const length = header.lengths[index]
       if (
         !note ||
         typeof note.path !== 'string' ||
@@ -55,10 +70,15 @@ export function parseVaultIndex(text: string, vault: Vault): VaultIndex | null {
     // The lengths must describe the sources exactly. A shorter or longer tail
     // means the file was written by something that does not share this format.
     if (offset !== text.length) return null
-    return { notes, folders }
+    return { notes: header.notes, folders: header.folders }
   } catch {
     return null
   }
+}
+
+export function parseVaultIndex(text: string, vault: Vault): VaultIndex | null {
+  const header = readIndexHeader(text, vault)
+  return header ? hydrateIndexSources(header, text, vault) : null
 }
 
 export function serializeVaultIndex(vault: Vault, library: VaultIndex): string {

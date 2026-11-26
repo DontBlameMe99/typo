@@ -1,11 +1,9 @@
-import { File } from 'expo-file-system'
-import * as FileSystem from 'expo-file-system/legacy'
 import type { ReactNode } from 'react'
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { useColorScheme } from 'react-native'
-import { markStartup } from './startup'
 import type { ThemeSettings } from './theme-data'
-import { defaultThemeSettings, parseThemeSettings, resolveTheme } from './theme-data'
+import { parseThemeSettings, resolveTheme } from './theme-data'
+import { readTheme, saveError, writeTheme } from './theme-storage'
 
 export * from './theme-data'
 
@@ -16,35 +14,16 @@ type ThemeContextValue = ReturnType<typeof resolveTheme> & {
   persistenceError: string | null
 }
 const ThemeContext = createContext<ThemeContextValue | null>(null)
-const path = FileSystem.documentDirectory
-  ? `${FileSystem.documentDirectory}typo-appearance.json`
-  : null
-
-// The file is small and local, so the first render reads it instead of waiting
-// for an effect. That keeps the saved theme out of a second render pass.
-function readTheme(): { settings: ThemeSettings; error: string | null } {
-  markStartup('theme')
-  try {
-    if (!path) throw new Error('Appearance storage is unavailable.')
-    const file = new File(path)
-    if (!file.exists) return { settings: defaultThemeSettings, error: null }
-    return { settings: parseThemeSettings(JSON.parse(file.textSync())), error: null }
-  } catch {
-    return {
-      settings: defaultThemeSettings,
-      error: 'Could not restore appearance. Choose your settings again to save them.',
-    }
-  }
-}
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemDark = useColorScheme() === 'dark'
+  // The file is small and local, so the first render reads it instead of waiting
+  // for an effect. That keeps the saved theme out of a second render pass.
   // Read on each mount: the quick note sheet shares the runtime and must start
   // from the appearance the main app may have saved since startup.
   const [initialTheme] = useState(readTheme)
   const [settings, setSettings] = useState(initialTheme.settings)
   const [persistenceError, setPersistenceError] = useState<string | null>(initialTheme.error)
-  const writes = useRef(Promise.resolve())
 
   const updateSettings = useCallback((patch: Partial<ThemeSettings>) => {
     setSettings((previous) => parseThemeSettings({ ...previous, ...patch }))
@@ -52,18 +31,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
-    writes.current = writes.current.then(async () => {
-      try {
-        if (!path) throw new Error('Appearance storage is unavailable.')
-        await FileSystem.writeAsStringAsync(path, JSON.stringify(settings))
+    void writeTheme(settings).then(
+      () => {
         if (!cancelled) setPersistenceError(null)
-      } catch {
-        if (!cancelled)
-          setPersistenceError(
-            'Appearance could not be saved. Your selection still applies for this session.'
-          )
+      },
+      () => {
+        if (!cancelled) setPersistenceError(saveError)
       }
-    })
+    )
     return () => {
       cancelled = true
     }

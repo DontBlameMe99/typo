@@ -6,6 +6,7 @@ import {
   flavorNames,
   lightFlavorNames,
   luminance,
+  onColor,
   palettes,
   parseThemeSettings,
   resolveTheme,
@@ -144,7 +145,20 @@ describe('custom accent', () => {
     const theme = resolveTheme({ ...defaultThemeSettings, customAccent: '#FF9F43' }, true)
     expect(theme.colors.accent).toBe('#FF9F43')
     expect(theme.colors.sage).toBe('#FF9F43')
-    expect(theme.colors.onAccent).toBe(luminance('#FF9F43') > 0.179 ? '#000000' : '#ffffff')
+    expect(theme.colors.onAccent).toBe(onColor(theme.colors.accent))
+  })
+
+  test('uses the shared foreground helper at the luminance threshold', () => {
+    expect(luminance('#006CFE')).toBeLessThan(0.179)
+    expect(luminance('#006CFF')).toBeGreaterThan(0.179)
+    expect(onColor('#006CFE')).toBe('#ffffff')
+    expect(onColor('#006CFF')).toBe('#000000')
+
+    for (const customAccent of ['#006CFE', '#006CFF']) {
+      const { colors } = resolveTheme({ ...defaultThemeSettings, customAccent }, false)
+      expect(colors.accent).toBe(customAccent)
+      expect(colors.onAccent).toBe(onColor(colors.accent))
+    }
   })
 
   test('rejects invalid values and falls back to the named accent', () => {
@@ -308,7 +322,7 @@ describe('resolved theme', () => {
   test('picks a readable onAccent color for every accent', () => {
     for (const accent of accentNames) {
       const { colors } = resolveTheme({ ...defaultThemeSettings, accent }, false)
-      expect(colors.onAccent).toBe(luminance(colors.accent) > 0.179 ? '#000000' : '#ffffff')
+      expect(colors.onAccent).toBe(onColor(colors.accent))
     }
     expect(luminance('#000000')).toBe(0)
     expect(luminance('#ffffff')).toBeCloseTo(1)

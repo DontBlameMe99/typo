@@ -6,6 +6,30 @@ import type { PdfRecord } from './workspace'
 // Bump when compiler behavior, bundled fonts, or dependency tracking changes.
 const CACHE_VERSION = 'typst-0.8.0-rc3-3'
 
+export function parsePdfRecord(value: unknown, directory: string): PdfRecord | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as PdfRecord
+  if (
+    typeof record.sourceHash !== 'string' ||
+    typeof record.sharedHash !== 'string' ||
+    typeof record.fontsHash !== 'string' ||
+    !record.dependencies ||
+    typeof record.dependencies !== 'object' ||
+    !Object.values(record.dependencies).every(
+      (hash) => hash === null || typeof hash === 'string'
+    ) ||
+    typeof record.uri !== 'string' ||
+    !record.uri.startsWith(directory)
+  )
+    return null
+  if (
+    record.output &&
+    (typeof record.output.uri !== 'string' || typeof record.output.stamp !== 'string')
+  )
+    return null
+  return record
+}
+
 export function pdfStorage(vaultUri: string) {
   if (!FileSystem.cacheDirectory) throw new Error('Private cache storage is unavailable.')
   const directory = `${FileSystem.cacheDirectory}typo-compiled/${CACHE_VERSION}/${fingerprint(vaultUri)}/`
@@ -64,27 +88,13 @@ export function pdfStorage(vaultUri: string) {
     async read(path: string): Promise<PdfRecord | null> {
       try {
         await ready()
-        const record = JSON.parse(await FileSystem.readAsStringAsync(manifest(path)))
-        if (
-          typeof record.sourceHash !== 'string' ||
-          typeof record.sharedHash !== 'string' ||
-          typeof record.fontsHash !== 'string' ||
-          !record.dependencies ||
-          typeof record.dependencies !== 'object' ||
-          !Object.values(record.dependencies).every(
-            (hash) => hash === null || typeof hash === 'string'
-          ) ||
-          typeof record.uri !== 'string' ||
-          !record.uri.startsWith(directory)
+        const record = parsePdfRecord(
+          JSON.parse(await FileSystem.readAsStringAsync(manifest(path))),
+          directory
         )
-          return null
+        if (!record) return null
         const stamp = stat(record.uri)
         if (!stamp) return null
-        if (
-          record.output &&
-          (typeof record.output.uri !== 'string' || typeof record.output.stamp !== 'string')
-        )
-          return null
         observed.set(record.uri, { stamp, at: Date.now() })
         return record
       } catch {

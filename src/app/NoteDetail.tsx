@@ -25,6 +25,7 @@ import { useTheme } from '../theme'
 import type { Note } from '../types'
 import { useAutoPdf } from '../useAutoPdf'
 import { preparePdf, prepareSource, saveNote } from '../vault'
+import { findFirst, findMatches, initialFindSelection } from './find'
 import { Fade, IconFade, PillTabs, SLIDE_TIMING, Ticker, timing } from './motion'
 import { errorText, keyboardBehavior } from './shared'
 import { useStyles } from './styles'
@@ -146,20 +147,7 @@ export function NoteDetail({
   useEffect(() => {
     if (autoPdf.preview?.uri) setPdfError(null)
   }, [autoPdf.preview?.uri])
-  const matches = useMemo(() => {
-    if (!find) return []
-    const haystack = source.toLocaleLowerCase(),
-      needle = find.toLocaleLowerCase()
-    const found: number[] = []
-    let offset = 0
-    while (offset <= haystack.length) {
-      const at = haystack.indexOf(needle, offset)
-      if (at < 0) break
-      found.push(at)
-      offset = at + Math.max(1, needle.length)
-    }
-    return found
-  }, [source, find])
+  const matches = useMemo(() => findMatches(source, find), [source, find])
   const matchCount = matches.length
   const matchCurrent = matchCount ? Math.min(matchIndex + 1, matchCount) : 0
   useEffect(() => {
@@ -171,24 +159,10 @@ export function NoteDetail({
   useEffect(() => {
     const current = editState.current
     if (current.documentId !== documentId || current.source !== current.savedNote.source) return
-    if (initialLine) {
-      const lines = note.source.split('\n')
-      const line = lines[initialLine - 1] || ''
-      const offset =
-        lines.slice(0, Math.max(0, initialLine - 1)).join('\n').length + (initialLine > 1 ? 1 : 0)
-      const match = initialQuery
-        ? line.toLocaleLowerCase().indexOf(initialQuery.toLocaleLowerCase())
-        : -1
-      const start = offset + Math.max(0, match)
-      setSelection({ start, end: match >= 0 ? start + initialQuery.length : offset + line.length })
-      if (match >= 0)
-        setMatchIndex(
-          note.source.slice(0, start).toLocaleLowerCase().split(initialQuery.toLocaleLowerCase())
-            .length - 1
-        )
-    } else if (initialQuery) {
-      const start = note.source.toLocaleLowerCase().indexOf(initialQuery.toLocaleLowerCase())
-      if (start >= 0) setSelection({ start, end: start + initialQuery.length })
+    const initial = initialFindSelection(note.source, initialLine, initialQuery)
+    if (initial) {
+      setSelection(initial.selection)
+      if (initial.matchIndex !== undefined) setMatchIndex(initial.matchIndex)
     }
   }, [initialLine, initialQuery, note.source, documentId])
 
@@ -349,8 +323,8 @@ export function NoteDetail({
   function changeFind(value: string) {
     setFind(value)
     setMatchIndex(0)
-    const start = value ? source.toLocaleLowerCase().indexOf(value.toLocaleLowerCase()) : -1
-    setSelection(start >= 0 ? { start, end: start + value.length } : undefined)
+    const selection = findFirst(source, value)
+    setSelection(selection)
   }
   function moveMatch(direction: number) {
     if (!matches.length) return

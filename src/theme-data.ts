@@ -212,6 +212,10 @@ export function luminance(hex: string): number {
   return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
 }
 
+export function onColor(hex: string): string {
+  return luminance(hex) > 0.179 ? '#000000' : '#ffffff'
+}
+
 export function resolveTheme(settings: ThemeSettings, systemDark: boolean) {
   const darkSlot = settings.mode === 'dark' || (settings.mode === 'system' && systemDark)
   const flavor = darkSlot
@@ -233,7 +237,7 @@ export function resolveTheme(settings: ThemeSettings, systemDark: boolean) {
     crust: palette.crust,
     sage: accent,
     accent,
-    onAccent: luminance(accent) > 0.179 ? '#000000' : '#ffffff',
+    onAccent: onColor(accent),
     soft: isDark && settings.amoled ? palette.crust : palette.mantle,
     white: isDark && settings.amoled ? palette.mantle : palette.base,
     coral: palette.red,

@@ -16,15 +16,10 @@
 // A WebView sandbox process also names the app in its arguments, so the process
 // start event is matched on its package field.
 
-import { AdbError, adb, tryAdb, wait, waitForBoot } from './android'
+import { ADB, ADB_ARGS, AdbError, adb, tryAdb, wait, waitForBoot } from './android'
+import { parseArgs } from './args'
 
-const args = new Map<string, string>()
-for (let index = 0; index < process.argv.length; index++) {
-  const value = process.argv[index]
-  if (!value.startsWith('--')) continue
-  const next = process.argv[index + 1]
-  args.set(value.slice(2), next && !next.startsWith('--') ? next : 'true')
-}
+const args = parseArgs(process.argv)
 
 const APK = args.get('apk')
 const RUNS = Number(args.get('runs') ?? 5)
@@ -115,10 +110,6 @@ export function summarize(packageName: string, samples: Sample[]): StartupReport
   }
 }
 
-function serialArgs() {
-  return process.env.ANDROID_SERIAL ? ['-s', process.env.ANDROID_SERIAL] : []
-}
-
 if (import.meta.main) {
   await waitForBoot()
   if (APK) await adb('install', '-r', APK)
@@ -140,13 +131,10 @@ if (import.meta.main) {
     const ready = new Promise<void>((resolve) => {
       sawReady = resolve
     })
-    const logcat = Bun.spawn(
-      [process.env.ADB ?? 'adb', ...serialArgs(), 'logcat', '-b', 'events,main', '-v', 'epoch'],
-      {
-        stdout: 'pipe',
-        stderr: 'ignore',
-      }
-    )
+    const logcat = Bun.spawn([ADB, ...ADB_ARGS, 'logcat', '-b', 'events,main', '-v', 'epoch'], {
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
     const reader = (async () => {
       const decoder = new TextDecoder()
       let pending = ''
@@ -163,17 +151,7 @@ if (import.meta.main) {
     })()
 
     const launch = Bun.spawn(
-      [
-        process.env.ADB ?? 'adb',
-        ...serialArgs(),
-        'shell',
-        'am',
-        'start',
-        '-W',
-        '-S',
-        '-n',
-        `${PACKAGE}/${ACTIVITY}`,
-      ],
+      [ADB, ...ADB_ARGS, 'shell', 'am', 'start', '-W', '-S', '-n', `${PACKAGE}/${ACTIVITY}`],
       { stdout: 'pipe', stderr: 'pipe' }
     )
     await new Response(launch.stdout).text()

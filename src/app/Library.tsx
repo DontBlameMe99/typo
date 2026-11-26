@@ -30,15 +30,7 @@ import { loadFavorites, loadFavoritesSync, storeFavorites } from '../favorites'
 import { Icon } from '../icons'
 import { loadVaultIndex, loadVaultIndexSync, storeVaultIndex } from '../library-cache'
 import type { VaultIndex } from '../library-index'
-import {
-  type FolderRowItem,
-  type FolderRowsCache,
-  type LibraryRow,
-  layoutRows,
-  ROW_GAP,
-  rowLayout,
-  sortedNoteRows,
-} from '../library-rows'
+import type { FolderRowItem, FolderRowsCache, LibraryRow } from '../library-rows'
 import { TypoMark } from '../Mark'
 import { NoteSearch } from '../NoteSearch'
 import {
@@ -70,20 +62,18 @@ import {
 } from '../vault'
 import { afterPaint, webRuntime } from '../web-runtime'
 import { FolderSheet, SortSheet } from './FolderSheet'
+import { buildLibraryViews } from './library-view'
 import { Fade, SwapFaces } from './motion'
 import { NewNote } from './NewNote'
 import { NoteDetail } from './NoteDetail'
 import { FolderChip, LibraryNotice, NoteCard, SearchResultRow, TrashNotice } from './rows'
 import { Settings } from './Settings'
 import {
-  EMPTY_FOLDERS,
   EMPTY_NOTES,
   errorText,
   type FolderEntry,
   folderName,
   keyboardBehavior,
-  LIBRARY_LIST_TOP,
-  LIBRARY_PARENT_HEIGHT,
   MARK_SIZE,
   type MovingItem,
   type NoteSession,
@@ -608,63 +598,19 @@ export function Library({
     return counts
   }, [notes])
   const folderRows = useRef<FolderRowsCache>(new Map())
-  const folderViews = useMemo(() => {
-    return folderStack.map((path) => {
-      const current = path === folder
-      const childFolders = foldersByParent.get(path) ?? EMPTY_FOLDERS
-      const favoriteFolders = childFolders.filter((entry) => favoritePaths.has(entry.path))
-      const restFolders = childFolders.filter((entry) => !favoritePaths.has(entry.path))
-      const sorted = sortedNoteRows(
+  const folderViews = useMemo(
+    () =>
+      buildLibraryViews(
+        folderStack,
+        folder,
+        foldersByParent,
+        notesByFolder,
+        favoritePaths,
         folderRows.current,
-        path,
-        notesByFolder.get(path) ?? EMPTY_NOTES,
         sort
-      )
-      const pinned = sorted.filter((row) => favoritePaths.has(row.result.note.path))
-      const notes = sorted.filter((row) => !favoritePaths.has(row.result.note.path))
-      const rows: LibraryRow[] = []
-      const orderedFolders = [...favoriteFolders, ...restFolders]
-      if (orderedFolders.length > 0 || sorted.length > 0) {
-        rows.push({ kind: 'space', key: 'space:top', height: 6 })
-      }
-      let separated = false
-      if (orderedFolders.length > 0) {
-        for (let index = 0; index < orderedFolders.length; index += 2) {
-          rows.push({
-            kind: 'folders',
-            key: `folders:${path}:${index}`,
-            items: orderedFolders.slice(index, index + 2),
-          })
-        }
-        separated = true
-      }
-      if (pinned.length > 0) {
-        if (separated) rows.push({ kind: 'space', key: 'space:pinned', height: 14 })
-        for (const row of pinned) {
-          rows.push({ kind: 'note', key: `pinned:${row.result.note.uri}`, result: row.result })
-        }
-        separated = true
-      }
-      if (notes.length > 0) {
-        if (separated) rows.push({ kind: 'space', key: 'space:notes', height: 14 })
-        for (const row of notes) {
-          rows.push({ kind: 'note', key: `note:${row.result.note.uri}`, result: row.result })
-        }
-      }
-      const layout = layoutRows(rows)
-      const above = LIBRARY_LIST_TOP + (path ? LIBRARY_PARENT_HEIGHT + ROW_GAP : 0)
-      return {
-        path,
-        current,
-        rows,
-        getItemLayout: (_: unknown, index: number) => {
-          const frame = rowLayout(layout, index)
-          return { ...frame, offset: frame.offset + above }
-        },
-        empty: orderedFolders.length === 0 && sorted.length === 0,
-      }
-    })
-  }, [favoritePaths, folder, folderStack, foldersByParent, notesByFolder, sort])
+      ),
+    [favoritePaths, folder, folderStack, foldersByParent, notesByFolder, sort]
+  )
   const clearSearch = useCallback(() => {
     if (!queryRef.current) return
     setQuery('')

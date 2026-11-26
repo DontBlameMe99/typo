@@ -9,8 +9,8 @@ const output = process.argv[4] ?? 'coverage/comment.md'
 
 type Totals = { covered: number; valid: number; percent: number }
 
-async function totals(path: string): Promise<Totals> {
-  const root = (await Bun.file(path).text()).match(/<coverage\b[^>]*>/)?.[0]
+function totals(path: string, xml: string): Totals {
+  const root = xml.match(/<coverage\b[^>]*>/)?.[0]
   const attr = (name: string) => Number(root?.match(new RegExp(`${name}="([\\d.]+)"`))?.[1] ?? NaN)
   const covered = attr('lines-covered')
   const valid = attr('lines-valid')
@@ -22,11 +22,11 @@ async function totals(path: string): Promise<Totals> {
 
 const count = (value: number) => value.toString().replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
 
-const current = await totals(input)
-const passed = current.percent >= minimum
-const baseline = process.env.BASELINE_COVERAGE ? await totals(process.env.BASELINE_COVERAGE) : null
-
 const xml = await Bun.file(input).text()
+const current = totals(input, xml)
+const passed = current.percent >= minimum
+const baselinePath = process.env.BASELINE_COVERAGE
+const baseline = baselinePath ? totals(baselinePath, await Bun.file(baselinePath).text()) : null
 const files = [...xml.matchAll(/<class name="[^"]+" filename="([^"]+)" line-rate="([\d.]+)"/g)]
   .map((match) => ({ filename: match[1], percent: Number(match[2]) * 100 }))
   .sort((a, b) => a.percent - b.percent || a.filename.localeCompare(b.filename))

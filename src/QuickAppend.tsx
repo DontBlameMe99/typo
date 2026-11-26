@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   AppState,
@@ -6,7 +6,6 @@ import {
   KeyboardAvoidingView,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   View,
@@ -19,7 +18,14 @@ import {
   readQuickAppendTarget,
 } from './quick-append-config'
 import { finishQuickNote } from './quick-note-native'
-import { QuickSheetRoot, QuickToolbar, useQuickSheet, useQuickStyles } from './quick-sheet'
+import {
+  QuickSheetRoot,
+  QuickToolbar,
+  quickErrorText,
+  useQuickFormStyles,
+  useQuickSheet,
+  useQuickStyles,
+} from './quick-sheet'
 import { useTheme } from './theme'
 import type { Note, Vault } from './types'
 import { appendToNoteAtPath, readNoteAtPath, readSavedVault } from './vault'
@@ -41,7 +47,7 @@ type LoadState =
 function QuickAppend() {
   const { colors, ready } = useTheme()
   const s = useQuickStyles()
-  const f = useFormStyles()
+  const f = useQuickFormStyles(220)
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
   const [text, setText] = useState('')
   const [saving, setSaving] = useState(false)
@@ -90,7 +96,11 @@ function QuickAppend() {
         }
         setState({ kind: 'ready', vault, target, note })
       } catch (cause) {
-        if (alive.current) setState({ kind: 'error', message: message(cause) })
+        if (alive.current)
+          setState({
+            kind: 'error',
+            message: quickErrorText(cause, 'Could not append to the note.'),
+          })
       }
     })()
     return () => {
@@ -117,7 +127,7 @@ function QuickAppend() {
         finishQuickNote()
         return
       }
-      setError(message(cause))
+      setError(quickErrorText(cause, 'Could not append to the note.'))
       setSaving(false)
     }
   }
@@ -194,39 +204,4 @@ function QuickAppend() {
       </View>
     </KeyboardAvoidingView>
   )
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : 'Could not append to the note.'
-}
-
-function useFormStyles() {
-  const { colors } = useTheme()
-  return useMemo(() => formStyles(colors), [colors])
-}
-
-function formStyles(colors: ReturnType<typeof useTheme>['colors']) {
-  return StyleSheet.create({
-    form: { paddingTop: 24, paddingHorizontal: 20, paddingBottom: 40, flexGrow: 1 },
-    target: {
-      paddingBottom: 16,
-      marginBottom: 16,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.line,
-    },
-    targetText: {
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 14,
-      color: colors.muted,
-    },
-    body: {
-      flex: 1,
-      minHeight: 220,
-      padding: 0,
-      fontFamily: 'DMSans_400Regular',
-      fontSize: 18,
-      lineHeight: 27,
-      color: colors.ink,
-    },
-  })
 }
