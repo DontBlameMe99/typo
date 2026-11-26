@@ -72,12 +72,12 @@ test('a slowdown inside the ceiling observed range is not reported', () => {
 test('a slowdown just above the ceiling worst run warns', () => {
   const compared = report.compare({
     reference: reference([metric('search/1000/literal', { medianMs: 4, worstMedianMs: 4.4 })]),
-    current: artifact([metric('search/1000/literal', { medianMs: 4.7 })]),
+    current: artifact([metric('search/1000/literal', { medianMs: 5 })]),
   })
   assert.equal(compared.failed, false)
   assert.deepEqual(statuses(compared), [['search/1000/literal', 'warn']])
   const body = report.markdown({ rows: compared.rows, failed: false })
-  assert.match(body, /median 4\.700 ms > ceiling's worst 4\.400 ms/)
+  assert.match(body, /median 5\.000 ms > ceiling's worst 4\.400 ms/)
   assert.match(body, /but 1 of 1 has a warning above the ceiling's worst run/)
 })
 
@@ -94,9 +94,9 @@ test('a slowdown beyond the ceiling spread fails at the median, p95, and p99 ope
       metric('fast', { medianMs: 4, worstMedianMs: 4.4 }),
     ]),
     current: artifact([
-      metric('slow-median', { medianMs: 4.7 }),
-      metric('slow-tail', { medianMs: 4.2, p95Ms: 6, worstP95Ms: 6 }),
-      metric('slow-block', { medianMs: 4.2, maxTimerGapMs: 8, worstTimerGapMs: 8 }),
+      metric('slow-median', { medianMs: 5 }),
+      metric('slow-tail', { medianMs: 4.2, p95Ms: 6.5, worstP95Ms: 6.5 }),
+      metric('slow-block', { medianMs: 4.2, maxTimerGapMs: 8.5, worstTimerGapMs: 8.5 }),
       metric('fast', { medianMs: 4.3 }),
     ]),
   })
@@ -108,10 +108,59 @@ test('a slowdown beyond the ceiling spread fails at the median, p95, and p99 ope
     ['slow-tail', 'fail'],
   ])
   const body = report.markdown({ rows: compared.rows, failed: true })
-  assert.match(body, /median 4\.700 ms > ceiling's worst 4\.000 ms by more than 0\.2/)
-  assert.match(body, /p95 6\.000 ms > ceiling's worst 5\.000 ms by more than 0\.25/)
-  assert.match(body, /p99 operation 8\.000 ms > ceiling's worst 6\.000 ms by more than 0\.3/)
+  assert.match(body, /median 5\.000 ms > ceiling's worst 4\.000 ms by more than 0\.800/)
+  assert.match(body, /p95 6\.500 ms > ceiling's worst 5\.000 ms by more than 1\.000/)
+  assert.match(body, /p99 operation 8\.500 ms > ceiling's worst 6\.000 ms by more than 1\.200/)
   assert.match(body, /3 workloads are slower than the ceiling/)
+})
+
+test('the PR 127 measurements pass with the wider ceiling margin', () => {
+  const compared = report.compare({
+    reference: reference([
+      metric('editor/10000/change', {
+        medianMs: 6.38,
+        worstMedianMs: 6.65,
+        p95Ms: 7.536,
+        worstP95Ms: 8.843,
+        maxTimerGapMs: 7.536,
+        worstTimerGapMs: 8.843,
+      }),
+      metric('pdf/20-pages/open', { medianMs: 13.5, worstMedianMs: 14.1 }),
+      metric('search/1000/first-content', {
+        medianMs: 15.2,
+        worstMedianMs: 16.6,
+        p95Ms: 18.81,
+        worstP95Ms: 19.8,
+        maxTimerGapMs: 18.81,
+        worstTimerGapMs: 19.8,
+      }),
+    ]),
+    current: artifact([
+      metric('editor/10000/change', {
+        medianMs: 6.45,
+        worstMedianMs: 6.45,
+        p95Ms: 10.3,
+        worstP95Ms: 10.3,
+        maxTimerGapMs: 10.3,
+        worstTimerGapMs: 10.3,
+      }),
+      metric('pdf/20-pages/open', { medianMs: 15.1, worstMedianMs: 15.7 }),
+      metric('search/1000/first-content', {
+        medianMs: 15.8,
+        worstMedianMs: 15.8,
+        p95Ms: 21.8,
+        worstP95Ms: 21.8,
+        maxTimerGapMs: 21.8,
+        worstTimerGapMs: 21.8,
+      }),
+    ]),
+  })
+  assert.equal(compared.failed, false)
+  assert.deepEqual(statuses(compared), [
+    ['editor/10000/change', 'warn'],
+    ['pdf/20-pages/open', 'ok'],
+    ['search/1000/first-content', 'warn'],
+  ])
 })
 
 test('a workload over its budget fails when the ceiling meets the budget', () => {
@@ -204,10 +253,10 @@ test('a note prints values that are close but not equal distinctly', () => {
         budgetMs: 400,
       }),
     ]),
-    current: artifact([metric('compiler/initialize', { medianMs: 200, budgetMs: 400 })]),
+    current: artifact([metric('compiler/initialize', { medianMs: 250, budgetMs: 400 })]),
   })
   const note = compared.rows[0].findings[0].note
-  assert.match(note, /median 200\.0 ms > ceiling's worst 176\.2 ms by more than 8\.8/)
+  assert.match(note, /median 250\.0 ms > ceiling's worst 176\.2 ms by more than 35\.2/)
 })
 
 test('a workload as noisy as its own spread cannot be failed inside that spread', () => {
