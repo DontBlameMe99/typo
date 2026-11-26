@@ -552,21 +552,44 @@ describe('relative note time', () => {
   test('rebuilds shared date formatters when system settings change', () => {
     const Original = Intl.DateTimeFormat
     let constructions = 0
+    let changed = false
     class CountingFormatter extends Original {
       constructor(...args: ConstructorParameters<typeof Original>) {
-        super(...args)
+        const options = args[1] ?? {}
+        super(changed ? 'fr-FR' : 'en-US', {
+          ...options,
+          timeZone: changed ? 'America/New_York' : 'UTC',
+        })
         constructions++
       }
     }
+    const cases = [
+      { at: Date.UTC(2026, 10, 11, 12), options: { weekday: 'short' } as const },
+      { at: Date.UTC(2026, 10, 4, 12), options: { month: 'short', day: 'numeric' } as const },
+      {
+        at: Date.UTC(2025, 9, 28, 12),
+        options: { month: 'short', day: 'numeric', year: 'numeric' } as const,
+      },
+    ]
+    const expected = (
+      at: number,
+      options: Intl.DateTimeFormatOptions,
+      locale: string,
+      timeZone: string
+    ) => new Original(locale, { ...options, timeZone }).format(new Date(at))
     Intl.DateTimeFormat = CountingFormatter as unknown as typeof Intl.DateTimeFormat
     try {
       resetDateFormatters()
       expect(constructions).toBe(3)
-      const expected = noteTime(new Date(2025, 9, 28, 9).getTime(), now)
+      for (const { at, options } of cases)
+        expect(noteTime(at, now)).toBe(expected(at, options, 'en-US', 'UTC'))
       expect(constructions).toBe(3)
+      changed = true
       resetDateFormatters()
       expect(constructions).toBe(6)
-      expect(noteTime(new Date(2025, 9, 28, 9).getTime(), now)).toBe(expected)
+      for (const { at, options } of cases)
+        expect(noteTime(at, now)).toBe(expected(at, options, 'fr-FR', 'America/New_York'))
+      expect(constructions).toBe(6)
     } finally {
       Intl.DateTimeFormat = Original
       resetDateFormatters()
