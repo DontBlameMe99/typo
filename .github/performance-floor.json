@@ -146,12 +146,12 @@
       "updatedAt": "2026-11-20T00:40:24.230Z"
     },
     "search/1000/update-content": {
-      "sha": "8c643fc2c9e4110f7c4358f9eb8686ddf5794004",
+      "sha": "d5c5dc69b5e73dc2e8ccc727b2a6147d43d0e91b",
       "method": 2,
-      "medianMs": 0.8792439999999715,
-      "worstMedianMs": 0.9518180000000029,
+      "medianMs": 0.8855819999998857,
+      "worstMedianMs": 0.9245429999998578,
       "budgetMs": 33.4,
-      "updatedAt": "2026-11-24T18:19:02.740Z"
+      "updatedAt": "2026-11-26T03:57:44.720Z"
     },
     "syntax/1000/open": {
       "sha": "1c8b67ab70e4c735eddee15f66f1a12cedacd9af",
@@ -226,12 +226,12 @@
       "updatedAt": "2026-11-26T02:13:15.843Z"
     },
     "startup/1000/first-rows": {
-      "sha": "e8dcc62fcfe2d775a063fb81104ac1bbeff56c01",
+      "sha": "d5c5dc69b5e73dc2e8ccc727b2a6147d43d0e91b",
       "method": 2,
-      "medianMs": 1.4664960000000065,
-      "worstMedianMs": 1.5292159999999058,
+      "medianMs": 1.4352739999999358,
+      "worstMedianMs": 1.4701069999996434,
       "budgetMs": 33.4,
-      "updatedAt": "2026-11-18T01:46:37.942Z"
+      "updatedAt": "2026-11-26T03:57:44.720Z"
     },
     "library/1000/sort-modified-desc": {
       "sha": "62ccbc63f17f001ee7b634bd17c89f531d6257b2",
@@ -250,12 +250,12 @@
       "updatedAt": "2026-11-20T00:51:59.084Z"
     },
     "library/1000/sort-name-desc": {
-      "sha": "a60231cdd17f0dabc04e6a0a7fcf0162e7897d71",
+      "sha": "d5c5dc69b5e73dc2e8ccc727b2a6147d43d0e91b",
       "method": 2,
-      "medianMs": 0.15349700000024313,
-      "worstMedianMs": 0.15715399999999136,
+      "medianMs": 0.10943499999984851,
+      "worstMedianMs": 0.11037300000020878,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-20T00:40:24.230Z"
+      "updatedAt": "2026-11-26T03:57:44.720Z"
     },
     "library/5000/sort-modified-desc": {
       "sha": "319fe7c449ac4b54a1d943efb836076ca5acc30f",
@@ -336,6 +336,14 @@
       "worstMedianMs": 1.496225000000095,
       "budgetMs": 33.4,
       "updatedAt": "2026-11-26T03:31:41.217Z"
+    },
+    "search/1000/transport-queries": {
+      "sha": "d5c5dc69b5e73dc2e8ccc727b2a6147d43d0e91b",
+      "method": 2,
+      "medianMs": 0.03214099999991049,
+      "worstMedianMs": 0.046186000000034255,
+      "budgetMs": 33.4,
+      "updatedAt": "2026-11-26T03:57:44.720Z"
     }
   },
   "budgets": {
@@ -380,6 +388,7 @@
     "library/1000/card-dates": 16.7,
     "editor/20000-ranges/literal": 16.7,
     "editor/20000-ranges/map": 33.4,
-    "editor/20000-ranges/map-stalled": 33.4
+    "editor/20000-ranges/map-stalled": 33.4,
+    "search/1000/transport-queries": 33.4
   }
 }
