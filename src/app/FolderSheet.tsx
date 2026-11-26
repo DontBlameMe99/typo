@@ -8,8 +8,16 @@ import { useTheme } from '../theme'
 import type { Vault } from '../types'
 import type { NoteFolder } from '../vault'
 import { createFolder } from '../vault'
+import {
+  allowedFolders,
+  folderActionLabel,
+  folderChildren,
+  folderCrumbs,
+  folderPreview,
+  newFolderParts,
+} from './folder-picker'
 import { SwapIcon } from './motion'
-import { errorText, folderName, noteSorts, parentFolder } from './shared'
+import { errorText, folderName, noteSorts } from './shared'
 import { useStyles } from './styles'
 import { BottomSheet } from './ui'
 
@@ -47,14 +55,7 @@ export function FolderSheet({
   const s = useStyles()
   const { colors } = useTheme()
   const vaultName = vault.name
-  const allowed = useMemo(
-    () =>
-      folders.filter(
-        (path) =>
-          excludeTree === undefined || (path !== excludeTree && !path.startsWith(`${excludeTree}/`))
-      ),
-    [folders, excludeTree]
-  )
+  const allowed = useMemo(() => allowedFolders(folders, excludeTree), [folders, excludeTree])
   const allowedSet = useMemo(() => new Set(allowed), [allowed])
   const [current, setCurrent] = useState(() => {
     const start = initial ?? defaultParent ?? ''
@@ -80,46 +81,24 @@ export function FolderSheet({
   useEffect(() => {
     if (!allowedSet.has(current)) setCurrent('')
   }, [allowedSet, current])
-  const children = useMemo(
-    () =>
-      allowed
-        .filter((path) => path !== '' && parentFolder(path) === current)
-        .map((path) => ({ path, name: folderName(path) }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [allowed, current]
-  )
-  const crumbs = useMemo(() => {
-    let path = ''
-    return current
-      ? current.split('/').map((name) => {
-          path = path ? `${path}/${name}` : name
-          return { name, path }
-        })
-      : []
-  }, [current])
+  const children = useMemo(() => folderChildren(allowed, current), [allowed, current])
+  const crumbs = useMemo(() => folderCrumbs(current), [current])
   const move = mode === 'move'
   const sameFolder =
     !newFolderOpen && move && defaultParent !== undefined && current === defaultParent
   const chosenName = current ? folderName(current) : vaultName
-  const parts = newName
-    .split('/')
-    .map((part) => part.trim())
-    .filter(Boolean)
+  const parts = newFolderParts(newName)
   const canCreate = !busy && parts.length > 0
-  const actionLabel = busy
-    ? (busyLabel ?? (move ? 'Moving…' : 'Working…'))
-    : newFolderOpen
-      ? move
-        ? 'Create and move here'
-        : 'Create here'
-      : move
-        ? sameFolder
-          ? current
-            ? `Already in ${chosenName}`
-            : 'Already at the vault root'
-          : `Move to ${chosenName}`
-        : `Create in ${chosenName}`
-  const preview = current ? [...current.split('/'), ...parts] : parts
+  const actionLabel = folderActionLabel(
+    busy,
+    busyLabel,
+    newFolderOpen,
+    move,
+    sameFolder,
+    current,
+    chosenName
+  )
+  const preview = folderPreview(current, parts)
   const openNewFolder = () => {
     if (busy) return
     setNewFolderOpen(true)

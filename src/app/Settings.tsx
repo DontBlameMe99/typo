@@ -27,7 +27,7 @@ import {
   accentNames,
   darkFlavorNames,
   lightFlavorNames,
-  luminance,
+  onColor,
   palettes,
   useTheme,
 } from '../theme'
@@ -215,11 +215,7 @@ export function Settings({
                   ]}
                 >
                   {custom ? (
-                    <Icon
-                      name="check"
-                      size={18}
-                      color={luminance(custom) > 0.179 ? '#000000' : '#ffffff'}
-                    />
+                    <Icon name="check" size={18} color={onColor(custom)} />
                   ) : (
                     <Icon name="plus" size={16} color={colors.muted} />
                   )}
@@ -410,7 +406,7 @@ function AccentSwatch({
       <View style={[s.accentSwatch, { backgroundColor: color }]}>
         <Reanimated.View style={[s.selectedRing, motion]} />
         <Reanimated.View style={motion}>
-          <Icon name="check" size={18} color={luminance(color) > 0.179 ? '#000000' : '#ffffff'} />
+          <Icon name="check" size={18} color={onColor(color)} />
         </Reanimated.View>
       </View>
     </Pressable>
@@ -700,9 +696,7 @@ function CustomColorSheet({
             pressed && s.pressed,
           ]}
         >
-          <Text style={[s.useColorText, { color: luminance(hex) > 0.179 ? '#000000' : '#ffffff' }]}>
-            Use this color
-          </Text>
+          <Text style={[s.useColorText, { color: onColor(hex) }]}>Use this color</Text>
         </Pressable>
       </ScrollView>
     </BottomSheet>

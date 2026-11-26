@@ -4,6 +4,7 @@
 // not a target: pull requests only fail when startup grows past the floor by
 // more than the margin below. Phase timings are reported for context.
 
+import { parseArgs } from './args'
 import type { StartupReport } from './startup'
 
 // Bumping the method invalidates every recorded floor, which is required
@@ -116,13 +117,7 @@ export function renderComment(head: StartupReport, comparison: Comparison) {
 }
 
 if (import.meta.main) {
-  const args = new Map<string, string>()
-  for (let index = 0; index < process.argv.length; index++) {
-    const value = process.argv[index]
-    if (!value.startsWith('--')) continue
-    const next = process.argv[index + 1]
-    args.set(value.slice(2), next && !next.startsWith('--') ? next : 'true')
-  }
+  const args = parseArgs(process.argv)
   const headPath = args.get('head')
   if (!headPath) throw new Error('--head is required')
   const head = (await Bun.file(headPath).json()) as StartupReport

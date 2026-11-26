@@ -18,7 +18,7 @@ import { rgba } from '../color'
 import { notePreview, noteTime } from '../core'
 import { Icon } from '../icons'
 import { SWIPE_CARD_REVEAL, SWIPE_CHIP_REVEAL } from '../library-rows'
-import { luminance, useTheme } from '../theme'
+import { onColor, useTheme } from '../theme'
 import type { Note, SearchResult } from '../types'
 import { timing } from './motion'
 import {
@@ -238,8 +238,7 @@ function SwipePane({
   const s = useStyles()
   const { colors } = useTheme()
   const label = pane === 'favorite' ? (favorite ? 'Unpin' : 'Pin') : 'Trash'
-  const tint =
-    pane === 'favorite' ? colors.onAccent : luminance(colors.coral) > 0.179 ? '#000000' : '#ffffff'
+  const tint = pane === 'favorite' ? colors.onAccent : onColor(colors.coral)
   const contentStyle = useAnimatedStyle(() => {
     const progress = Math.min(Math.abs(translateX.value) / reveal, 1)
     return {

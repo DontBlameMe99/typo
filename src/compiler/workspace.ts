@@ -263,6 +263,94 @@ export class PdfWorkspace {
     return { source, record, uri: record.uri }
   }
 
+  private async readRecord(
+    note: Note,
+    sourceHash: string,
+    snapshot: Snapshot
+  ): Promise<PdfRecord | undefined> {
+    let record = this.records.get(note.path)
+    if (!record || record.sourceHash !== sourceHash) {
+      record = (await this.options.storage.read(note.path)) ?? undefined
+      if (record) this.persisted.add(record)
+    }
+    if (this.invalidated.delete(note.path)) record = undefined
+    if (!record || !this.matches(record, sourceHash, snapshot)) return undefined
+    if ((await this.options.storage.stamp(record.uri)) === null) return undefined
+    return record
+  }
+
+  private async compileRecord(
+    note: Note,
+    source: string,
+    sourceHash: string,
+    snapshot: Snapshot
+  ): Promise<PdfRecord> {
+    let result: CompileResult
+    try {
+      result = await this.options.compile({
+        path: note.path,
+        source,
+        files: snapshot.files,
+      })
+    } catch (error) {
+      // Only Typst diagnostics describe the note. A package download, a timeout, or a
+      // recycled compiler can clear on its own, so the next render must try again.
+      if (isDiagnosticsFailure(error)) this.failures.set(note.path, { source, snapshot, error })
+      throw error
+    }
+    this.failures.delete(note.path)
+    this.errors.delete(note.path)
+    const dependencies = Object.fromEntries(
+      result.dependencies
+        .filter((path) => path !== note.path)
+        .map((path) => [path, snapshot.hashes.get(path) ?? null])
+    )
+    const cacheKey = fingerprint(
+      JSON.stringify([note.path, sourceHash, snapshot.sharedHash, snapshot.fontsHash, dependencies])
+    )
+    return {
+      sourceHash,
+      sharedHash: snapshot.sharedHash,
+      fontsHash: snapshot.fontsHash,
+      dependencies,
+      uri: await this.options.storage.cache(cacheKey, result.base64),
+    }
+  }
+
+  private async persistRecord(
+    note: Note,
+    source: string,
+    snapshot: Snapshot,
+    record: PdfRecord
+  ): Promise<void> {
+    const saved = this.notes.get(note.uri)
+    if (!saved || saved.source !== source || this.snapshot !== snapshot) return
+    try {
+      const output = record.output
+      if (!output || (await this.options.storage.stamp(output.uri)) !== output.stamp) {
+        const base64 = await this.options.storage.base64(record.uri)
+        if (this.disposed || this.notes.get(note.uri)?.source !== source) return
+        const uri = await this.options.storage.write(saved, base64, snapshot.sharedHash)
+        const stamp = await this.options.storage.stamp(uri)
+        if (!stamp) throw new Error('Cannot verify the stored PDF.')
+        record.output = { uri, stamp }
+        this.persisted.delete(record)
+      }
+      if (this.disposed || this.notes.get(note.uri)?.source !== source) return
+      if (!this.persisted.has(record)) {
+        await this.options.storage.save(note.path, record)
+        this.persisted.add(record)
+      }
+      if (this.disposed || this.notes.get(note.uri)?.source !== source) return
+      await this.options.storage.hash(saved, snapshot.sharedHash)
+      if (record.output && saved.pdfUri !== record.output.uri)
+        this.options.onPdf?.({ ...saved, pdfUri: record.output.uri })
+      this.errors.delete(note.path)
+    } catch (cause) {
+      this.errors.set(note.path, `Cannot store the current PDF: ${String(cause)}`)
+    }
+  }
+
   private enqueue(note: Note, source: string, priority: boolean): Promise<PdfPreview> {
     if (this.disposed) return Promise.reject(new Error('The workspace was closed.'))
     const key = `${this.revision}:${note.uri}:${fingerprint(source)}`
@@ -294,86 +382,12 @@ export class PdfWorkspace {
           const failed = this.failures.get(note.path)
           if (failed?.source === source && failed.snapshot === snapshot) throw failed.error
           const sourceHash = fingerprint(source)
-          let record = this.records.get(note.path)
-          if (!record || record.sourceHash !== sourceHash) {
-            record = (await this.options.storage.read(note.path)) ?? undefined
-            if (record) this.persisted.add(record)
-          }
-          if (this.invalidated.delete(note.path)) record = undefined
-          const valid =
-            record &&
-            this.matches(record, sourceHash, snapshot) &&
-            (await this.options.storage.stamp(record.uri)) !== null
-          if (!valid) {
-            let result: CompileResult
-            try {
-              result = await this.options.compile({
-                path: note.path,
-                source,
-                files: snapshot.files,
-              })
-            } catch (error) {
-              // Only Typst diagnostics describe the note. A package download, a timeout, or a
-              // recycled compiler can clear on its own, so the next render must try again.
-              if (isDiagnosticsFailure(error))
-                this.failures.set(note.path, { source, snapshot, error })
-              throw error
-            }
-            this.failures.delete(note.path)
-            this.errors.delete(note.path)
-            const dependencies = Object.fromEntries(
-              result.dependencies
-                .filter((path) => path !== note.path)
-                .map((path) => [path, snapshot.hashes.get(path) ?? null])
-            )
-            const cacheKey = fingerprint(
-              JSON.stringify([
-                note.path,
-                sourceHash,
-                snapshot.sharedHash,
-                snapshot.fontsHash,
-                dependencies,
-              ])
-            )
-            record = {
-              sourceHash,
-              sharedHash: snapshot.sharedHash,
-              fontsHash: snapshot.fontsHash,
-              dependencies,
-              uri: await this.options.storage.cache(cacheKey, result.base64),
-            }
-          }
-          if (!record || this.disposed) throw new Error('The workspace was closed.')
+          let record = await this.readRecord(note, sourceHash, snapshot)
+          if (!record) record = await this.compileRecord(note, source, sourceHash, snapshot)
+          if (this.disposed) throw new Error('The workspace was closed.')
           this.records.set(note.path, record)
-          const preview = { source, record, uri: record.uri }
-          resolve(preview)
-          const saved = this.notes.get(note.uri)
-          if (saved?.source === source && this.snapshot === snapshot) {
-            try {
-              const output = record.output
-              if (!output || (await this.options.storage.stamp(output.uri)) !== output.stamp) {
-                const base64 = await this.options.storage.base64(record.uri)
-                if (this.disposed || this.notes.get(note.uri)?.source !== source) return
-                const uri = await this.options.storage.write(saved, base64, snapshot.sharedHash)
-                const stamp = await this.options.storage.stamp(uri)
-                if (!stamp) throw new Error('Cannot verify the stored PDF.')
-                record.output = { uri, stamp }
-                this.persisted.delete(record)
-              }
-              if (this.disposed || this.notes.get(note.uri)?.source !== source) return
-              if (!this.persisted.has(record)) {
-                await this.options.storage.save(note.path, record)
-                this.persisted.add(record)
-              }
-              if (this.disposed || this.notes.get(note.uri)?.source !== source) return
-              await this.options.storage.hash(saved, snapshot.sharedHash)
-              if (record.output && saved.pdfUri !== record.output.uri)
-                this.options.onPdf?.({ ...saved, pdfUri: record.output.uri })
-              this.errors.delete(note.path)
-            } catch (cause) {
-              this.errors.set(note.path, `Cannot store the current PDF: ${String(cause)}`)
-            }
-          }
+          resolve({ source, record, uri: record.uri })
+          await this.persistRecord(note, source, snapshot, record)
         } catch (error) {
           if (!this.disposed && this.notes.get(note.uri)?.source === source)
             this.errors.set(note.path, String(error))

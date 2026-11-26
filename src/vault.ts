@@ -46,6 +46,13 @@ const MAX_COMPILE_TOTAL = 100 * 1024 * 1024
 const COMPILE_STAMP_MAX_AGE = 60_000
 const SOURCE_CACHE_MAX_AGE = 86_400_000
 const SOURCE_CACHE_SESSIONS = 24
+const READ_RETRY_DELAY = 150
+const OUTPUT_LISTING_MAX_AGE = 15_000
+const OUTPUT_LISTING_CACHE_LIMIT = 64
+const UNIQUE_NAME_ATTEMPTS = 100
+const MAX_FILENAME_BYTES = 120
+const PDF_CACHE_MAX_COPIES = 24
+const PDF_CACHE_MAX_AGE = 86_400_000
 const excludedDirectories = new Set(['style', 'assets', 'packages', 'out', '.direnv', '.git'])
 const compileExcludedDirectories = new Set(['out', '.direnv', '.git'])
 const noteExcludedDirectories = new Set([...excludedDirectories, 'fonts'])
@@ -79,6 +86,38 @@ type OutputListings = Map<string, { readAt: number; entries: { uri: string; name
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function relativeSegments(value: string, error: string, allowEmpty = false): string[] {
+  if (allowEmpty && value === '') return []
+  if (
+    !value ||
+    value.startsWith('/') ||
+    value.endsWith('/') ||
+    value.includes('\\') ||
+    /[\p{Cc}]/u.test(value)
+  ) {
+    throw new Error(error)
+  }
+  const segments = value.split('/')
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    throw new Error(error)
+  }
+  return segments
+}
+
+async function retryOnce<T>(
+  read: () => T | Promise<T>,
+  shouldRetry: (error: unknown) => boolean = () => true
+): Promise<T> {
+  try {
+    return await read()
+  } catch (error) {
+    if (!shouldRetry(error)) throw error
+    // A sync client replacing a file can make one read fail and the next succeed.
+    await new Promise((resolve) => setTimeout(resolve, READ_RETRY_DELAY))
+    return await read()
+  }
 }
 
 function selectionPath(): string {
@@ -223,23 +262,10 @@ function sourceFilename(path: string): string {
 }
 
 function pdfOutput(path: string): { directories: string[]; filename: string; path: string } {
-  if (
-    !path ||
-    path.startsWith('/') ||
-    path.endsWith('/') ||
-    path.includes('\\') ||
-    /[\p{Cc}]/u.test(path)
-  ) {
-    throw new Error(
-      `Cannot write the PDF for "${path}": the note path is not a safe relative path.`
-    )
-  }
-  const segments = path.split('/')
-  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
-    throw new Error(
-      `Cannot write the PDF for "${path}": the note path is not a safe relative path.`
-    )
-  }
+  const segments = relativeSegments(
+    path,
+    `Cannot write the PDF for "${path}": the note path is not a safe relative path.`
+  )
   const source = segments[segments.length - 1]
   const stem = source.replace(/\.typ$/iu, '')
   if (!/\.typ$/iu.test(source) || !stem || stem === '.' || stem === '..' || stem.startsWith('.')) {
@@ -311,6 +337,26 @@ function isChildUri(parent: string, child: string, name: string): boolean {
   return child.startsWith(`${tree}/document/`) && childId === `${parentId}/${name}`
 }
 
+function checkCreated(
+  parent: string,
+  created: string,
+  requested: string,
+  existing: readonly { uri: string }[],
+  caseInsensitive = false
+): { ok: boolean; actual: string } {
+  const actual = documentName(created)
+  const matches = caseInsensitive
+    ? actual.toLowerCase() === requested.toLowerCase()
+    : actual === requested
+  return {
+    ok:
+      matches &&
+      isChildUri(parent, created, actual) &&
+      !existing.some((entry) => entry.uri === created),
+    actual,
+  }
+}
+
 async function outputEntries(
   parent: string,
   name: string,
@@ -326,10 +372,10 @@ async function outputEntries(
       (entry) => entry.toLowerCase() === name.toLowerCase()
     )
   let listing = cache.get(parent)
-  if (!listing || Date.now() - listing.readAt > 15000) {
+  if (!listing || Date.now() - listing.readAt > OUTPUT_LISTING_MAX_AGE) {
     const uris = await SAF.readDirectoryAsync(parent)
     listing = { readAt: Date.now(), entries: uris.map((uri) => ({ uri, name: documentName(uri) })) }
-    if (cache.size >= 64) cache.clear()
+    if (cache.size >= OUTPUT_LISTING_CACHE_LIMIT) cache.clear()
     cache.set(parent, listing)
   }
   return Promise.all(
@@ -362,12 +408,8 @@ async function ensureVaultDirectory(
     return existing.uri
   }
   const created = await SAF.makeDirectoryAsync(parent, name)
-  const actual = documentName(created)
-  if (
-    actual.toLowerCase() !== name.toLowerCase() ||
-    !isChildUri(parent, created, actual) ||
-    entries.some((entry) => entry.uri === created)
-  ) {
+  const { ok, actual } = checkCreated(parent, created, name, entries, true)
+  if (!ok) {
     throw new Error(
       `The document provider created "${actual}" instead of "${name}". Nothing was written.`
     )
@@ -406,12 +448,7 @@ async function ensureVaultFile(
     return existing.uri
   }
   const created = await SAF.createFileAsync(parent, name, mimeType)
-  const actual = documentName(created)
-  if (
-    actual.toLowerCase() !== name.toLowerCase() ||
-    !isChildUri(parent, created, actual) ||
-    entries.some((entry) => entry.uri === created)
-  ) {
+  if (!checkCreated(parent, created, name, entries, true).ok) {
     throw new Error(
       `The document provider did not create the requested ${kind} "${name}". Nothing was written.`
     )
@@ -421,24 +458,13 @@ async function ensureVaultFile(
 }
 
 function noteDirectorySegments(directory: string): string[] {
-  if (directory === '') return []
-  if (
-    directory.startsWith('/') ||
-    directory.endsWith('/') ||
-    directory.includes('\\') ||
-    /[\p{Cc}]/u.test(directory)
-  ) {
-    throw new Error(`Cannot create a note in "${directory}": the folder path is not safe.`)
-  }
-  const segments = directory.split('/')
+  const segments = relativeSegments(
+    directory,
+    `Cannot create a note in "${directory}": the folder path is not safe.`,
+    true
+  )
   for (const segment of segments) {
-    if (
-      !segment ||
-      segment === '.' ||
-      segment === '..' ||
-      segment.startsWith('.') ||
-      noteExcludedDirectories.has(segment.toLowerCase())
-    ) {
+    if (segment.startsWith('.') || noteExcludedDirectories.has(segment.toLowerCase())) {
       throw new Error(`Cannot create a note in "${directory}": the folder path is not safe.`)
     }
   }
@@ -559,14 +585,11 @@ export type VaultLibrary = {
 }
 
 async function readNoteSource(uri: string, cancelled: () => boolean): Promise<string> {
-  try {
-    return await (readVaultText(uri) ?? new File(uri).text())
-  } catch (error) {
+  const read = () => readVaultText(uri) ?? new File(uri).text()
+  return retryOnce(read, (error) => {
     if (cancelled()) throw error
-    // A sync client replacing a file can make one read fail and the next succeed.
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    return await (readVaultText(uri) ?? new File(uri).text())
-  }
+    return true
+  })
 }
 
 export type VaultScanProgress = {
@@ -826,7 +849,7 @@ function newFolderName(value: string): string {
     name.startsWith('.') ||
     /[/\\:*?"<>|\p{Cc}]/u.test(name) ||
     name.endsWith('.') ||
-    encodeURIComponent(name).replace(/%[A-F\d]{2}/gu, '_').length > 120
+    encodeURIComponent(name).replace(/%[A-F\d]{2}/gu, '_').length > MAX_FILENAME_BYTES
   ) {
     throw new Error('Use a folder name without slashes, hidden names, or filename punctuation.')
   }
@@ -860,8 +883,8 @@ export async function createFolder(
     )
   }
   const uri = await SAF.makeDirectoryAsync(parent.uri, name)
-  const actual = documentName(uri)
-  if (actual !== name || !isChildUri(parent.uri, uri, actual)) {
+  const { ok, actual } = checkCreated(parent.uri, uri, name, [])
+  if (!ok) {
     throw new Error(
       `The document provider created "${actual}" instead of "${name}". Choose a different name.`
     )
@@ -870,19 +893,7 @@ export async function createFolder(
 }
 
 function movableNoteName(path: string): string {
-  if (
-    !path ||
-    path.startsWith('/') ||
-    path.endsWith('/') ||
-    path.includes('\\') ||
-    /[\p{Cc}]/u.test(path)
-  ) {
-    throw new Error('Cannot move this note: the note path is not safe.')
-  }
-  const segments = path.split('/')
-  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
-    throw new Error('Cannot move this note: the note path is not safe.')
-  }
+  const segments = relativeSegments(path, 'Cannot move this note: the note path is not safe.')
   const name = segments.at(-1) ?? ''
   if (name.startsWith('.') || !/\.typ$/iu.test(name)) {
     throw new Error('Cannot move this note: only visible Typst notes can be moved.')
@@ -914,12 +925,7 @@ export async function moveNoteToFolder(vault: Vault, note: Note, directory: stri
   }
   const source = await FileSystem.readAsStringAsync(note.uri)
   const uri = await SAF.createFileAsync(parent.uri, filename, 'application/octet-stream')
-  const actual = documentName(uri)
-  if (
-    actual !== filename ||
-    !isChildUri(parent.uri, uri, actual) ||
-    existing.some((entry) => entry.uri === uri)
-  ) {
+  if (!checkCreated(parent.uri, uri, filename, existing).ok) {
     throw new Error('The document provider did not create the requested moved filename.')
   }
   try {
@@ -982,12 +988,7 @@ export async function createNote(
   }
   // A text/plain MIME type can cause Android providers to append an unwanted .txt extension.
   const uri = await SAF.createFileAsync(parent.uri, filename, 'application/octet-stream')
-  const actual = documentName(uri)
-  if (
-    actual !== filename ||
-    !isChildUri(parent.uri, uri, actual) ||
-    existing.some((entry) => entry.uri === uri)
-  ) {
+  if (!checkCreated(parent.uri, uri, filename, existing).ok) {
     throw new Error(
       'The document provider did not create the requested new filename. Nothing was written.'
     )
@@ -1072,18 +1073,9 @@ export async function appendToNoteAtPath(
 }
 
 function notePathSegments(path: string): string[] {
-  if (
-    !path ||
-    path.startsWith('/') ||
-    path.endsWith('/') ||
-    path.includes('\\') ||
-    /[\p{Cc}]/u.test(path)
-  ) {
-    throw new Error('Cannot move this note to trash: the path is not safe.')
-  }
-  const segments = path.split('/')
+  const segments = relativeSegments(path, 'Cannot move this note to trash: the path is not safe.')
   for (const segment of segments) {
-    if (!segment || segment === '.' || segment === '..' || segment.startsWith('.')) {
+    if (segment.startsWith('.')) {
       throw new Error('Cannot move this note to trash: the path is not safe.')
     }
   }
@@ -1112,15 +1104,39 @@ async function ensureTrashRoot(vault: Vault): Promise<string> {
     return existing.uri
   }
   const created = await SAF.makeDirectoryAsync(vault.uri, '.trash')
-  const actual = documentName(created)
-  if (
-    actual.toLowerCase() !== '.trash' ||
-    !isChildUri(vault.uri, created, actual) ||
-    entries.some((entry) => entry.uri === created)
-  ) {
+  if (!checkCreated(vault.uri, created, '.trash', entries, true).ok) {
     throw new Error('The document provider did not create the requested trash folder.')
   }
   return created
+}
+
+async function trashParent(
+  vault: Vault,
+  segments: string[]
+): Promise<{ uri: string; path: string }> {
+  let uri = await ensureTrashRoot(vault)
+  let path = '.trash'
+  for (const segment of segments) {
+    uri = await ensureVaultDirectory(uri, segment, `${path}/${segment}`)
+    path = `${path}/${segment}`
+  }
+  return { uri, path }
+}
+
+async function uniqueOutputName(
+  parent: string,
+  path: string,
+  name: string,
+  error: string,
+  variant: (stamp: string, attempt: number) => string
+): Promise<{ name: string; matches: ListedEntry[] }> {
+  const stamp = new Date().toISOString().replace(/[:.]/gu, '-')
+  for (let attempt = 0; attempt < UNIQUE_NAME_ATTEMPTS; attempt++) {
+    const candidate = attempt === 0 ? name : variant(stamp, attempt)
+    const matches = await outputEntries(parent, candidate, `${path}/${candidate}`)
+    if (!matches.length) return { name: candidate, matches }
+  }
+  throw new Error(error)
 }
 
 async function trashDestination(
@@ -1131,33 +1147,22 @@ async function trashDestination(
   const dot = name.lastIndexOf('.')
   const stem = dot > 0 ? name.slice(0, dot) : name
   const extension = dot > 0 ? name.slice(dot) : ''
-  const stamp = new Date().toISOString().replace(/[:.]/gu, '-')
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const candidate =
-      attempt === 0 ? name : `${stem}.${stamp}${attempt === 1 ? '' : `-${attempt}`}${extension}`
-    const matches = await outputEntries(parent, candidate, `${path}/${candidate}`)
-    if (!matches.length) return { name: candidate, matches }
-  }
-  throw new Error(`Cannot move this note to trash: no available name in "${path}".`)
+  return uniqueOutputName(
+    parent,
+    path,
+    name,
+    `Cannot move this note to trash: no available name in "${path}".`,
+    (stamp, attempt) => `${stem}.${stamp}${attempt === 1 ? '' : `-${attempt}`}${extension}`
+  )
 }
 
 export async function trashNote(vault: Vault, note: Note): Promise<TrashedNote> {
   const segments = notePathSegments(note.path)
   const source = await FileSystem.readAsStringAsync(note.uri)
-  let parent = await ensureTrashRoot(vault)
-  let path = '.trash'
-  for (const segment of segments.slice(0, -1)) {
-    parent = await ensureVaultDirectory(parent, segment, `${path}/${segment}`)
-    path = `${path}/${segment}`
-  }
+  const { uri: parent, path } = await trashParent(vault, segments.slice(0, -1))
   const destination = await trashDestination(parent, path, segments.at(-1) ?? '')
   const uri = await SAF.createFileAsync(parent, destination.name, 'application/octet-stream')
-  const actual = documentName(uri)
-  if (
-    actual.toLowerCase() !== destination.name.toLowerCase() ||
-    !isChildUri(parent, uri, actual) ||
-    destination.matches.some((entry) => entry.uri === uri)
-  ) {
+  if (!checkCreated(parent, uri, destination.name, destination.matches, true).ok) {
     throw new Error('The document provider did not create the requested trash filename.')
   }
   let removing = false
@@ -1195,24 +1200,9 @@ export type MovedFolder = {
 }
 
 function folderPathSegments(path: string): string[] {
-  if (
-    !path ||
-    path.startsWith('/') ||
-    path.endsWith('/') ||
-    path.includes('\\') ||
-    /[\p{Cc}]/u.test(path)
-  ) {
-    throw new Error('Cannot move this folder: the folder path is not safe.')
-  }
-  const segments = path.split('/')
+  const segments = relativeSegments(path, 'Cannot move this folder: the folder path is not safe.')
   for (const segment of segments) {
-    if (
-      !segment ||
-      segment === '.' ||
-      segment === '..' ||
-      segment.startsWith('.') ||
-      noteExcludedDirectories.has(segment.toLowerCase())
-    ) {
+    if (segment.startsWith('.') || noteExcludedDirectories.has(segment.toLowerCase())) {
       throw new Error('Cannot move this folder: the folder path is not safe.')
     }
   }
@@ -1241,16 +1231,14 @@ async function copyVaultTree(
     const path = relative ? `${relative}/${entry.name}` : entry.name
     if (entry.info.isDirectory) {
       const created = await SAF.makeDirectoryAsync(destination, entry.name)
-      const actual = documentName(created)
-      if (actual !== entry.name || !isChildUri(destination, created, actual)) {
+      if (!checkCreated(destination, created, entry.name, []).ok) {
         throw new Error(`The document provider did not create "${entry.name}" during the copy.`)
       }
       await copyVaultTree(entry.uri, created, `${context}/${entry.name}`, path, copied)
       continue
     }
     const created = await SAF.createFileAsync(destination, entry.name, 'application/octet-stream')
-    const actual = documentName(created)
-    if (actual !== entry.name || !isChildUri(destination, created, actual)) {
+    if (!checkCreated(destination, created, entry.name, []).ok) {
       throw new Error(`The document provider did not create "${entry.name}" during the copy.`)
     }
     await copyVaultFile(entry.uri, created)
@@ -1271,8 +1259,8 @@ async function newFolderAt(parent: { uri: string; path: string }, name: string):
     )
   }
   const created = await SAF.makeDirectoryAsync(parent.uri, name)
-  const actual = documentName(created)
-  if (actual !== name || !isChildUri(parent.uri, created, actual)) {
+  const { ok, actual } = checkCreated(parent.uri, created, name, [])
+  if (!ok) {
     throw new Error(`The document provider created "${actual}" instead of "${name}".`)
   }
   return created
@@ -1313,28 +1301,23 @@ export async function moveFolderToFolder(
 }
 
 async function trashFolderName(parent: string, path: string, name: string): Promise<string> {
-  const stamp = new Date().toISOString().replace(/[:.]/gu, '-')
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const candidate = attempt === 0 ? name : `${name}.${stamp}${attempt === 1 ? '' : `-${attempt}`}`
-    const matches = await outputEntries(parent, candidate, `${path}/${candidate}`)
-    if (!matches.length) return candidate
-  }
-  throw new Error(`Cannot move this folder to trash: no available name in "${path}".`)
+  const result = await uniqueOutputName(
+    parent,
+    path,
+    name,
+    `Cannot move this folder to trash: no available name in "${path}".`,
+    (stamp, attempt) => `${name}.${stamp}${attempt === 1 ? '' : `-${attempt}`}`
+  )
+  return result.name
 }
 
 export async function trashFolder(vault: Vault, path: string): Promise<TrashedNote> {
   const segments = folderPathSegments(path)
   const source = await resolveNoteDirectory(vault, segments, 'move this folder to trash')
-  let parent = await ensureTrashRoot(vault)
-  let trashPath = '.trash'
-  for (const segment of segments.slice(0, -1)) {
-    parent = await ensureVaultDirectory(parent, segment, `${trashPath}/${segment}`)
-    trashPath = `${trashPath}/${segment}`
-  }
+  const { uri: parent, path: trashPath } = await trashParent(vault, segments.slice(0, -1))
   const destination = await trashFolderName(parent, trashPath, segments.at(-1) ?? '')
   const created = await SAF.makeDirectoryAsync(parent, destination)
-  const actual = documentName(created)
-  if (actual.toLowerCase() !== destination.toLowerCase() || !isChildUri(parent, created, actual)) {
+  if (!checkCreated(parent, created, destination, [], true).ok) {
     await FileSystem.deleteAsync(created, { idempotent: true }).catch(() => {})
     throw new Error('The document provider did not create the requested trash folder.')
   }
@@ -1372,12 +1355,7 @@ export async function restoreNote(
   }
   const source = await FileSystem.readAsStringAsync(trashed.uri)
   const uri = await SAF.createFileAsync(parent.uri, filename, 'application/octet-stream')
-  const actual = documentName(uri)
-  if (
-    actual !== filename ||
-    !isChildUri(parent.uri, uri, actual) ||
-    existing.some((entry) => entry.uri === uri)
-  ) {
+  if (!checkCreated(parent.uri, uri, filename, existing).ok) {
     throw new Error(
       `Cannot restore "${originalPath}": the document provider did not create the requested filename.`
     )
@@ -1420,8 +1398,7 @@ export async function restoreFolder(
     throw new Error(`Cannot restore "${originalPath}": a folder with that name already exists.`)
   }
   const created = await SAF.makeDirectoryAsync(parent.uri, name)
-  const actual = documentName(created)
-  if (actual.toLowerCase() !== name.toLowerCase() || !isChildUri(parent.uri, created, actual)) {
+  if (!checkCreated(parent.uri, created, name, [], true).ok) {
     await FileSystem.deleteAsync(created, { idempotent: true }).catch(() => {})
     throw new Error(
       `Cannot restore "${originalPath}": the document provider did not create the requested folder.`
@@ -1548,8 +1525,7 @@ export async function saveTemplate(vault: Vault, source: string, expected?: stri
   const entry = await rootTemplate(vault)
   if (!entry) {
     const uri = await SAF.createFileAsync(vault.uri, 'template.typ', 'application/octet-stream')
-    const actual = documentName(uri)
-    if (actual !== 'template.typ' || !isChildUri(vault.uri, uri, actual)) {
+    if (!checkCreated(vault.uri, uri, 'template.typ', []).ok) {
       throw new Error('The document provider did not create template.typ. Nothing was written.')
     }
     try {
@@ -1653,14 +1629,7 @@ export async function loadCompileFiles(
         error.code === 'ERR_TYPO_VAULT_FILE_LIMIT'
       let base64: string
       try {
-        try {
-          base64 = await read()
-        } catch (error) {
-          if (limited(error)) throw error
-          // A sync client replacing a file can make one read fail and the next succeed.
-          await new Promise((resolve) => setTimeout(resolve, 150))
-          base64 = await read()
-        }
+        base64 = await retryOnce(read, (error) => !limited(error))
       } catch (error) {
         if (limited(error)) {
           throw new Error(
@@ -1849,7 +1818,8 @@ export async function preparePdf(note: Note): Promise<string> {
     cached
       .filter(
         (name, index) =>
-          index >= 23 || Date.now() - Number.parseInt(name.split('-')[1], 36) > 86_400_000
+          index >= PDF_CACHE_MAX_COPIES - 1 ||
+          Date.now() - Number.parseInt(name.split('-')[1], 36) > PDF_CACHE_MAX_AGE
       )
       .map((name) => FileSystem.deleteAsync(`${directory}${name}`, { idempotent: true }))
   )

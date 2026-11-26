@@ -19,14 +19,9 @@ import {
   waitForApp,
   waitForBoot,
 } from './android'
+import { parseArgs } from './args'
 
-const args = new Map<string, string>()
-for (let index = 0; index < process.argv.length; index++) {
-  const value = process.argv[index]
-  if (!value.startsWith('--')) continue
-  const next = process.argv[index + 1]
-  args.set(value.slice(2), next && !next.startsWith('--') ? next : 'true')
-}
+const args = parseArgs(process.argv)
 
 const FOLDER = args.get('folder') ?? 'Download/typo-startup'
 const NOTES = Number(args.get('notes') ?? 200)

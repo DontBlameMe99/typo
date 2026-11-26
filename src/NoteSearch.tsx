@@ -2,6 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { View } from 'react-native'
 import { WebView } from 'react-native-webview'
 import { inlineJson } from './editor/document'
+import {
+  clearDeadlineRestart,
+  disarmDeadline,
+  expireDeadline,
+  markDeadlineArmed,
+  searchDeadline,
+  shouldArmDeadline,
+} from './search/deadline-state'
 import { type SearchHit, SearchTransport } from './search/protocol'
 import type { Note, SearchMode, SearchResult } from './types'
 import { webRuntime } from './web-runtime'
@@ -29,8 +37,7 @@ export function NoteSearch(props: Props) {
   const sequence = useRef(0)
   const requested = useRef<{ at: number; mode: SearchMode } | null>(null)
   const deadline = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const armed = useRef<string | null>(null)
-  const restarted = useRef<string | null>(null)
+  const deadlineState = useRef(searchDeadline())
   const [uri, setUri] = useState<string | null>(null)
   const [started, setStarted] = useState(false)
   const [session, setSession] = useState(0)
@@ -38,7 +45,7 @@ export function NoteSearch(props: Props) {
   // resend the query the previous page never answered.
   const [booted, setBooted] = useState<{ session: number } | null>(null)
   const disarm = useCallback(() => {
-    armed.current = null
+    disarmDeadline(deadlineState.current)
     if (deadline.current !== null) {
       clearTimeout(deadline.current)
       deadline.current = null
@@ -65,20 +72,19 @@ export function NoteSearch(props: Props) {
     (query: string) => {
       // A note change sends another request for the same wait, which must not
       // push the deadline back.
-      if (armed.current === query) return
+      if (!shouldArmDeadline(deadlineState.current, query)) return
       disarm()
-      armed.current = query
+      markDeadlineArmed(deadlineState.current, query)
       deadline.current = setTimeout(() => {
         deadline.current = null
-        armed.current = null
         const failed = latest.current.query
         // A runtime that keeps dying would reload the whole vault every deadline,
         // so each query only gets one fresh runtime to try.
-        if (restarted.current === failed) {
+        const outcome = expireDeadline(deadlineState.current, failed)
+        if (outcome === 'fail') {
           fail('The note search is not responding. Clear the search and try again.')
           return
         }
-        restarted.current = failed
         fail('The note search stopped responding and is restarting.')
         restart()
       }, SEARCH_DEADLINE)
@@ -94,7 +100,7 @@ export function NoteSearch(props: Props) {
     if (props.query.trim()) arm(props.query)
     else {
       disarm()
-      restarted.current = null
+      clearDeadlineRestart(deadlineState.current)
     }
   }, [started, booted, session, props.query, arm, disarm])
   useEffect(() => {
@@ -124,7 +130,7 @@ export function NoteSearch(props: Props) {
     const searching = !!props.query.trim()
     if (!searching) {
       disarm()
-      restarted.current = null
+      clearDeadlineRestart(deadlineState.current)
     }
     const request = transport.current.request(props.notes, props.query, props.mode)
     const view = web.current
@@ -179,7 +185,7 @@ export function NoteSearch(props: Props) {
                   fail(String(message.message))
               } else if (message.type === 'results' && message.id === sequence.current) {
                 disarm()
-                restarted.current = null
+                clearDeadlineRestart(deadlineState.current)
                 if (!Array.isArray(message.results)) throw new Error('Invalid search results')
                 const notes = new Map(latest.current.notes.map((note) => [note.path, note]))
                 const results: SearchResult[] = []

@@ -2,13 +2,13 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { View } from 'react-native'
 import { WebView } from 'react-native-webview'
 import type { Diagnostic } from './compiler/diagnostics'
+import { compilerMessage } from './compiler/message'
 import { packageArchive } from './compiler/packages'
 import {
   type CompileFailureKind,
   type CompileInput,
   type CompileResult,
   compileFailure,
-  type PackageSpec,
   packageKey,
 } from './compiler/protocol'
 import { CompilerTransport } from './compiler/transport'
@@ -25,31 +25,6 @@ type Job = {
   resolve: (pdf: CompileResult) => void
   reject: (error: Error) => void
   timeout: ReturnType<typeof setTimeout>
-}
-
-function readIssues(value: unknown): Diagnostic[] {
-  if (!Array.isArray(value)) return []
-  const issues: Diagnostic[] = []
-  for (const item of value) {
-    if (!item || typeof item !== 'object') continue
-    const { path, line, column, severity, message } = item as Record<string, unknown>
-    if (
-      typeof path !== 'string' ||
-      !Number.isSafeInteger(line) ||
-      !Number.isSafeInteger(column) ||
-      (severity !== 'error' && severity !== 'warning' && severity !== 'hint') ||
-      typeof message !== 'string'
-    )
-      continue
-    issues.push({
-      path,
-      line: line as number,
-      column: column as number,
-      severity,
-      message,
-    })
-  }
-  return issues
 }
 
 export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_props, ref) {
@@ -172,7 +147,8 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
           onMessage={(event) => {
             void (async () => {
               try {
-                const message = JSON.parse(event.nativeEvent.data)
+                const message = compilerMessage(event.nativeEvent.data)
+                if (!message) return
                 if (message.type === 'crash') {
                   fail(
                     typeof message.message === 'string' ? message.message : 'The compiler stopped.'
@@ -199,13 +175,7 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
                 }
                 const current = job.current
                 if (!current || current.id !== message.id) return
-                if (
-                  message.type === 'pdf' &&
-                  typeof message.base64 === 'string' &&
-                  message.base64.startsWith('JVBERi0') &&
-                  Array.isArray(message.dependencies) &&
-                  message.dependencies.every((path: unknown) => typeof path === 'string')
-                ) {
+                if (message.type === 'pdf') {
                   clearTimeout(current.timeout)
                   job.current = null
                   current.resolve({ base64: message.base64, dependencies: message.dependencies })
@@ -215,19 +185,19 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
                       ? message.message
                       : 'Typst could not generate the PDF.',
                     'diagnostics',
-                    readIssues(message.issues)
+                    message.issues
                   )
                 else if (message.type === 'error')
                   fail(
                     typeof message.message === 'string' ? message.message : 'The compiler stopped.'
                   )
-                else if (message.type === 'packages' && Array.isArray(message.packages)) {
+                else if (message.type === 'packages') {
                   if (
                     ++current.rounds > 32 ||
                     current.archives.size + message.packages.length > 100
                   )
                     throw new Error('This document exceeds the package dependency limit.')
-                  for (const spec of message.packages as PackageSpec[]) {
+                  for (const spec of message.packages) {
                     const key = packageKey(spec)
                     const archive = await packageArchive(spec)
                     if (job.current !== current) return

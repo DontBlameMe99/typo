@@ -8,10 +8,10 @@ const HEADING = /^\s*(={1,6})\s+(.+?)\s*$/u
 const EMPTY_BULLET = /^([ \t]*)([-+*])\s*$/u
 const BULLET = /^([ \t]*)([-+*])\s+\S/u
 
-export function listHeadings(source: string): Heading[] {
+function headingsFromLines(lines: string[]): Heading[] {
   const headings: Heading[] = []
   let raw = false
-  source.split(/\r?\n/u).forEach((line, index) => {
+  lines.forEach((line, index) => {
     if (line.trimStart().startsWith('```')) {
       raw = !raw
       return
@@ -26,6 +26,18 @@ export function listHeadings(source: string): Heading[] {
   return headings
 }
 
+function sourceLines(source: string): string[] {
+  return source.split(/\r?\n/u)
+}
+
+function sourceNewline(source: string): string {
+  return source.includes('\r\n') ? '\r\n' : '\n'
+}
+
+export function listHeadings(source: string): Heading[] {
+  return headingsFromLines(sourceLines(source))
+}
+
 function headingText(value: string): string {
   return value
     .trim()
@@ -33,8 +45,8 @@ function headingText(value: string): string {
     .trim()
 }
 
-function sectionLines(source: string, section: string): { start: number; end: number } {
-  const headings = listHeadings(source)
+function sectionLines(lines: string[], section: string): { start: number; end: number } {
+  const headings = headingsFromLines(lines)
   const matches = headings.filter((heading) => heading.text === section.trim())
   if (matches.length === 0) {
     throw new Error(`The section "${section}" was not found. The note was left unchanged.`)
@@ -46,16 +58,15 @@ function sectionLines(source: string, section: string): { start: number; end: nu
   const next = headings.find(
     (heading) => heading.line > target.line && heading.level <= target.level
   )
-  const lines = source.split(/\r?\n/u)
   return { start: target.line + 1, end: next?.line ?? lines.length }
 }
 
 export function appendToSection(source: string, section: string, text: string): string {
   const entry = text.replace(/\r?\n$/u, '').trim()
   if (!entry) throw new Error('Write something to append first.')
-  const newline = source.includes('\r\n') ? '\r\n' : '\n'
-  const lines = source.split(/\r?\n/u)
-  const { start, end } = sectionLines(source, section)
+  const lines = sourceLines(source)
+  const newline = sourceNewline(source)
+  const { start, end } = sectionLines(lines, section)
   const content = lines.slice(start, end)
   let lastContent = -1
   for (let index = content.length - 1; index >= 0; index--) {

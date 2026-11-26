@@ -3,7 +3,7 @@
 
 export const ADB = process.env.ADB ?? 'adb'
 export const SERIAL = process.env.ANDROID_SERIAL ?? ''
-const ADB_ARGS = SERIAL ? ['-s', SERIAL] : []
+export const ADB_ARGS = SERIAL ? ['-s', SERIAL] : []
 
 export class AdbError extends Error {}
 
