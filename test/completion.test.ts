@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { Text } from '@codemirror/state'
+import { type ChangeSet, EditorState, Text } from '@codemirror/state'
 import {
   commandCompletion,
   commandCompletionAt,
@@ -129,6 +129,37 @@ describe('literal positions', () => {
     expect(isLiteralPosition([{ from: 4, to: 20, style: 'comment' }], 4)).toBe(false)
     expect(isLiteralPosition([{ from: 4, to: 20, style: 'comment' }], 20)).toBe(false)
     expect(isLiteralPosition([{ from: 0, to: 8, style: 'number' }], 4)).toBe(false)
+  })
+  test('preserves literal boundaries across inserts and deletions', () => {
+    const source = 'a'.repeat(100)
+    const ranges = [
+      { from: 5, to: 12, style: 'number' },
+      { from: 20, to: 30, style: 'string' },
+      { from: 40, to: 50, style: 'raw' },
+      { from: 60, to: 70, style: 'comment' },
+    ]
+    const steps: { changes: ChangeSet; inverse: ChangeSet }[] = []
+    let mapped = ranges
+    let state = EditorState.create({ doc: source })
+    for (const edit of [
+      { from: 25, to: 28, insert: ' replacement ' },
+      { from: 42, to: 48, insert: 'x' },
+      { from: 8, to: 8, insert: 'abc' },
+    ]) {
+      const transaction = state.update({ changes: edit })
+      steps.push({
+        changes: transaction.changes,
+        inverse: transaction.changes.invert(transaction.startState.doc),
+      })
+      mapped = mapped.map(({ from, to, style }) => ({
+        from: transaction.changes.mapPos(from, 1),
+        to: transaction.changes.mapPos(to, -1),
+        style,
+      }))
+      state = transaction.state
+      for (let pos = 0; pos <= state.doc.length; pos++)
+        expect(isLiteralPosition(ranges, pos, steps)).toBe(isLiteralPosition(mapped, pos))
+    }
   })
 })
 
