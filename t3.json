@@ -4,10 +4,17 @@
   "scripts": [
     {
       "name": "Setup Worktree",
-      "command": "nix develop -c bun install --frozen-lockfile",
+      "command": "nix shell nixpkgs#bun -c bun install --frozen-lockfile",
       "icon": "configure",
       "runOnWorktreeCreate": true,
       "async": false
+    },
+    {
+      "name": "Cleanup",
+      "command": "rm -rf .tmp node_modules dist .expo android/build coverage tsconfig.tsbuildinfo",
+      "icon": "play",
+      "runOnWorktreeCreate": false,
+      "runOnSettle": true
     }
   ]
 }
