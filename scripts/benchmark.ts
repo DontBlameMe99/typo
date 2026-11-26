@@ -10,6 +10,7 @@ import { applyEditorChange, editorMessage } from '../src/editor/protocol'
 import { TypstSyntax, typstLanguage } from '../src/editor/syntax'
 import { parseVaultIndex, serializeVaultIndex } from '../src/library-index'
 import { sortedNoteRows } from '../src/library-rows'
+import { SearchTransport } from '../src/search/protocol'
 import type { Note } from '../src/types'
 
 // Measurements are only comparable within one method. Changing how a workload is
@@ -130,6 +131,22 @@ export async function runBenchmarks(read: (path: string) => Promise<Uint8Array>,
         () => search(query, mode)
       )
   }
+  const transportNotes = notesFor(1000)
+  const transport = new SearchTransport()
+  transport.request(transportNotes, '', 'all')
+  await measure(
+    {
+      name: 'search/1000/transport-queries',
+      criterion: 'prepare 200 queries without rescanning unchanged notes',
+      budgetMs: TWO_FRAMES_MS,
+      samples: 10,
+      warmup: 1,
+    },
+    () => {
+      for (let index = 0; index < 200; index++)
+        transport.request(transportNotes, `query${index % 7}`, 'all')
+    }
+  )
   for (const count of [1000, 5000]) {
     const notes = notesFor(count, 0)
     for (const sort of ['name-asc', 'name-desc', 'modified-desc'] as const)

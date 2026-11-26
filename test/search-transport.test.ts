@@ -40,13 +40,32 @@ test('Names requests do not read or transfer note sources', () => {
 
 test('switching from Names to Everywhere hydrates sources once', () => {
   const transport = new SearchTransport()
-  transport.request([note], 'one', 'names')
-  expect(transport.request([note], 'one', 'all')?.updated).toEqual([
+  const notes = [note]
+  transport.request(notes, 'one', 'names')
+  expect(transport.request(notes, 'one', 'all')?.updated).toEqual([
     { path: note.path, title: note.title, source: note.source },
   ])
-  expect(transport.request([note], 'on', 'all')?.updated).toEqual([])
-  transport.request([note], 'one', 'names')
-  expect(transport.request([note], 'one', 'all')?.updated).toEqual([])
+  expect(transport.request(notes, 'on', 'all')?.updated).toEqual([])
+  transport.request(notes, 'one', 'names')
+  expect(transport.request(notes, 'one', 'all')?.updated).toEqual([])
+})
+
+test('query changes do not rescan an unchanged note array', () => {
+  const transport = new SearchTransport()
+  let sourceReads = 0
+  const entry = {
+    ...note,
+    get source() {
+      sourceReads++
+      return note.source
+    },
+  }
+  const notes = [entry]
+  expect(transport.request(notes, 'one', 'all')?.updated).toHaveLength(1)
+  expect(sourceReads).toBe(1)
+  for (const query of ['on', 'o', 'al', 'algebra'])
+    expect(transport.request(notes, query, 'all')?.updated).toEqual([])
+  expect(sourceReads).toBe(1)
 })
 
 test('edits while in Names are transferred when Everywhere is next used', () => {
