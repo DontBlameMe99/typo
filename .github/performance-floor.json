@@ -34,12 +34,12 @@
       "updatedAt": "2026-11-20T02:19:45.823Z"
     },
     "compiler/initialize": {
-      "sha": "62ccbc63f17f001ee7b634bd17c89f531d6257b2",
+      "sha": "566ec73a7d057ba223c8f11665ed1920e06605ab",
       "method": 2,
-      "medianMs": 132.32524999999987,
-      "worstMedianMs": 135.69995500000005,
+      "medianMs": 146.28367800000024,
+      "worstMedianMs": 146.43800099999999,
       "budgetMs": 400,
-      "updatedAt": "2026-11-20T21:28:56.246Z"
+      "updatedAt": "2026-11-26T03:12:17.445Z"
     },
     "editor/10000/change": {
       "sha": "f122cb7bcfb29792928652b4eef77c03af8fb9bd",
@@ -162,12 +162,12 @@
       "updatedAt": "2026-11-26T02:58:07.180Z"
     },
     "syntax/1000/scroll": {
-      "sha": "1b0b5c02a07f800693956fa1d18f170dbba1bc72",
+      "sha": "566ec73a7d057ba223c8f11665ed1920e06605ab",
       "method": 2,
-      "medianMs": 0.09180500000002212,
-      "worstMedianMs": 0.0946059999996578,
+      "medianMs": 0.09297299999980169,
+      "worstMedianMs": 0.09667999999965105,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-19T21:12:54.659Z"
+      "updatedAt": "2026-11-26T03:12:17.445Z"
     },
     "syntax/1000/type-at-end": {
       "sha": "8c643fc2c9e4110f7c4358f9eb8686ddf5794004",
