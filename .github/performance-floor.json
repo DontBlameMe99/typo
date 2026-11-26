@@ -10,12 +10,12 @@
       "updatedAt": "2026-11-26T02:13:15.843Z"
     },
     "compiler/1-pages/warm": {
-      "sha": "07720764e9c46f1580267f9eda207626fe661b80",
+      "sha": "a5b3421716cfdbbecfd011c849305530c75ab0f3",
       "method": 2,
-      "medianMs": 0.9697299999997995,
-      "worstMedianMs": 0.980373000000327,
+      "medianMs": 0.9697830000000067,
+      "worstMedianMs": 0.9877739999997175,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-09T13:41:47.726Z"
+      "updatedAt": "2026-11-26T02:48:24.764Z"
     },
     "compiler/20-pages/cold": {
       "sha": "1295785112250704339f953e23017b2d771df6a9",
