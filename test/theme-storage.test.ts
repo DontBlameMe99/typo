@@ -11,6 +11,7 @@ const opened: string[] = []
 const writes: string[] = []
 
 mock.module('expo-file-system', () => ({
+  FileMode: { Truncate: 'wt' },
   File: class {
     constructor(private uri: string) {
       opened.push(uri)
@@ -20,6 +21,12 @@ mock.module('expo-file-system', () => ({
     }
     textSync() {
       return stored ?? ''
+    }
+  },
+  Directory: class {
+    constructor(private uri: string) {}
+    get exists() {
+      return this.uri === documentDirectory
     }
   },
 }))
