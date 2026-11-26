@@ -34,12 +34,12 @@
       "updatedAt": "2026-11-20T02:19:45.823Z"
     },
     "compiler/initialize": {
-      "sha": "566ec73a7d057ba223c8f11665ed1920e06605ab",
+      "sha": "f9c17843e73ccd9aa324e26d3f1620ebacdee7a8",
       "method": 2,
-      "medianMs": 146.28367800000024,
-      "worstMedianMs": 146.43800099999999,
+      "medianMs": 140.69769399999996,
+      "worstMedianMs": 143.70691399999987,
       "budgetMs": 400,
-      "updatedAt": "2026-11-26T03:12:17.445Z"
+      "updatedAt": "2026-11-26T03:31:41.217Z"
     },
     "editor/10000/change": {
       "sha": "f122cb7bcfb29792928652b4eef77c03af8fb9bd",
@@ -306,12 +306,36 @@
       "updatedAt": "2026-11-24T18:19:02.740Z"
     },
     "library/1000/card-dates": {
-      "sha": "cfc2e8a41712e15c9c9321029cbd19c267938113",
+      "sha": "f9c17843e73ccd9aa324e26d3f1620ebacdee7a8",
       "method": 2,
-      "medianMs": 0.4609769999999571,
-      "worstMedianMs": 0.49763000000007196,
+      "medianMs": 0.5373349999999846,
+      "worstMedianMs": 0.554531999999881,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-26T02:13:15.843Z"
+      "updatedAt": "2026-11-26T03:31:41.217Z"
+    },
+    "editor/20000-ranges/literal": {
+      "sha": "f9c17843e73ccd9aa324e26d3f1620ebacdee7a8",
+      "method": 2,
+      "medianMs": 0.679198999999926,
+      "worstMedianMs": 0.6945149999999103,
+      "budgetMs": 16.7,
+      "updatedAt": "2026-11-26T03:31:41.217Z"
+    },
+    "editor/20000-ranges/map": {
+      "sha": "f9c17843e73ccd9aa324e26d3f1620ebacdee7a8",
+      "method": 2,
+      "medianMs": 0.9679360000000088,
+      "worstMedianMs": 1.4658219999998892,
+      "budgetMs": 33.4,
+      "updatedAt": "2026-11-26T03:31:41.217Z"
+    },
+    "editor/20000-ranges/map-stalled": {
+      "sha": "f9c17843e73ccd9aa324e26d3f1620ebacdee7a8",
+      "method": 2,
+      "medianMs": 1.1219559999999547,
+      "worstMedianMs": 1.496225000000095,
+      "budgetMs": 33.4,
+      "updatedAt": "2026-11-26T03:31:41.217Z"
     }
   },
   "budgets": {
@@ -353,6 +377,9 @@
     "pdf/20-pages/open": 100,
     "pdf/20-pages/page": 16.7,
     "library/1000/first-previews": 100,
-    "library/1000/card-dates": 16.7
+    "library/1000/card-dates": 16.7,
+    "editor/20000-ranges/literal": 16.7,
+    "editor/20000-ranges/map": 33.4,
+    "editor/20000-ranges/map-stalled": 33.4
   }
 }
