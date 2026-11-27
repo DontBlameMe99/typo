@@ -740,18 +740,23 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
       mode: SearchMode | undefined
       folder: string | undefined
       quoted: boolean
+      literalKey: string
+      fuzzyKey: string
     }
   >()
   const prepareQuery = (query: string) => {
     let prepared = preparedQueries.get(query)
     if (!prepared) {
       const parsed = parseSearchQuery(query)
+      const folded = parsed.terms.map((term) => foldSearchText(term)).filter(Boolean)
       prepared = {
         terms: parsed.terms,
-        folded: parsed.terms.map((term) => foldSearchText(term)).filter(Boolean),
+        folded,
         mode: parsed.mode,
         folder: parsed.folder,
         quoted: /["']/u.test(query),
+        literalKey: JSON.stringify(['literal', folded[0], folded[0]]),
+        fuzzyKey: JSON.stringify(['fuzzy', folded[0], folded[0]]),
       }
       if (preparedQueries.size === HIT_CACHE_LIMIT) dropOldest(preparedQueries)
       preparedQueries.set(query, prepared)
@@ -967,9 +972,9 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     }
 
     const first = folded[0]
-    const phrase = prepared.quoted || /\s/u.test(folded)
-    const literalKey = JSON.stringify(['literal', folded, lower])
-    const fuzzyKey = JSON.stringify(['fuzzy', folded, lower])
+    const phrase = prepared.quoted || folded.includes(' ')
+    const literalKey = prepared.literalKey
+    const fuzzyKey = prepared.fuzzyKey
     if (effectiveMode !== 'content') {
       for (const { item, score } of names.find(raw)) {
         const literal = item.folded.includes(folded)
