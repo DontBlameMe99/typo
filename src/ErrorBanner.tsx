@@ -9,6 +9,16 @@ import Reanimated, {
 import { Icon } from './icons'
 import { useTheme } from './theme'
 
+const LONG_URI = /(?:content|file):\/\/\S+/gu
+
+function boundDetail(message: string): string {
+  if (message.length <= 200) return message
+  const shortened = message.replace(LONG_URI, (uri) =>
+    uri.length > 48 ? `${uri.slice(0, 32)}…${uri.slice(-12)}` : uri
+  )
+  return shortened.length > 200 ? `…${shortened.slice(-199)}` : shortened
+}
+
 type BannerAction = { label: string; onPress: () => void }
 
 export function ErrorBanner({
@@ -46,7 +56,7 @@ export function ErrorBanner({
         )}
         <ScrollView style={s.details} nestedScrollEnabled>
           <Text selectable={false} style={s.message}>
-            {message.length > 200 ? `…${message.slice(-199)}` : message}
+            {boundDetail(message)}
           </Text>
         </ScrollView>
         {actions?.length ? (
