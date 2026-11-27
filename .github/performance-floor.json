@@ -146,12 +146,12 @@
       "updatedAt": "2026-11-20T00:40:24.230Z"
     },
     "search/1000/update-content": {
-      "sha": "d5c5dc69b5e73dc2e8ccc727b2a6147d43d0e91b",
+      "sha": "70529c956bd689b30758f47a9aca2dc3adeef8e5",
       "method": 2,
-      "medianMs": 0.8855819999998857,
-      "worstMedianMs": 0.9245429999998578,
+      "medianMs": 0.8308250000000044,
+      "worstMedianMs": 0.8645930000000135,
       "budgetMs": 33.4,
-      "updatedAt": "2026-11-26T03:57:44.720Z"
+      "updatedAt": "2026-11-27T00:52:26.886Z"
     },
     "syntax/1000/open": {
       "sha": "1c8b67ab70e4c735eddee15f66f1a12cedacd9af",
@@ -186,12 +186,12 @@
       "updatedAt": "2026-11-24T18:19:02.740Z"
     },
     "syntax/10000/scroll": {
-      "sha": "7ea51d531b0fc3e5623bd9cac50dd4e4810dbd87",
+      "sha": "70529c956bd689b30758f47a9aca2dc3adeef8e5",
       "method": 2,
-      "medianMs": 0.08366900000009991,
-      "worstMedianMs": 0.08421399999997448,
+      "medianMs": 0.08219099999996615,
+      "worstMedianMs": 0.08364499999970576,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-20T12:35:33.245Z"
+      "updatedAt": "2026-11-27T00:52:26.886Z"
     },
     "syntax/10000/type-at-end": {
       "sha": "8c643fc2c9e4110f7c4358f9eb8686ddf5794004",
@@ -306,12 +306,12 @@
       "updatedAt": "2026-11-24T18:19:02.740Z"
     },
     "library/1000/card-dates": {
-      "sha": "f9c17843e73ccd9aa324e26d3f1620ebacdee7a8",
+      "sha": "70529c956bd689b30758f47a9aca2dc3adeef8e5",
       "method": 2,
-      "medianMs": 0.5373349999999846,
-      "worstMedianMs": 0.554531999999881,
+      "medianMs": 0.5560029999999188,
+      "worstMedianMs": 0.5598710000001574,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-26T03:31:41.217Z"
+      "updatedAt": "2026-11-27T00:52:26.886Z"
     },
     "editor/20000-ranges/literal": {
       "sha": "f9c17843e73ccd9aa324e26d3f1620ebacdee7a8",
