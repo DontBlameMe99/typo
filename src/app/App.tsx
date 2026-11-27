@@ -4,11 +4,18 @@ import Constants, { ExecutionEnvironment } from 'expo-constants'
 import { loadAsync as loadFontAssets } from 'expo-font'
 import * as SplashScreen from 'expo-splash-screen'
 import * as SystemUI from 'expo-system-ui'
-import { useCallback, useEffect, useState } from 'react'
-import { AppState, StatusBar, View } from 'react-native'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Alert, AppState, Linking, StatusBar, View } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context'
 import { resetDateFormatters } from '../core'
+import {
+  applyIntakeRoute,
+  initialNativeIntent,
+  parseNativeIntent,
+  subscribeNativeIntents,
+} from '../intake'
+import { type IntakeRoute, parseDeepLink } from '../intake-parse'
 import { TypoMark } from '../Mark'
 import { markStartup } from '../startup'
 import { ThemeProvider, useTheme } from '../theme'
@@ -63,6 +70,53 @@ function AppShell({ loaded }: { loaded: boolean }) {
   const [dateRevision, setDateRevision] = useState(0)
   const launched = loaded && ready && libraryReady
   const markLibraryReady = useCallback(() => setLibraryReady(true), [])
+  const launchedRef = useRef(launched)
+  launchedRef.current = launched
+  const pendingRoutes = useRef<IntakeRoute[]>([])
+  const intakeQueue = useRef(Promise.resolve())
+  const initialIntakeRead = useRef(false)
+  const handleRoute = useCallback((route: IntakeRoute) => {
+    if (!launchedRef.current) {
+      pendingRoutes.current.push(route)
+      return
+    }
+    intakeQueue.current = intakeQueue.current
+      .then(() => applyIntakeRoute(route))
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        Alert.alert('Cannot open the shared item', message)
+      })
+  }, [])
+  useEffect(() => {
+    const urls = Linking.addEventListener('url', ({ url }) => {
+      const route = parseDeepLink(url)
+      if (route) handleRoute(route)
+    })
+    const intents = subscribeNativeIntents((intent) => {
+      const route = parseNativeIntent(intent)
+      if (route) handleRoute(route)
+    })
+    if (!initialIntakeRead.current) {
+      initialIntakeRead.current = true
+      void Promise.all([
+        Linking.getInitialURL()
+          .then((url) => (url ? parseDeepLink(url) : null))
+          .catch(() => null),
+        initialNativeIntent(),
+      ]).then((routes) => {
+        for (const route of routes) if (route) handleRoute(route)
+      })
+    }
+    return () => {
+      urls.remove()
+      intents.remove()
+    }
+  }, [handleRoute])
+  useEffect(() => {
+    if (!launched || !pendingRoutes.current.length) return
+    const routes = pendingRoutes.current.splice(0)
+    for (const route of routes) handleRoute(route)
+  }, [launched, handleRoute])
   useEffect(() => {
     // Activity recreation can preserve JS while the locale or time zone changes.
     const refresh = () => {
