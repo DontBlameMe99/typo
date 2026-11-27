@@ -3,6 +3,17 @@ import { issuesUrl } from './about'
 import { Icon } from './icons'
 import { useTheme } from './theme'
 
+const reportUrl =
+  `${issuesUrl}/new?template=bug-report.yml` +
+  `&title=${encodeURIComponent('[Bug]: ')}` +
+  `&description=${encodeURIComponent(
+    'Do not paste note content, private file paths, screenshots of your vault, or full error logs. ' +
+      'Use fabricated examples and redacted details instead.\n\n' +
+      'What happened:'
+  )}` +
+  `&reproduction=${encodeURIComponent('Steps with fabricated or redacted details:')}` +
+  `&expected=${encodeURIComponent('Expected behavior:')}` +
+  `&environment=${encodeURIComponent('App version, Android version, and device:')}`
 export function ReportIssue() {
   const { colors } = useTheme()
   return (
@@ -10,7 +21,7 @@ export function ReportIssue() {
       accessibilityRole="link"
       accessibilityLabel="Report an issue. Opens in your browser"
       onPress={() =>
-        void Linking.openURL(issuesUrl).catch(() => Alert.alert('Cannot open link', issuesUrl))
+        void Linking.openURL(reportUrl).catch(() => Alert.alert('Cannot open link', reportUrl))
       }
       style={({ pressed }) => [
         styles.button,
