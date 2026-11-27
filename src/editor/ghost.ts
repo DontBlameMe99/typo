@@ -132,13 +132,10 @@ const ghostField = StateField.define<GhostSuggestion | null>({
     ),
 })
 
-function acceptGhost(view: EditorView): boolean {
+export function acceptGhost(view: EditorView): boolean {
   const ghost = view.state.field(ghostField, false)
   if (!ghost) return false
-  if (isSyntaxStale(view)) {
-    view.dispatch({ effects: setGhost.of(null) })
-    return true
-  }
+  if (isSyntaxStale(view)) return false
   view.dispatch({
     changes: { from: ghost.pos, insert: ghost.text },
     selection: { anchor: ghost.pos + ghost.text.length },

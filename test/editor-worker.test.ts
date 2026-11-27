@@ -8,6 +8,19 @@ import {
 import type { Highlight } from '../src/editor/syntax'
 
 const range = { from: 0, to: 10 }
+function manualFrames() {
+  const frames: Array<() => void> = []
+  return {
+    schedule: (callback: () => void) => {
+      frames.push(callback)
+    },
+    flush: () => {
+      const callbacks = frames.splice(0)
+      for (const callback of callbacks) callback()
+    },
+    pending: () => frames.length,
+  }
+}
 
 test('highlighting waits for worker startup and keeps only the latest document', () => {
   const sent: HighlightRequest[] = []
@@ -173,3 +186,65 @@ test('the real editor worker parses edits and reuses source for viewport-only re
     worker.terminate()
   }
 }, 10000)
+
+test('rapid edits share one frame and only the latest source is sent', () => {
+  const sent: HighlightRequest[] = []
+  const frames = manualFrames()
+  const queue = new HighlightQueue((request) => sent.push(request), frames.schedule)
+  queue.ready()
+  frames.flush()
+  queue.request(Text.of(['one']), range, () => {})
+  queue.request(Text.of(['two']), range, () => {})
+  queue.request(Text.of(['three']), range, () => {})
+  expect(frames.pending()).toBe(1)
+  expect(sent).toEqual([])
+  frames.flush()
+  expect(sent).toEqual([{ type: 'highlight', id: 3, source: 'three', range }])
+})
+
+test('a stale worker result is dropped and only the newest ranges are applied', () => {
+  const sent: HighlightRequest[] = []
+  const applied: Array<{ owner: string; ranges: Highlight[] }> = []
+  const frames = manualFrames()
+  const queue = new HighlightQueue((request) => sent.push(request), frames.schedule)
+  queue.ready()
+  frames.flush()
+  queue.request(Text.of(['first']), range, (ranges) => applied.push({ owner: 'first', ranges }))
+  frames.flush()
+  queue.request(Text.of(['skipped']), range, (ranges) => applied.push({ owner: 'skipped', ranges }))
+  queue.request(Text.of(['third']), range, (ranges) => applied.push({ owner: 'third', ranges }))
+  frames.flush()
+  queue.complete(1, [{ from: 0, to: 1, style: 'stale' }])
+  expect(applied).toEqual([])
+  frames.flush()
+  expect(sent.map((request) => request.source)).toEqual(['first', 'third'])
+  expect(sent[1]).toEqual({ type: 'highlight', id: 3, source: 'third', range })
+  queue.complete(3, [{ from: 0, to: 3, style: 'fresh' }])
+  expect(applied).toEqual([{ owner: 'third', ranges: [{ from: 0, to: 3, style: 'fresh' }] }])
+})
+
+test('one worker retry resends cached bytes and ignores the failed result', () => {
+  const sent: HighlightRequest[] = []
+  const applied: Highlight[][] = []
+  const frames = manualFrames()
+  const queue = new HighlightQueue((request) => sent.push(request), frames.schedule)
+  queue.ready()
+  frames.flush()
+  const first = Text.of(['cached #ti'])
+  const latest = Text.of(['cached #tit'])
+  const changes = EditorState.create({ doc: first }).update({
+    changes: { from: first.length, insert: 't' },
+  }).changes
+  queue.request(first, range, (ranges) => applied.push(ranges))
+  frames.flush()
+  queue.request(latest, range, (ranges) => applied.push(ranges), changes)
+  expect(queue.workerFailed()).toBe(true)
+  expect(queue.workerFailed()).toBe(false)
+  queue.complete(1, [{ from: 0, to: 1, style: 'stale' }])
+  expect(applied).toEqual([])
+  queue.ready()
+  frames.flush()
+  expect(sent[1]).toEqual({ type: 'highlight', id: 3, source: latest.toString(), range })
+  queue.complete(3, [{ from: 0, to: 2, style: 'fresh' }])
+  expect(applied).toEqual([[{ from: 0, to: 2, style: 'fresh' }]])
+})

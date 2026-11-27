@@ -2,7 +2,13 @@ import { beforeAll, expect, test } from 'bun:test'
 import type { Language } from 'web-tree-sitter'
 import { type EditorTheme, inlineJson, syntaxStyles } from '../src/editor/document'
 import { applyEditorChange, editorMessage, normalizeSource } from '../src/editor/protocol'
-import { replacementEdit, TypstSyntax, typstLanguage } from '../src/editor/syntax'
+import {
+  type NodeBounds,
+  replacementEdit,
+  TypstSyntax,
+  typstLanguage,
+  windowBounds,
+} from '../src/editor/syntax'
 
 let language: Language
 beforeAll(async () => {
@@ -580,4 +586,44 @@ test('source and bridge data cannot terminate an inline script', () => {
   expect(encoded).not.toContain('<')
   expect(encoded).not.toContain('\u2028')
   expect(JSON.parse(encoded)).toEqual({ source })
+})
+
+test('window bounds binary search matches a linear scan', () => {
+  const children: NodeBounds[] = [
+    { startIndex: 0, endIndex: 12 },
+    { startIndex: 12, endIndex: 30 },
+    { startIndex: 34, endIndex: 50 },
+    { startIndex: 50, endIndex: 72 },
+    { startIndex: 80, endIndex: 96 },
+    { startIndex: 96, endIndex: 120 },
+  ]
+  const length = 120
+  const linear = (range: { from: number; to: number }, dirty: { from: number; to: number }) => {
+    const overlaps = (node: NodeBounds) => node.startIndex < dirty.to && node.endIndex > dirty.from
+    let first = 0
+    while (first < children.length && children[first].endIndex <= range.from) first++
+    while (first >= 0 && first < children.length && overlaps(children[first])) first--
+    let last = children.length - 1
+    while (last >= 0 && children[last].startIndex >= range.to) last--
+    while (last < children.length && last >= 0 && overlaps(children[last])) last++
+    return {
+      from: first < 0 ? 0 : first >= children.length ? length : children[first].startIndex,
+      to: last < 0 ? 0 : last >= children.length ? length : children[last].endIndex,
+    }
+  }
+  const dirtySpans = [
+    { from: Infinity, to: Infinity },
+    { from: 0, to: 20 },
+    { from: 25, to: 45 },
+    { from: 48, to: 85 },
+    { from: 90, to: 120 },
+    { from: 0, to: Infinity },
+    { from: 50, to: 50 },
+  ]
+  for (const dirty of dirtySpans)
+    for (let from = 0; from <= length; from += 7)
+      for (let to = from; to <= length; to += 11) {
+        const range = { from, to }
+        expect(windowBounds(children, range, dirty, length)).toEqual(linear(range, dirty))
+      }
 })
