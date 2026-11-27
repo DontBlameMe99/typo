@@ -2,30 +2,72 @@
 // launch path: a saved folder, a cached library, and a list on screen.
 //
 // Usage:
-//   bun scripts/startup-seed.ts --folder Documents/typo-startup --notes 200
+//   bun scripts/startup-seed.ts --folder Download/typo-startup --notes 200
 //
-// The folder is written to shared storage and picked through the system folder
-// picker once. The app is cleared first, so the run never depends on whatever
-// state the device was left in, and the next launch reads only the cache.
+// The folder is written to shared storage, then installed as the app's saved
+// folder with a persisted SAF grant. Seeding the saved state directly keeps the
+// cold-start probe independent of the system picker's layout and labels.
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
-import {
-  adb,
-  hasText,
-  screenSummary,
-  tapText,
-  tryAdb,
-  wait,
-  waitForApp,
-  waitForBoot,
-} from './android'
+import { adb, hasText, screenSummary, tryAdb, wait, waitForApp, waitForBoot } from './android'
 import { parseArgs } from './args'
 
 const args = parseArgs(process.argv)
 
 const FOLDER = args.get('folder') ?? 'Download/typo-startup'
 const NOTES = Number(args.get('notes') ?? 200)
+const PACKAGE = args.get('package') ?? 'org.dontblameme.typo'
 const FIXTURE = 'startup-fixture-note-001'
+const PROVIDER = 'com.android.externalstorage'
+const PART_PATTERN = /^[_a-zA-Z0-9.-]+$/u
+
+if (FOLDER.split('/').some((part) => !PART_PATTERN.test(part) || part === '.' || part === '..'))
+  throw new Error('folder must be a safe relative path under /sdcard')
+
+function vaultUri() {
+  return `content://${PROVIDER}.documents/tree/${encodeURIComponent(`primary:${FOLDER}`)}`
+}
+
+function xml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
+function grantXml(uri: string) {
+  return (
+    `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n` +
+    `<uri-grants>\n` +
+    `  <uri-grant sourceUserId="0" targetUserId="0" sourcePkg="${xml(PROVIDER)}" ` +
+    `targetPkg="${xml(PACKAGE)}" uri="${xml(uri)}" prefix="true" modeFlags="3" ` +
+    `createdTime="${Date.now()}" />\n` +
+    `</uri-grants>\n`
+  )
+}
+
+async function packageUid(packageName: string) {
+  const list = await adb('shell', 'pm', 'list', 'packages', '-U')
+  const line = list.split('\n').find((value) => value.includes(`package:${packageName} uid:`))
+  const uid = /uid:(\d+)/u.exec(line ?? '')?.[1]
+  if (!uid) throw new Error(`cannot find the uid of ${packageName}`)
+  return uid
+}
+
+async function reboot() {
+  await adb('reboot')
+  // waitForBoot can see the old boot complete before adb drops the device, so
+  // wait for the first offline reading before waiting for the new boot.
+  const offline = Date.now() + 60_000
+  while (
+    Date.now() < offline &&
+    (await tryAdb('shell', 'getprop', 'sys.boot_completed')).stdout.trim() === '1'
+  )
+    await wait(500)
+  await waitForBoot()
+}
 
 function note(index: number) {
   const body = Array.from(
@@ -36,9 +78,9 @@ function note(index: number) {
 }
 
 await waitForBoot()
-// Shared storage is not writable for the shell user on every image. Root makes
-// the fixture folders deterministic; a user build simply keeps the shell user.
-await tryAdb('root')
+// Persisted grants and the app's private selection file both need root. CI uses
+// the rootable google_apis image, not a Play Store build.
+await adb('root')
 await waitForBoot()
 
 // Shared storage can take a moment to come back after adbd restarts.
@@ -58,63 +100,52 @@ for (let index = 1; index <= NOTES; index++) {
   await writeFile(`${scratch}/${name}`, note(index))
 }
 await adb('push', `${scratch}/.`, `/sdcard/${FOLDER}/`)
+
+const uri = vaultUri()
+await writeFile(`${scratch}/urigrants.xml`, grantXml(uri))
+await writeFile(
+  `${scratch}/typo-vault.json`,
+  `${JSON.stringify({ uri, name: FOLDER.split('/').at(-1) })}\n`
+)
+await adb('push', `${scratch}/urigrants.xml`, '/data/local/tmp/typo-urigrants.xml')
+await adb('push', `${scratch}/typo-vault.json`, '/data/local/tmp/typo-vault.json')
+
+// Clearing the app removes its old selection and the grants that came with it.
+await adb('shell', 'pm', 'clear', PACKAGE)
+await adb('shell', 'cp', '/data/local/tmp/typo-urigrants.xml', '/data/system/urigrants.xml')
+await adb('shell', 'chown', 'system:system', '/data/system/urigrants.xml')
+await adb('shell', 'chmod', '600', '/data/system/urigrants.xml')
+
+// UriGrantsManagerService reads the grant file during boot.
+await reboot()
+await adb('root')
+await waitForBoot()
+
+const uid = await packageUid(PACKAGE)
+const selection = `/data/data/${PACKAGE}/files/typo-vault.json`
+await adb('shell', 'mkdir', '-p', `/data/data/${PACKAGE}/files`)
+await adb('shell', 'cp', '/data/local/tmp/typo-vault.json', selection)
+await adb('shell', 'chown', `${uid}:${uid}`, selection)
+await adb('shell', 'chmod', '600', selection)
+await adb(
+  'shell',
+  'rm',
+  '-f',
+  '/data/local/tmp/typo-urigrants.xml',
+  '/data/local/tmp/typo-vault.json'
+)
 await rm(scratch, { recursive: true, force: true })
 
-// The picker remembers the last folder it opened, so reset it to the device
-// root. Otherwise the navigation below starts somewhere else on a rerun.
-for (const picker of ['com.google.android.documentsui', 'com.android.documentsui'])
-  await tryAdb('shell', 'pm', 'clear', picker)
+await adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`)
+await waitForApp(PACKAGE)
 
-const packageName = args.get('package') ?? 'org.dontblameme.typo'
-await adb('shell', 'pm', 'clear', packageName)
-// The emulator is still starting system services right after boot, and the
-// launcher can go unresponsive under that load.
-await wait(10_000)
-await adb('shell', 'am', 'start', '-n', `${packageName}/.MainActivity`)
-await waitForApp(packageName)
-
-await tapText('Open a folder', 60_000)
-await tapText('USE THIS FOLDER', 15_000)
-const segments = FOLDER.split('/')
-// The picker can start on Recent instead of the device root, so open the roots
-// drawer and look again before giving up.
-for (const [index, segment] of segments.entries()) {
-  try {
-    await tapText(segment, 10_000)
-  } catch {
-    if (index > 0) throw new Error(`the file picker never showed "${segment}"`)
-    await tapText('Show roots')
-    await tapText(segment)
-  }
-}
-// The folder's contents can still be loading when the picker opens it, and a
-// tap during that transition does not reach the button. Wait for a real file,
-// then ask again until the confirmation dialog appears.
-await hasText(`${FIXTURE}.typ`, 30_000)
-let allowed = false
-for (let attempt = 0; attempt < 3 && !allowed; attempt++) {
-  await tapText('USE THIS FOLDER')
-  try {
-    // Providers spell the confirm button differently across API levels.
-    await tapText('Allow', 8_000)
-    allowed = true
-  } catch {
-    await wait(1000)
-  }
-}
-if (!allowed)
-  throw new Error(
-    `the folder picker never asked to allow access\nlast screen: ${await screenSummary()}`
-  )
-
-// The library paints the fixture's preview once the picker returns and the
-// vault is scanned. The picker itself only lists file names, so the preview
-// proves the app is back with the folder open. A folder chip or caption in the
-// app chrome cannot stand in for this, since it moves with the layout.
+// The library paints the fixture's preview once the saved vault is scanned.
+// A folder chip or caption in the app chrome cannot stand in for this, since it
+// moves with the layout.
 const granted = Date.now() + 60_000
 while (Date.now() < granted && !(await hasText('Paragraph 0 of note'))) await wait(1000)
 if (!(await hasText('Paragraph 0 of note')))
-  throw new Error(`the app never opened the picked folder\nlast screen: ${await screenSummary()}`)
+  throw new Error(`the app never opened the saved folder\nlast screen: ${await screenSummary()}`)
 
 // The first launch indexes the vault in the background. Wait for a row to
 // appear, then give the library index time to reach the cache the next launch
@@ -126,5 +157,5 @@ if (!(await hasText(FIXTURE)))
     `the fixture vault never appeared in the library\nlast screen: ${await screenSummary()}`
   )
 await wait(4000)
-await adb('shell', 'am', 'force-stop', packageName)
+await adb('shell', 'am', 'force-stop', PACKAGE)
 console.info(`startup-seed: ${NOTES} fixture notes are indexed at /sdcard/${FOLDER}.`)

@@ -61,9 +61,10 @@ bun scripts/startup-seed.ts
 bun scripts/startup.ts
 ```
 
-`startup-seed.ts` writes a fixture vault and points the app at it through the
-system folder picker, so every measurement covers the same saved folder and
-cached library.
+`startup-seed.ts` writes a fixture vault, saves the folder selection, and
+installs the SAF grant directly, so every measurement covers the same saved
+folder and cached library. It needs a rootable emulator, which the CI image
+provides.
 
 The `Startup` workflow runs the same steps on a pull request. The `Audit`
 workflow compares the result with `.github/startup-floor.json` from the `floors`
