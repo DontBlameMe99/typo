@@ -25,7 +25,7 @@ window.typoSearch = async (request) => {
           modifiedAt: null,
         })
       for (const path of request.removed) notes.delete(path)
-      search.update([...notes.values()].sort((a, b) => a.path.localeCompare(b.path)))
+      search.update([...notes.values()])
     }
     if (!request.query.trim()) {
       // Build the content index while the library is visible so the first
@@ -33,7 +33,12 @@ window.typoSearch = async (request) => {
       await search.warm()
       return
     }
-    const results = await search(request.query, request.mode, () => latest !== request.id)
+    const results = await search(
+      request.query,
+      request.mode,
+      () => latest !== request.id,
+      request.scope
+    )
     if (latest === request.id)
       send({
         type: 'results',

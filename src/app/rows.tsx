@@ -18,6 +18,7 @@ import { rgba } from '../color'
 import { notePreview, noteTime } from '../core'
 import { Icon } from '../icons'
 import { SWIPE_CARD_REVEAL, SWIPE_CHIP_REVEAL } from '../library-rows'
+import { hasSearchMatch, highlightRanges } from '../search/highlight'
 import { onColor, useTheme } from '../theme'
 import type { Note, SearchResult } from '../types'
 import { timing } from './motion'
@@ -31,15 +32,6 @@ import {
   SWIPE_SPRING,
 } from './shared'
 import { useStyles } from './styles'
-
-const ESCAPE_PATTERN = /[.*+?^${}()|[\]\\]/gu
-const escapePattern = (value: string) => value.replace(ESCAPE_PATTERN, '\\$&')
-
-function commonPrefixLength(value: string, needle: string): number {
-  let index = 0
-  while (index < value.length && index < needle.length && value[index] === needle[index]) index++
-  return index
-}
 
 function HighlightedText({
   text,
@@ -57,51 +49,22 @@ function HighlightedText({
   const s = useStyles()
   const { colors } = useTheme()
   const hitStyle = [s.highlight, { backgroundColor: rgba(colors.accent, 0.28) }]
-  const needle = query.trim().toLocaleLowerCase()
-  if (!needle) {
+  const ranges = highlightRanges(text, query, fuzzy)
+  if (!ranges.length) {
     return (
       <Text numberOfLines={numberOfLines} style={style}>
         {text}
       </Text>
     )
   }
-  const haystack = text.toLocaleLowerCase()
-  const terms = needle.split(/\s+/u).filter(Boolean)
-  let parts: { text: string; hit: boolean }[] = []
-  if (terms.length > 1) {
-    // Multi-term snippets rarely contain the whole query in one run, so light
-    // up every term that made the note a hit.
-    const pattern = new RegExp(terms.map(escapePattern).join('|'), 'giu')
-    let offset = 0
-    for (const match of text.matchAll(pattern)) {
-      const at = match.index ?? 0
-      if (at > offset) parts.push({ text: text.slice(offset, at), hit: false })
-      parts.push({ text: match[0], hit: true })
-      offset = at + match[0].length
-    }
-    if (offset < text.length) parts.push({ text: text.slice(offset), hit: false })
-  } else {
-    let offset = 0
-    for (;;) {
-      const at = haystack.indexOf(needle, offset)
-      if (at < 0) break
-      if (at > offset) parts.push({ text: text.slice(offset, at), hit: false })
-      parts.push({ text: text.slice(at, at + needle.length), hit: true })
-      offset = at + needle.length
-    }
-    if (offset < text.length) parts.push({ text: text.slice(offset), hit: false })
-    if (fuzzy && !parts.some((part) => part.hit)) {
-      // Fuzzy matches still need a visible anchor. Highlight the shared prefix,
-      // so a search like "tesg" lights up "Tes" in "Test".
-      const prefix = commonPrefixLength(haystack, needle)
-      if (prefix > 0) {
-        parts = [
-          { text: text.slice(0, prefix), hit: true },
-          ...(prefix < text.length ? [{ text: text.slice(prefix), hit: false }] : []),
-        ]
-      }
-    }
+  const parts: { text: string; hit: boolean }[] = []
+  let offset = 0
+  for (const range of ranges) {
+    if (range.start > offset) parts.push({ text: text.slice(offset, range.start), hit: false })
+    parts.push({ text: text.slice(range.start, range.end), hit: true })
+    offset = range.end
   }
+  if (offset < text.length) parts.push({ text: text.slice(offset), hit: false })
   let cursor = 0
   return (
     <Text numberOfLines={numberOfLines} style={style}>
@@ -121,16 +84,13 @@ function HighlightedText({
 }
 
 function searchPreview(note: Note, query: string): string | undefined {
-  const needle = query.trim().toLocaleLowerCase()
-  if (!needle) return undefined
+  if (!query.trim()) return undefined
   const lines = note.source.split('\n')
-  const title = lines.findIndex(
-    (line) => /^\s*=/u.test(line) && line.toLocaleLowerCase().includes(needle)
-  )
+  const title = lines.findIndex((line) => /^\s*=/u.test(line) && hasSearchMatch(line, query))
   for (let index = 0; index < lines.length; index++) {
     if (index === title) continue
     const line = lines[index].trim()
-    if (line.toLocaleLowerCase().includes(needle)) {
+    if (hasSearchMatch(line, query)) {
       const text = line.length > 180 ? `${line.slice(0, 180)}…` : line
       return `…${text}…`
     }
@@ -161,15 +121,8 @@ export const SearchResultRow = memo(
     const s = useStyles()
     const { colors } = useTheme()
     const parent = parentFolder(result.note.path)
-    const needle = query.trim().toLocaleLowerCase()
-    const terms = needle.split(/\s+/u).filter(Boolean)
     const preview = result.snippet ?? searchPreview(result.note, query)
-    // A fuzzy single-term hit may have no literal query to highlight, so hide
-    // that excerpt. Multi-term snippets are always from real term hits.
-    const snippet =
-      preview && (terms.length > 1 || (needle && preview.toLocaleLowerCase().includes(needle)))
-        ? preview
-        : undefined
+    const snippet = preview && hasSearchMatch(preview, query) ? preview : undefined
     return (
       <SwipeRow
         favorite={favorite}
