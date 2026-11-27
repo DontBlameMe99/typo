@@ -5,5 +5,6 @@ class QuickAppendTileService : QuickTileService() {
   override val unavailableLabel = R.string.typo_quick_append_tile_unavailable
   override val component = "quickAppend"
 
-  override fun available(): Boolean = hasVault() && hasQuickAppendTarget()
+  override fun available(): Boolean =
+    QuickConfig.availability(filesDir, QuickConfig.persistedGrants(this)).canAppend
 }

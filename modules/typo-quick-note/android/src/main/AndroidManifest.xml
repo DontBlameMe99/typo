@@ -28,10 +28,8 @@
       android:exported="false"
       android:launchMode="singleInstance"
       android:screenOrientation="portrait"
-      android:showWhenLocked="true"
       android:taskAffinity=""
       android:theme="@style/Theme.Typo.QuickNote"
-      android:turnScreenOn="true"
       android:windowSoftInputMode="adjustResize" />
     <activity
       android:name="expo.modules.typoquicknote.QuickAppendActivity"
@@ -40,10 +38,8 @@
       android:exported="false"
       android:launchMode="singleInstance"
       android:screenOrientation="portrait"
-      android:showWhenLocked="true"
       android:taskAffinity=""
       android:theme="@style/Theme.Typo.QuickNote"
-      android:turnScreenOn="true"
       android:windowSoftInputMode="adjustResize" />
   </application>
 </manifest>

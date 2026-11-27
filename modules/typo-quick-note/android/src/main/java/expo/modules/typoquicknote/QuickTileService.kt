@@ -6,7 +6,6 @@ import android.content.Intent
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
-import java.io.File
 
 abstract class QuickTileService : TileService() {
   protected abstract val availableLabel: Int
@@ -33,7 +32,7 @@ abstract class QuickTileService : TileService() {
     launch(Intent(this, activity))
   }
 
-  protected open fun available(): Boolean = hasVault()
+  protected abstract fun available(): Boolean
 
   private fun syncState() {
     val tile = qsTile ?: return
@@ -44,18 +43,6 @@ abstract class QuickTileService : TileService() {
     )
     tile.updateTile()
   }
-
-  protected fun hasVault(): Boolean {
-    // Mirrors selectionPath() in src/vault.ts, which the app owns.
-    return selectionFile("typo-vault.json").let { it.isFile && it.length() > 0 }
-  }
-
-  protected fun hasQuickAppendTarget(): Boolean {
-    // Mirrors configPath() in src/quick-append-config.ts.
-    return selectionFile("typo-quick-append.json").let { it.isFile && it.length() > 0 }
-  }
-
-  private fun selectionFile(name: String): File = File(filesDir, name)
 
   private fun launch(intent: Intent) {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
