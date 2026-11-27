@@ -16,7 +16,7 @@ function boundDetail(message: string): string {
   const shortened = message.replace(LONG_URI, (uri) =>
     uri.length > 48 ? `${uri.slice(0, 32)}…${uri.slice(-12)}` : uri
   )
-  return shortened.length > 200 ? `…${shortened.slice(-199)}` : shortened
+  return shortened.length > 200 ? `${shortened.slice(0, 199)}…` : shortened
 }
 
 type BannerAction = { label: string; onPress: () => void }
