@@ -45,6 +45,11 @@ export type CompileRequest = Omit<CompileInput, 'files'> & {
   archives: { key: string; base64: string }[]
 }
 
+// "%PDF-" encodes to the start of this base64 prefix.
+export function isPdfBase64(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith('JVBERi0')
+}
+
 export function packageKey(spec: PackageSpec): string {
   if (
     !['preview', 'local'].includes(spec.namespace) ||
