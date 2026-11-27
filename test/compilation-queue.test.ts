@@ -249,3 +249,59 @@ test('closing cancels waiters and discards late results without publishing', asy
   expect(discarded).toEqual(['late PDF'])
   await expect(queue.current()).rejects.toThrow('closed')
 })
+
+test('a rejected persistence never publishes the compiled PDF and keeps rejecting', async () => {
+  const failure = new Error('Could not save the PDF')
+  const published: string[] = []
+  const errors: unknown[] = []
+  const queue = new CompilationQueue<string>({
+    async run(source) {
+      return source
+    },
+    async success(value) {
+      if (value === 'bad') throw failure
+      published.push(value)
+    },
+    error(error) {
+      errors.push(error)
+    },
+    discard() {},
+  })
+  queue.request('bad')
+  await expect(queue.current()).rejects.toBe(failure)
+  await expect(queue.current()).rejects.toBe(failure)
+  expect(published).toEqual([])
+  expect(errors).toEqual([failure])
+  queue.request('fixed')
+  expect(await queue.current()).toBe('fixed')
+  expect(published).toEqual(['fixed'])
+  queue.dispose()
+})
+
+test('a failed persistence for an obsolete version stays silent', async () => {
+  const saving = deferred<void>()
+  const failure = new Error('Storage is full')
+  const queue = new CompilationQueue<string>({
+    async run(source) {
+      return source
+    },
+    async success(value, _current) {
+      if (value === 'old') {
+        await saving.promise
+        throw failure
+      }
+    },
+    error() {},
+    discard() {},
+  })
+  queue.request('old')
+  const waiting = queue.current()
+  await Promise.resolve()
+  queue.request('new')
+  const latest = queue.current()
+  saving.resolve()
+  expect(await waiting).toBe('new')
+  expect(await latest).toBe('new')
+  await expect(queue.current()).resolves.toBe('new')
+  queue.dispose()
+})

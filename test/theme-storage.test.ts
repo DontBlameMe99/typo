@@ -4,8 +4,10 @@ import { defaultThemeSettings } from '../src/theme-data'
 const uri = 'file:///documents/typo-appearance.json'
 const pendingUri = `${uri}.writing`
 const files = new Map<string, string>()
+const writes: string[] = []
 let failWrite = false
 let failMove = false
+let gateFirst: Promise<void> | null = null
 
 class FakeFile {
   constructor(private readonly path: string) {}
@@ -21,8 +23,10 @@ class FakeFile {
   }
 
   async write(source: string) {
+    writes.push(source)
     if (failWrite) throw new Error('Disk full')
     files.set(this.path, source)
+    if (this.path === pendingUri && gateFirst) await gateFirst
   }
 
   async move(destination: FakeFile, options?: { overwrite?: boolean }) {
@@ -46,8 +50,10 @@ const settings = { ...defaultThemeSettings, accent: 'yellow' as const }
 
 beforeEach(() => {
   files.clear()
+  writes.length = 0
   failWrite = false
   failMove = false
+  gateFirst = null
 })
 
 describe('theme persistence', () => {
@@ -91,5 +97,46 @@ describe('theme persistence', () => {
   test('reports an unreadable settings file', () => {
     files.set(uri, '{not json')
     expect(readTheme()).toEqual({ settings: defaultThemeSettings, error: restoreError })
+  })
+
+  test('restores valid fields and recovers invalid ones from the saved file', () => {
+    files.set(
+      uri,
+      JSON.stringify({
+        ...defaultThemeSettings,
+        mode: 'dark',
+        darkFlavor: 'latte',
+        accent: 'unknown',
+        customAccent: '#a6ff00',
+        amoled: 'yes',
+      })
+    )
+    expect(readTheme()).toEqual({
+      settings: {
+        ...defaultThemeSettings,
+        mode: 'dark',
+        accent: 'mauve',
+        customAccent: '#A6FF00',
+        amoled: false,
+      },
+      error: null,
+    })
+  })
+
+  test('a slow write blocks the next write instead of racing it', async () => {
+    let release!: () => void
+    gateFirst = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const later = { ...defaultThemeSettings, accent: 'teal' as const }
+    const first = writeTheme(settings)
+    const second = writeTheme(later)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(writes).toEqual([JSON.stringify(settings)])
+    release()
+    await Promise.all([first, second])
+    expect(writes).toEqual([JSON.stringify(settings), JSON.stringify(later)])
+    expect(JSON.parse(files.get(uri) ?? '')).toEqual(later)
   })
 })
