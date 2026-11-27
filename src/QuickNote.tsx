@@ -90,7 +90,7 @@ function QuickNote() {
   const close = useCallback(async () => {
     Keyboard.dismiss()
     await Promise.all([pendingDraft.current, pendingSave.current])
-    finishQuickNote()
+    finishQuickNote('quickNote')
   }, [pendingDraft])
 
   useQuickSheet(close)

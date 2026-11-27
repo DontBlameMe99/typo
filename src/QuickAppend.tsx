@@ -151,7 +151,7 @@ function QuickAppend() {
   const close = useCallback(async () => {
     Keyboard.dismiss()
     await Promise.all([pendingDraft.current, pendingSave.current])
-    finishQuickNote()
+    finishQuickNote('quickAppend')
   }, [pendingDraft])
   useQuickSheet(close)
 
