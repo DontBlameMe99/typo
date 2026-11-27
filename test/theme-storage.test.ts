@@ -35,8 +35,10 @@ class FakeFile {
   }
 }
 
-mock.module('expo-file-system', () => ({ File: FakeFile }))
-mock.module('expo-file-system/legacy', () => ({ documentDirectory: 'file:///documents/' }))
+mock.module('../src/theme-storage-io', () => ({
+  fileAt: (path: string) => new FakeFile(path),
+  path: uri,
+}))
 
 const { readTheme, restoreError, writeTheme } = await import('../src/theme-storage')
 
