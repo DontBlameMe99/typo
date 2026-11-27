@@ -27,7 +27,13 @@ import { useTheme } from '../theme'
 import type { Note } from '../types'
 import { useAutoPdf } from '../useAutoPdf'
 import { preparePdf, prepareSource, readNote, saveNote } from '../vault'
-import { findFirst, findMatches, initialFindSelection } from './find'
+import {
+  findFirst,
+  findMatches,
+  initialFindSelection,
+  replaceAllMatches,
+  replaceMatches,
+} from './find'
 import { Fade, IconFade, PillTabs, SLIDE_TIMING, Ticker, timing } from './motion'
 import { errorText, keyboardBehavior } from './shared'
 import { useStyles } from './styles'
@@ -88,6 +94,8 @@ function NoteDetailScreen({
   const [source, setSource] = useState(note.source)
   const [mode, setMode] = useState<'source' | 'pdf'>('source')
   const [find, setFind] = useState(initialQuery)
+  const [replacement, setReplacement] = useState('')
+  const [replaceOpen, setReplaceOpen] = useState(false)
   const [findOpen, setFindOpen] = useState(!!initialQuery || !!initialLine)
   const [focusFind, setFocusFind] = useState(false)
   const findInput = useRef<React.ComponentRef<typeof TextInput>>(null)
@@ -355,6 +363,7 @@ function NoteDetailScreen({
     setSelection(undefined)
     setFindOpen(false)
     setFocusFind(false)
+    setReplaceOpen(false)
     Keyboard.dismiss()
     editor.current?.blur()
   }
@@ -363,6 +372,19 @@ function NoteDetailScreen({
     setMatchIndex(0)
     const selection = findFirst(source, value)
     setSelection(selection)
+  }
+
+  function replaceFind(all: boolean) {
+    if (!matches.length) return
+    const next = all
+      ? replaceAllMatches(source, find, replacement)
+      : replaceMatches(source, find, replacement, matchIndex)
+    if (next === source) return
+    editState.current.source = next
+    setSource(next)
+    setMatchIndex(0)
+    setSelection(undefined)
+    scheduleSave()
   }
   function moveMatch(direction: number) {
     if (!matches.length) return
@@ -724,19 +746,63 @@ function NoteDetailScreen({
                         returnKeyType="search"
                         onSubmitEditing={() => moveMatch(1)}
                       />
-                      <Ticker current={matchCurrent} total={matchCount} style={s.findDockCount} />
-                      <IconButton
-                        name="chevronUp"
-                        label="Previous match"
-                        onPress={() => moveMatch(-1)}
-                        disabled={!matches.length}
-                      />
-                      <IconButton
-                        name="chevronDown"
-                        label="Next match"
-                        onPress={() => moveMatch(1)}
-                        disabled={!matches.length}
-                      />
+                      {replaceOpen ? (
+                        <>
+                          <TextInput
+                            accessibilityLabel="Replace with"
+                            placeholder="Replace with"
+                            placeholderTextColor={colors.muted}
+                            value={replacement}
+                            onChangeText={setReplacement}
+                            style={s.findDockInput}
+                            autoCorrect={false}
+                            autoCapitalize="none"
+                          />
+                          <IconButton
+                            name="edit"
+                            label="Replace this match"
+                            onPress={() => replaceFind(false)}
+                            disabled={!matches.length}
+                          />
+                          <IconButton
+                            name="swap"
+                            label="Replace all matches"
+                            onPress={() => replaceFind(true)}
+                            disabled={!matches.length}
+                          />
+                          <IconButton
+                            name="close"
+                            label="Close replace"
+                            onPress={() => setReplaceOpen(false)}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <Ticker
+                            current={matchCurrent}
+                            total={matchCount}
+                            style={s.findDockCount}
+                          />
+                          <IconButton
+                            name="chevronUp"
+                            label="Previous match"
+                            onPress={() => moveMatch(-1)}
+                            disabled={!matches.length}
+                          />
+                          <IconButton
+                            name="chevronDown"
+                            label="Next match"
+                            onPress={() => moveMatch(1)}
+                            disabled={!matches.length}
+                          />
+                          <IconButton
+                            name="edit"
+                            label="Replace"
+                            onPress={() => setReplaceOpen(true)}
+                            disabled={!matches.length}
+                          />
+                        </>
+                      )}
                     </View>
                   </View>
                 </Reanimated.View>

@@ -2,6 +2,8 @@ import { normalizeSource } from '../editor/protocol'
 
 export type FindSelection = { start: number; end: number }
 
+import { foldSearchText, sourceOffset } from '../search/query'
+
 let cachedSource: string | null = null
 let cachedFold = ''
 
@@ -57,6 +59,41 @@ export function findFirst(source: string, query: string): FindSelection | undefi
   if (!needle) return undefined
   const start = haystack.indexOf(needle)
   return start >= 0 ? { start, end: start + needle.length } : undefined
+}
+
+function replacementSpans(source: string, query: string): FindSelection[] {
+  if (!query) return []
+  const normalized = normalizeSource(source)
+  const haystack = foldSearchText(normalized)
+  const needle = foldSearchText(normalizeSource(query))
+  if (!needle) return []
+  const spans: FindSelection[] = []
+  let at = 0
+  while (at <= haystack.length) {
+    const start = haystack.indexOf(needle, at)
+    if (start < 0) break
+    const end = start + needle.length
+    spans.push({ start: sourceOffset(normalized, start), end: sourceOffset(normalized, end) })
+    at = end
+  }
+  return spans
+}
+
+export function replaceMatches(source: string, query: string, replacement: string, at = 0): string {
+  const spans = replacementSpans(source, query)
+  const span = spans[at] ?? spans[0]
+  if (!span) return source
+  const normalized = normalizeSource(source)
+  return normalized.slice(0, span.start) + replacement + normalized.slice(span.end)
+}
+
+export function replaceAllMatches(source: string, query: string, replacement: string): string {
+  const spans = replacementSpans(source, query)
+  if (!spans.length) return source
+  let result = normalizeSource(source)
+  for (const span of [...spans].reverse())
+    result = result.slice(0, span.start) + replacement + result.slice(span.end)
+  return result
 }
 
 export function initialFindSelection(

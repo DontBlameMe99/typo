@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { findFirst, findMatches, initialFindSelection } from '../src/app/find'
+import {
+  findFirst,
+  findMatches,
+  initialFindSelection,
+  replaceAllMatches,
+  replaceMatches,
+} from '../src/app/find'
 
 describe('findMatches', () => {
   test('returns no matches for an empty query', () => {
@@ -60,5 +66,28 @@ describe('case folding and line endings', () => {
     expect(findMatches(source, 'ıstanbul')).toEqual([9])
     expect(findFirst(source, 'İ')).toEqual({ start: 0, end: 1 })
     expect(findMatches('A𝔸B İ', 'b')).toEqual([3])
+  })
+})
+
+describe('replacements', () => {
+  test('replaces the first folded match or every match', () => {
+    expect(replaceMatches('AbA abA', 'aB', 'X')).toBe('XA abA')
+    expect(replaceAllMatches('AbA abA', 'aB', 'X')).toBe('XA XA')
+    expect(replaceMatches('aaaa', 'a', 'x', 1)).toBe('axaa')
+  })
+
+  test('advances past overlapping matches', () => {
+    expect(replaceAllMatches('aaaa', 'aa', 'x')).toBe('xx')
+  })
+
+  test('maps folded Unicode matches back to source offsets', () => {
+    const source = 'İstanbul ıstanbul Istanbul'
+    expect(replaceMatches(source, 'İSTANBUL', 'Demo')).toBe('Demo ıstanbul Istanbul')
+    expect(replaceAllMatches(source, 'istanbul', 'Demo')).toBe('Demo ıstanbul Demo')
+  })
+
+  test('keeps the source when the query is empty', () => {
+    expect(replaceMatches('anything', '', 'x')).toBe('anything')
+    expect(replaceAllMatches('anything', '', 'x')).toBe('anything')
   })
 })
