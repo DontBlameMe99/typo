@@ -671,3 +671,25 @@ describe('scoped search', () => {
     ])
   })
 })
+
+describe('search edge cases', () => {
+  test('maps folded offsets back to the source for snippets', async () => {
+    const items = [note('korean.typ', `${'한'.repeat(100)}\nneedle here`)]
+    const [result] = await createNoteSearch(items)('needle', 'content')
+    expect(result.snippet).toContain('needle here')
+  })
+
+  test('still finds fuzzy matches after the scored-line cap', async () => {
+    const items = [note('long.typ', `${'x\n'.repeat(4096)}g o a l`)]
+    const [result] = await createNoteSearch(items)('goal', 'content')
+    expect(result.line).toBe(4097)
+  })
+
+  test('a quoted single word must match literally', async () => {
+    const items = [note('spaced.typ', '#title[Spaced]\ng o a l')]
+    expect(await createNoteSearch(items)('"goal"', 'content')).toEqual([])
+    expect((await createNoteSearch(items)('goal', 'content')).map((r) => r.note.path)).toEqual([
+      'spaced.typ',
+    ])
+  })
+})

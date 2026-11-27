@@ -52,6 +52,7 @@ export function NoteSearch(props: Props) {
   const transport = useRef(new SearchTransport())
   const sequence = useRef(0)
   const requested = useRef<PendingRequest | null>(null)
+  const discarded = useRef<{ request: PendingRequest; hits: SearchHit[] } | null>(null)
   const deadline = useRef<ReturnType<typeof setTimeout> | null>(null)
   const deadlineState = useRef(searchDeadline())
   const [debouncedQuery, setDebouncedQuery] = useState(props.query)
@@ -74,6 +75,21 @@ export function NoteSearch(props: Props) {
       deadline.current = null
     }
   }, [])
+  const publish = useCallback(
+    (hits: SearchHit[]) => {
+      disarm()
+      clearDeadlineRestart(deadlineState.current)
+      const notes = new Map(latest.current.notes.map((note) => [note.path, note]))
+      const results: SearchResult[] = []
+      for (const hit of hits) {
+        const note = notes.get(hit.path)
+        if (note) results.push({ note, line: hit.line, snippet: hit.snippet })
+      }
+      latest.current.onPending?.(false)
+      latest.current.onResults(results)
+    },
+    [disarm]
+  )
   const restart = useCallback(() => setSession((value) => value + 1), [])
   useWebViewForegroundReload(() => {
     if (booted) {
@@ -157,6 +173,17 @@ export function NoteSearch(props: Props) {
     }
     if (props.query !== debouncedQuery) return
     const { mode, scope } = effectiveRequest(debouncedQuery, props.mode, props.scope)
+    const held = discarded.current
+    if (
+      held &&
+      held.request.query === props.query &&
+      held.request.mode === mode &&
+      scopeKey(held.request.scope) === scopeKey(scope)
+    ) {
+      discarded.current = null
+      publish(held.hits)
+      return
+    }
     const request = transport.current.request(props.notes, debouncedQuery, mode, scope)
     const view = web.current
     if (!request || !view) return
@@ -174,6 +201,7 @@ export function NoteSearch(props: Props) {
     booted,
     session,
     arm,
+    publish,
     disarm,
   ])
 
@@ -230,22 +258,20 @@ export function NoteSearch(props: Props) {
                 setBooted({ session })
               } else if (message.type === 'error') {
                 if (message.id == null || fresh(message.id)) fail(String(message.message))
-              } else if (message.type === 'results' && fresh(message.id)) {
-                disarm()
-                clearDeadlineRestart(deadlineState.current)
-                if (!Array.isArray(message.results)) throw new Error('Invalid search results')
-                const notes = new Map(latest.current.notes.map((note) => [note.path, note]))
-                const results: SearchResult[] = []
-                for (const hit of message.results as SearchHit[]) {
-                  const note = notes.get(hit.path)
-                  if (note) results.push({ note, line: hit.line, snippet: hit.snippet })
-                }
-                if (__DEV__ && requested.current && latest.current.query.trim())
-                  console.info(
-                    `[performance] ${requested.current.mode === 'names' ? 'Names' : 'Everywhere'} search round trip: ${(performance.now() - requested.current.at).toFixed(1)} ms`
-                  )
-                latest.current.onPending?.(false)
-                latest.current.onResults(results)
+              } else if (message.type === 'results') {
+                if (fresh(message.id)) {
+                  if (!Array.isArray(message.results)) throw new Error('Invalid search results')
+                  if (__DEV__ && requested.current && latest.current.query.trim())
+                    console.info(
+                      `[performance] ${requested.current.mode === 'names' ? 'Names' : 'Everywhere'} search round trip: ${(performance.now() - requested.current.at).toFixed(1)} ms`
+                    )
+                  publish(message.results as SearchHit[])
+                } else if (
+                  message.id === sequence.current &&
+                  requested.current &&
+                  Array.isArray(message.results)
+                )
+                  discarded.current = { request: requested.current, hits: message.results }
               }
             } catch {
               fail('The note search sent an invalid response.')

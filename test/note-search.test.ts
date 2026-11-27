@@ -459,3 +459,18 @@ test('reverting a query before the debounce keeps its in-flight answer', async (
   api.message({ type: 'results', id, results: [] })
   expect(api.onResults).toHaveBeenCalledWith([])
 })
+
+test('a discarded answer is reused when the query is reverted', async () => {
+  const api = search({ notes: [], query: 'one', mode: 'names' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  const id = api.requestId()
+  api.setProps({ query: 'two' })
+  await api.settle()
+  api.message({ type: 'results', id, results: [] })
+  expect(api.onResults).not.toHaveBeenCalled()
+  api.setProps({ query: 'one' })
+  await api.settle()
+  expect(api.onResults).toHaveBeenCalledWith([])
+})

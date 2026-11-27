@@ -29,8 +29,8 @@ function queryTerms(query: string): string[] {
 }
 
 export function hasSearchMatch(text: string, query: string): boolean {
-  const haystack = foldSearchText(text, false, true)
-  return queryTerms(query).some((term) => foldedMatch(haystack, term, 0) !== null)
+  const haystack = foldSearchText(text)
+  return queryTerms(query).some((term) => haystack.includes(term))
 }
 
 export function highlightRanges(text: string, query: string, fuzzy = false): HighlightRange[] {

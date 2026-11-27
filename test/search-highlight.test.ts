@@ -16,5 +16,7 @@ test('quoted phrases and prefixes highlight only the phrase', () => {
   expect(highlightRanges('folder:work weekly goals', 'folder:work "weekly goals"')).toEqual([
     { start: 12, end: 24 },
   ])
+  expect(hasSearchMatch('한글', '한글')).toBe(true)
+  expect(hasSearchMatch('ΟΣ', 'ΟΣ')).toBe(true)
   expect(highlightRanges('Test', 'tesg', true)).toEqual([{ start: 0, end: 3 }])
 })

@@ -1,6 +1,13 @@
 import { Fzf } from 'fzf'
 import type { SearchScope } from './search/protocol'
-import { foldSearchText, isAsciiText, isSpace, noteFolder, parseSearchQuery } from './search/query'
+import {
+  foldSearchText,
+  isAsciiText,
+  isSpace,
+  noteFolder,
+  parseSearchQuery,
+  sourceOffset,
+} from './search/query'
 import type { Note, SearchMode, SearchResult } from './types'
 
 export type { SearchScope }
@@ -558,7 +565,9 @@ function contentHit(
   const text = lineText(entry, folded, info.line, info.left, info.right)
   // Folded offsets only address the source when folding kept every length.
   const at =
-    folded.length === entry.text.length ? offset : Math.max(0, foldSearchText(text).indexOf(lower))
+    folded.length === entry.text.length
+      ? offset
+      : sourceOffset(text, Math.max(0, foldSearchText(text).indexOf(lower)))
   return { text, line: info.line + 1, offset: at, score }
 }
 
@@ -624,6 +633,16 @@ function literalHit(
   )
 }
 
+function subsequenceInRange(text: string, pattern: string, start: number, end: number): boolean {
+  let position = start - 1
+  for (const character of pattern) {
+    const at = text.indexOf(character, position + 1)
+    if (at < 0 || at >= end) return false
+    position = at
+  }
+  return true
+}
+
 // The best line whose characters hold `pattern` in order. Every line is scored,
 // so the result does not depend on where in the note the best line sits.
 function fuzzyHit(
@@ -638,14 +657,19 @@ function fuzzyHit(
   let bestLine = 0
   let bestLeft = 0
   let bestRight = 0
-  for (let line = 0; line < starts.length && line < MAX_SCORED_LINES; line++) {
+  for (let line = 0; line < starts.length; line++) {
     const end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length
     let left = starts[line]
     while (left < end && isSpace(text.charCodeAt(left))) left++
     let right = end
     while (right > left && isSpace(text.charCodeAt(right - 1))) right--
     if (right > left) {
-      const score = fuzzyScoreInRange(text, pattern, left, right)
+      const score =
+        line < MAX_SCORED_LINES
+          ? fuzzyScoreInRange(text, pattern, left, right)
+          : subsequenceInRange(text, pattern, left, right)
+            ? -1
+            : Number.NaN
       const length = right - left
       if (score > best || (score === best && length < bestLength)) {
         best = score
@@ -710,7 +734,13 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   const hitCache = new Map<string, Map<string, { text: string; hit: ContentHit | null }>>()
   const preparedQueries = new Map<
     string,
-    { terms: string[]; folded: string[]; mode: SearchMode | undefined; folder: string | undefined }
+    {
+      terms: string[]
+      folded: string[]
+      mode: SearchMode | undefined
+      folder: string | undefined
+      quoted: boolean
+    }
   >()
   const prepareQuery = (query: string) => {
     let prepared = preparedQueries.get(query)
@@ -721,6 +751,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         folded: parsed.terms.map((term) => foldSearchText(term)).filter(Boolean),
         mode: parsed.mode,
         folder: parsed.folder,
+        quoted: /["']/u.test(query),
       }
       if (preparedQueries.size === HIT_CACHE_LIMIT) dropOldest(preparedQueries)
       preparedQueries.set(query, prepared)
@@ -936,7 +967,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     }
 
     const first = folded[0]
-    const phrase = /\s/u.test(folded)
+    const phrase = prepared.quoted || /\s/u.test(folded)
     const literalKey = JSON.stringify(['literal', folded, lower])
     const fuzzyKey = JSON.stringify(['fuzzy', folded, lower])
     if (effectiveMode !== 'content') {

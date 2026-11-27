@@ -24,15 +24,29 @@ export function foldSearchText(
 ): string {
   if (plain) return UPPERCASE.test(text) ? text.toLowerCase() : text
   if (!preserveLength) return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+  const lowered = text.toLowerCase()
   let result = ''
-  for (const character of text) {
-    const folded = character.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+  for (const character of lowered) {
+    const folded = character.normalize('NFD').replace(/\p{M}/gu, '')
     if (folded.length === character.length) result += folded
     else if (folded.length < character.length)
       result += folded + FOLD_PADDING.repeat(character.length - folded.length)
     else result += folded.slice(0, character.length)
   }
   return result
+}
+
+// Maps a compact folded index back to the source index for snippets.
+export function sourceOffset(text: string, foldedIndex: number): number {
+  let source = 0
+  let folded = 0
+  for (const character of text) {
+    const width = foldSearchText(character).length
+    if (folded + width > foldedIndex) return source
+    folded += width
+    source += character.length
+  }
+  return source
 }
 
 export type ParsedQuery = { terms: string[]; mode?: SearchMode; folder?: string }
