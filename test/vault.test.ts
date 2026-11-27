@@ -37,6 +37,11 @@ let infoErrorFor: ((uri: string) => boolean) | undefined
 let pickerUri = root
 let handlesClosed = 0
 let handleWriteError: Error | undefined
+let fileMoveError: Error | undefined
+let fileMoveErrorFor: ((uri: string) => boolean) | undefined
+let handleWriteErrorFor: ((uri: string) => boolean) | undefined
+const fileMoves: { from: string; to: string; overwrite?: boolean }[] = []
+const fileCopies: { from: string; to: string; overwrite?: boolean }[] = []
 let writeFailure: ((uri: string) => boolean) | undefined
 let writeFailureError: Error | undefined
 let downloadStatus = 200
@@ -194,13 +199,17 @@ const createFileAsync = mock(async (parent: string, name: string, _mime: string)
   return uri
 })
 const copyAsync = mock(async ({ from, to }: { from: string; to: string }) => {
+  if (writeFailure?.(to)) {
+    files.set(to, { source: 'partial copy' })
+    throw writeFailureError ?? new Error('Write failed')
+  }
   if (copyError) {
     files.set(to, { source: 'partial copy' })
     throw copyError
   }
   const file = files.get(from)
   if (!file) throw new Error('PDF missing')
-  files.set(to, { ...file })
+  files.set(to, { ...file, bytes: fileBytes(file) })
 })
 const downloadAsync = mock(async (_url: string, uri: string) => {
   if (downloadDelay) await new Promise((resolve) => setTimeout(resolve, downloadDelay))
@@ -257,13 +266,6 @@ mock.module('expo-file-system', () => ({
       if (writeFailure?.(this.uri)) throw writeFailureError ?? new Error('Write failed')
       files.set(this.uri, { source })
     }
-    async move(destination: { uri: string }, options?: { overwrite?: boolean }) {
-      const file = files.get(this.uri)
-      if (!file) throw new Error('No such file')
-      if (files.has(destination.uri) && !options?.overwrite) throw new Error('Already exists')
-      files.set(destination.uri, file)
-      files.delete(this.uri)
-    }
     text() {
       return readText(this.uri)
     }
@@ -275,12 +277,40 @@ mock.module('expo-file-system', () => ({
       if (!file) throw new Error('No such file')
       return fileBytes(file)
     }
+    async copy(destination: { uri: string }, options?: { overwrite?: boolean }) {
+      fileCopies.push({ from: this.uri, to: destination.uri, overwrite: options?.overwrite })
+      if (writeFailure?.(destination.uri)) {
+        files.set(destination.uri, { source: 'partial copy' })
+        throw writeFailureError ?? new Error('Write failed')
+      }
+      const file = files.get(this.uri)
+      if (!file) throw new Error('No such file')
+      if (files.has(destination.uri) && !options?.overwrite) throw new Error('Already exists')
+      files.set(destination.uri, { ...file, bytes: fileBytes(file) })
+    }
+    async move(destination: { uri: string }, options?: { overwrite?: boolean }) {
+      fileMoves.push({ from: this.uri, to: destination.uri, overwrite: options?.overwrite })
+      const failure =
+        fileMoveError ??
+        (fileMoveErrorFor?.(destination.uri)
+          ? new Error('Provider refused replacement')
+          : undefined)
+      if (failure) throw failure
+      const file = files.get(this.uri)
+      if (!file) throw new Error('No such file')
+      if (files.has(destination.uri) && !options?.overwrite) throw new Error('Already exists')
+      files.set(destination.uri, file)
+      files.delete(this.uri)
+    }
     open(mode: string) {
       expect(mode).toBe('wt')
       files.set(this.uri, { source: '' })
       return {
         writeBytes: async (bytes: Uint8Array) => {
-          if (handleWriteError) throw handleWriteError
+          const failure =
+            handleWriteError ??
+            (handleWriteErrorFor?.(this.uri) ? new Error('Storage full') : undefined)
+          if (failure) throw failure
           files.set(this.uri, { source: new TextDecoder().decode(bytes), bytes })
         },
         close: () => {
@@ -414,6 +444,11 @@ beforeEach(() => {
   pickerUri = root
   handlesClosed = 0
   handleWriteError = undefined
+  fileMoveError = undefined
+  fileMoveErrorFor = undefined
+  handleWriteErrorFor = undefined
+  fileMoves.length = 0
+  fileCopies.length = 0
   writeFailure = undefined
   writeFailureError = undefined
   downloadStatus = 200
@@ -592,6 +627,12 @@ test('scan matches out/hashes source hashes so compiled notes can skip compilati
   expect(nestedNote && hasCurrentPdf(nestedNote)).toBe(true)
 })
 
+test('case-colliding note names are rejected before they can share one PDF', async () => {
+  addFile('notes.typ', '= First')
+  addFile('Notes.typ', '= Second')
+  expect((await scanVault(vault)).map((note) => note.path)).toEqual(['notes.typ', 'Notes.typ'])
+  await expect(loadCompileFiles(vault)).rejects.toThrow('both use the PDF output "out/notes.pdf"')
+})
 test('library scans expose empty and nested folders for browsing without infrastructure', async () => {
   const notes = addDirectory('notes')
   const drafts = addDirectory('notes/drafts', notes)
@@ -1062,6 +1103,48 @@ test('folders are created inside the current folder and reject collisions or uns
   expect(directories.get(drafts)?.length).toBe(1)
 })
 
+test('a provider-created note with different case is accepted and written at that URI', async () => {
+  createResult = childUri(root, 'MY_NOTE.typ')
+  const note = await createNote(vault, 'My Note', 'Body')
+  expect(note.uri).toBe(createResult)
+  expect(files.get(note.uri)?.source).toBe(note.source)
+  expect(files.has(uriFor('my_note.typ'))).toBe(false)
+})
+
+test('failed note creation removes the empty provider file', async () => {
+  writeFailure = (uri) => uri.includes('typo-save-')
+  writeFailureError = new Error('Storage full')
+  await expect(createNote(vault, 'Unwritable', 'Body')).rejects.toThrow('Storage full')
+  expect(files.has(uriFor('unwritable.typ'))).toBe(false)
+  expect([...files.keys()].filter((path) => path.includes('typo-save-'))).toHaveLength(0)
+})
+
+test('note and folder names reject Unicode format characters', async () => {
+  for (const title of ['a\u202Ebc', 'a\u200Bb', 'note\u202A.typ']) {
+    await expect(createNote(vault, title, 'Body')).rejects.toThrow()
+  }
+  for (const name of ['a\u202Ebc', 'a\u200Bb']) {
+    await expect(createFolder(vault, name)).rejects.toThrow()
+  }
+  createResult = childUri(root, 'note\u202E.typ')
+  await expect(createNote(vault, 'Note', 'Body')).rejects.toThrow('unsupported document name')
+  expect(createFileAsync).toHaveBeenCalledTimes(1)
+})
+
+test('existing notes with format characters can still be moved to trash', async () => {
+  const name = 'note\u200B.typ'
+  const uri = addFile(name, '= Existing')
+  const trashed = await trashNote(vault, {
+    uri,
+    path: name,
+    title: 'Existing',
+    source: '= Existing',
+    modifiedAt: null,
+  })
+  expect(trashed.path).toBe(`.trash/${name}`)
+  expect(files.get(trashed.uri)?.source).toBe('= Existing')
+})
+
 test('moving a note uses current bytes, lands in the destination, and removes the source', async () => {
   const notes = addDirectory('notes')
   const drafts = addDirectory('notes/drafts', notes)
@@ -1109,12 +1192,25 @@ test('failed move writes keep the source and clean the destination copy', async 
   const notes = addDirectory('notes')
   addDirectory('notes/drafts', notes)
   const uri = addFile('note.typ', '#title[Keep me]\n')
+  fileMoveError = new Error('Provider refused replacement')
   handleWriteError = new Error('Storage full')
   await expect(moveNoteToFolder(vault, noteFor(uri), 'notes/drafts')).rejects.toThrow(
     'Storage full'
   )
   expect(files.get(uri)?.source).toBe('#title[Keep me]\n')
   expect(files.has(uriFor('notes/drafts/note.typ'))).toBe(false)
+})
+
+test('an uncertain source deletion keeps the moved copy and reports it', async () => {
+  const notes = addDirectory('notes')
+  addDirectory('notes/drafts', notes)
+  const uri = addFile('note.typ', '#title[Keep me]\n')
+  deleteError = new Error('Permission denied')
+  deleteErrorFor = (target) => target === uri
+  infoErrorFor = (target) => target === uri
+
+  await expect(moveNoteToFolder(vault, noteFor(uri), 'notes/drafts')).rejects.toThrow('the copy at')
+  expect(files.get(uriFor('notes/drafts/note.typ'))?.source).toBe('#title[Keep me]\n')
 })
 
 test('note folder listing includes the root and safe existing nested folders only', async () => {
@@ -1185,6 +1281,7 @@ test('trashing a reused filename keeps existing trash entries intact', async () 
 
 test('failed trash writes keep the source and clean partial copies', async () => {
   const uri = addFile('note.typ', '#title[Keep me]\n')
+  fileMoveError = new Error('Provider refused replacement')
   handleWriteError = new Error('Storage full')
   await expect(trashNote(vault, noteFor(uri))).rejects.toThrow('Storage full')
   expect(files.get(uri)?.source).toBe('#title[Keep me]\n')
@@ -1254,6 +1351,24 @@ test('moving a folder copies its tree and removes the source', async () => {
     'archive/drafts/deep/two.typ',
     'archive/drafts/one.typ',
   ])
+})
+
+test('folder copies use filesystem copy without marshaling file bytes through base64', async () => {
+  const notes = addDirectory('notes')
+  addFile('notes/one.typ', '#title[One]\n', notes)
+  addFile('notes/image.png', 'image bytes', notes)
+  addDirectory('archive')
+  readAsStringAsync.mockClear()
+
+  await moveFolderToFolder(vault, 'notes', 'archive')
+
+  expect(readAsStringAsync).not.toHaveBeenCalled()
+  expect(fileCopies).toContainEqual({
+    from: uriFor('notes/one.typ'),
+    to: uriFor('archive/notes/one.typ'),
+    overwrite: true,
+  })
+  expect(copiedText('archive/notes/image.png')).toBe('image bytes')
 })
 
 test('moving a folder rejects collisions, itself, and unsafe paths', async () => {
@@ -1374,12 +1489,26 @@ test('restoring a note rejects an existing destination name case-insensitively',
 test('a failed note restore cleans the destination and keeps the trashed copy', async () => {
   const uri = addFile('note.typ', '#title[Keep me]\n')
   const trashed = await trashNote(vault, noteFor(uri, '#title[Keep me]\n'))
+  fileMoveError = new Error('Provider refused replacement')
   handleWriteError = new Error('Storage full')
 
   await expect(restoreNote(vault, trashed, 'note.typ')).rejects.toThrow(
     'Cannot restore "note.typ": Storage full'
   )
   expect(files.has(uriFor('note.typ'))).toBe(false)
+  expect(files.get(trashed.uri)?.source).toBe('#title[Keep me]\n')
+})
+
+test('a failed trash deletion after restore is reported and keeps the trash copy', async () => {
+  const uri = addFile('note.typ', '#title[Keep me]\n')
+  const trashed = await trashNote(vault, noteFor(uri, '#title[Keep me]\n'))
+  deleteError = new Error('Permission denied')
+  deleteErrorFor = (target) => target === trashed.uri
+
+  await expect(restoreNote(vault, trashed, 'note.typ')).rejects.toThrow(
+    'could not be removed. Remove it manually.'
+  )
+  expect(files.get(uriFor('note.typ'))?.source).toBe('#title[Keep me]\n')
   expect(files.get(trashed.uri)?.source).toBe('#title[Keep me]\n')
 })
 
@@ -1451,21 +1580,27 @@ test('save compares the original source and clears uncertain PDF availability', 
   expect(files.get(uri)?.source).toBe(updated.source)
 })
 
-test('shorter Unicode saves truncate the file, close the handle, and clean staging files', async () => {
+test('shorter Unicode saves replace the whole file and clean staging files', async () => {
   const original = '#title[Old]\nA much longer original body.'
   const uri = addFile('note.typ', original)
   await saveNote(noteFor(uri, original), 'Über 📝\n')
   expect(files.get(uri)?.source).toBe('Über 📝\n')
-  expect(handlesClosed).toBe(1)
+  expect(handlesClosed).toBe(0)
+  expect(fileMoves.some((move) => move.to === uri && move.overwrite === true)).toBe(true)
   expect([...files.keys()].filter((path) => path.includes('typo-save-'))).toHaveLength(0)
+  expect([...files.keys()].filter((path) => path.includes('typo-backups/'))).toHaveLength(0)
 })
 
-test('failed writes still close their handle and remove staging files', async () => {
-  const uri = addFile('note.typ', '#title[Old]\n')
+test('a simulated mid-write failure restores the previous note and cleans staging files', async () => {
+  const original = '#title[Old]\nKeep these bytes'
+  const uri = addFile('note.typ', original)
+  fileMoveError = new Error('Provider refused replacement')
   handleWriteError = new Error('Storage full')
-  await expect(saveNote(noteFor(uri), 'Replacement')).rejects.toThrow('Storage full')
+  await expect(saveNote(noteFor(uri, original), 'Replacement')).rejects.toThrow('Storage full')
+  expect(files.get(uri)?.source).toBe(original)
   expect(handlesClosed).toBe(1)
   expect([...files.keys()].filter((path) => path.includes('typo-save-'))).toHaveLength(0)
+  expect([...files.keys()].filter((path) => path.includes('typo-backups/'))).toHaveLength(0)
 })
 
 test('save rejects external changes and missing files without writing anything', async () => {
@@ -1492,6 +1627,7 @@ test('saving the root template from the library validates placeholders', async (
 })
 
 test('a failed first template save removes the empty file', async () => {
+  fileMoveError = new Error('Provider refused replacement')
   handleWriteError = new Error('Storage full')
   await expect(saveTemplate(vault, '{{title}}')).rejects.toThrow(
     'Cannot save the note template: Storage full'
@@ -1894,9 +2030,22 @@ test('bulk compiler refresh still reads same-size external rewrites', async () =
   expect(await loadCompileFiles(vault)).not.toEqual(before)
 })
 
-test('compiler file caches skip unchanged reads and keep one file array', async () => {
+test('compiler stamp caches detect same-time same-size source rewrites by content', async () => {
   bulkMetadata = true
-  addFile('note.typ', '= One')
+  const uri = addFile('note.typ', '= Old')
+  const cache: CompileFileCache = { entries: new Map() }
+  expect((await loadCompileFiles(vault, cache))[0].base64).toBe(
+    Buffer.from('= Old').toString('base64')
+  )
+  files.set(uri, { source: '= New', modificationTime: 123 })
+  expect((await loadCompileFiles(vault, cache))[0].base64).toBe(
+    Buffer.from('= New').toString('base64')
+  )
+})
+
+test('compiler file caches verify small source notes and keep one file array', async () => {
+  bulkMetadata = true
+  const noteUri = addFile('note.typ', '= One')
   addFile('image.png', '')
   const cache: CompileFileCache = { entries: new Map() }
   const first = await loadCompileFiles(vault, cache)
@@ -1904,7 +2053,7 @@ test('compiler file caches skip unchanged reads and keep one file array', async 
   listVaultEntries.mockClear()
   expect(await loadCompileFiles(vault, cache)).toBe(first)
   expect(listVaultEntries.mock.calls.map(([uri]) => uri)).toEqual([root])
-  expect(readVaultBase64).not.toHaveBeenCalled()
+  expect(readVaultBase64.mock.calls.map(([uri]) => uri)).toEqual([noteUri])
 })
 
 test('compiler file caches re-read changed stamps and expire after a minute', async () => {
@@ -2092,7 +2241,24 @@ test('compiled PDFs replace output files with exact bytes and no stale trailing 
   expect(second).toBe(first)
   expect(storedBytes(first).toString('utf8')).toBe(shortPdf)
   expect(files.get(uriFor('out/hashes/note.sha256'))?.source).toBe(`${sha256(source)}\n`)
-  expect(handlesClosed).toBe(5)
+  expect(handlesClosed).toBe(0)
+})
+
+test('a simulated PDF mid-write failure preserves the previous PDF bytes', async () => {
+  const source = '#title[Note]\nBody'
+  const uri = addFile('note.typ', source)
+  const out = addDirectory('out')
+  const pdf = addFile('out/note.pdf', '%PDF-1.7\nold bytes', out)
+  const note: Note = { uri, path: 'note.typ', title: 'Note', source, modifiedAt: null }
+  fileMoveErrorFor = (target) => target === pdf
+  handleWriteErrorFor = (target) => target === pdf
+
+  await expect(writeCompiledPdf(vault, note, pdfBase64('%PDF-1.7\nnew bytes'))).rejects.toThrow(
+    'Storage full'
+  )
+  expect(storedBytes(pdf).toString('utf8')).toBe('%PDF-1.7\nold bytes')
+  expect([...files.keys()].filter((path) => path.includes('typo-pdf-'))).toHaveLength(0)
+  expect([...files.keys()].filter((path) => path.includes('typo-backups/'))).toHaveLength(0)
 })
 
 test('a shared PDF writer avoids rescanning output folders for each note', async () => {
@@ -2197,7 +2363,7 @@ test('PDF creation rejects a provider URI outside the requested parent', async (
   const note: Note = { uri, path: 'note.typ', title: 'Note', source, modifiedAt: null }
   createResult = uriFor('elsewhere/note.pdf')
   await expect(writeCompiledPdf(vault, note, pdfBase64())).rejects.toThrow('requested PDF filename')
-  expect(handlesClosed).toBe(1)
+  expect(handlesClosed).toBe(0)
   expect(files.get(uri)?.source).toBe(source)
 })
 
