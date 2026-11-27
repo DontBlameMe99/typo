@@ -378,7 +378,7 @@ function NoteDetailScreen({
     if (!matches.length) return
     const next = all
       ? replaceAllMatches(source, find, replacement)
-      : replaceMatches(source, find, replacement, matchIndex)
+      : replaceMatches(source, find, replacement, Math.min(matchIndex, matches.length - 1))
     if (next === source) return
     editState.current.source = next
     setSource(next)

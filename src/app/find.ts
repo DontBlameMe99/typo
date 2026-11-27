@@ -1,46 +1,45 @@
 import { normalizeSource } from '../editor/protocol'
+import { foldSearchText } from '../search/query'
 
 export type FindSelection = { start: number; end: number }
 
-import { foldSearchText, sourceOffset } from '../search/query'
+type FoldedSource = { haystack: string; offsets: number[] }
 
 let cachedSource: string | null = null
-let cachedFold = ''
+let cachedFold: FoldedSource | null = null
 
-// Case folds one code point without shifting later offsets. Default lowercase
-// mapping can grow (İ becomes i + combining dot), so keep its first code point
-// when the mapping is longer than the original.
 function fold(text: string): string {
-  let result = ''
-  for (let at = 0; at < text.length; ) {
-    const codePoint = text.codePointAt(at) ?? 0
-    const original = String.fromCodePoint(codePoint)
-    const lower = original.toLowerCase()
-    if (lower.length === original.length) result += lower
-    else {
-      const first = lower.codePointAt(0) ?? codePoint
-      const replacement = String.fromCodePoint(first)
-      result += replacement.length === original.length ? replacement : original
-    }
-    at += original.length
-  }
-  return result
+  return foldSearchText(text)
 }
 
-function foldSource(source: string): string {
-  if (source === cachedSource) return cachedFold
+function foldedSource(source: string): FoldedSource {
+  if (source === cachedSource && cachedFold) return cachedFold
+  const haystack = fold(source)
+  const offsets = new Array<number>(haystack.length + 1)
+  let folded = 0
+  let at = 0
+  for (const character of source) {
+    const width = foldSearchText(character).length
+    for (let index = 0; index < width; index++) offsets[folded + index] = at
+    folded += width
+    at += character.length
+  }
+  offsets[folded] = at
   cachedSource = source
-  cachedFold = fold(source)
+  cachedFold = { haystack, offsets }
   return cachedFold
 }
 
-function find(source: string, query: string): { haystack: string; needle: string } {
-  return { haystack: foldSource(normalizeSource(source)), needle: fold(normalizeSource(query)) }
+function sourceAt(folded: FoldedSource, index: number): number {
+  return folded.offsets[index] ?? folded.haystack.length
 }
 
-export function findMatches(source: string, query: string): number[] {
-  if (!query) return []
-  const { haystack, needle } = find(source, query)
+function find(source: string, query: string): { folded: FoldedSource; needle: string } {
+  const normalized = normalizeSource(source)
+  return { folded: foldedSource(normalized), needle: fold(normalizeSource(query)) }
+}
+
+function foldedMatches(haystack: string, needle: string, limit = Infinity): number[] {
   if (!needle) return []
   const found: number[] = []
   let offset = 0
@@ -48,40 +47,36 @@ export function findMatches(source: string, query: string): number[] {
     const at = haystack.indexOf(needle, offset)
     if (at < 0) break
     found.push(at)
+    if (found.length >= limit) break
     offset = at + Math.max(1, needle.length)
   }
   return found
 }
 
-export function findFirst(source: string, query: string): FindSelection | undefined {
-  if (!query) return undefined
-  const { haystack, needle } = find(source, query)
-  if (!needle) return undefined
-  const start = haystack.indexOf(needle)
-  return start >= 0 ? { start, end: start + needle.length } : undefined
+export function findMatches(source: string, query: string): number[] {
+  const { folded, needle } = find(source, query)
+  return foldedMatches(folded.haystack, needle).map((at) => sourceAt(folded, at))
 }
 
-function replacementSpans(source: string, query: string): FindSelection[] {
-  if (!query) return []
-  const normalized = normalizeSource(source)
-  const haystack = foldSearchText(normalized)
-  const needle = foldSearchText(normalizeSource(query))
-  if (!needle) return []
-  const spans: FindSelection[] = []
-  let at = 0
-  while (at <= haystack.length) {
-    const start = haystack.indexOf(needle, at)
-    if (start < 0) break
-    const end = start + needle.length
-    spans.push({ start: sourceOffset(normalized, start), end: sourceOffset(normalized, end) })
-    at = end
-  }
-  return spans
+export function findFirst(source: string, query: string): FindSelection | undefined {
+  if (!query) return undefined
+  const { folded, needle } = find(source, query)
+  const start = needle ? folded.haystack.indexOf(needle) : -1
+  return start >= 0
+    ? { start: sourceAt(folded, start), end: sourceAt(folded, start + needle.length) }
+    : undefined
+}
+
+function replacementSpans(source: string, query: string, limit = Infinity): FindSelection[] {
+  const { folded, needle } = find(source, query)
+  return foldedMatches(folded.haystack, needle, limit).map((start) => ({
+    start: sourceAt(folded, start),
+    end: sourceAt(folded, start + needle.length),
+  }))
 }
 
 export function replaceMatches(source: string, query: string, replacement: string, at = 0): string {
-  const spans = replacementSpans(source, query)
-  const span = spans[at] ?? spans[0]
+  const span = replacementSpans(source, query, at + 1)[at]
   if (!span) return source
   const normalized = normalizeSource(source)
   return normalized.slice(0, span.start) + replacement + normalized.slice(span.end)
@@ -103,30 +98,22 @@ export function initialFindSelection(
 ): { selection: FindSelection; matchIndex?: number } | undefined {
   const normalized = normalizeSource(source)
   if (initialLine) {
-    const haystack = foldSource(normalized)
+    const { folded, needle } = find(normalized, initialQuery)
     const lines = normalized.split('\n')
-    const line = lines[initialLine - 1] || ''
-    const offset =
+    const lineStart =
       lines.slice(0, Math.max(0, initialLine - 1)).join('\n').length + (initialLine > 1 ? 1 : 0)
-    const needle = initialQuery ? fold(normalizeSource(initialQuery)) : ''
-    const match = needle ? haystack.indexOf(needle, offset) : -1
-    const onLine =
-      match >= offset && match <= offset + line.length - needle.length ? match - offset : -1
-    const start = offset + Math.max(0, onLine)
+    const lineEnd = lineStart + (lines[initialLine - 1] || '').length
+    const foldedStart = fold(normalized.slice(0, lineStart)).length
+    const foldedEnd = fold(normalized.slice(0, lineEnd)).length
+    const match = needle ? folded.haystack.indexOf(needle, foldedStart) : -1
+    const onLine = match >= foldedStart && match >= 0 && match + needle.length <= foldedEnd
     const selection = {
-      start,
-      end: onLine >= 0 ? start + needle.length : offset + line.length,
+      start: sourceAt(folded, onLine ? match : foldedStart),
+      end: onLine ? sourceAt(folded, match + needle.length) : lineEnd,
     }
     let matchIndex: number | undefined
-    if (onLine >= 0) {
-      matchIndex = 0
-      const step = Math.max(1, needle.length)
-      for (
-        let at = haystack.indexOf(needle);
-        at >= 0 && at < start;
-        at = haystack.indexOf(needle, at + step)
-      )
-        matchIndex++
+    if (onLine) {
+      matchIndex = foldedMatches(folded.haystack, needle).filter((at) => at < match).length
     }
     return { selection, matchIndex }
   }

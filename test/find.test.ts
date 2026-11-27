@@ -90,4 +90,11 @@ describe('replacements', () => {
     expect(replaceMatches('anything', '', 'x')).toBe('anything')
     expect(replaceAllMatches('anything', '', 'x')).toBe('anything')
   })
+
+  test('find and replacement use the same folded matches', () => {
+    const source = 'café cafe'
+    expect(findMatches(source, 'cafe')).toEqual([0, 5])
+    expect(replaceAllMatches(source, 'cafe', 'X')).toBe('X X')
+    expect(replaceMatches(source, 'cafe', 'X', 1)).toBe('café X')
+  })
 })

@@ -46,7 +46,7 @@ export function ErrorBanner({
         )}
         <ScrollView style={s.details} nestedScrollEnabled>
           <Text selectable={false} style={s.message}>
-            {message.slice(0, 200)}
+            {message.length > 200 ? `…${message.slice(-199)}` : message}
           </Text>
         </ScrollView>
         {actions?.length ? (
