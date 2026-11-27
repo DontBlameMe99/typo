@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Reanimated, {
   ReduceMotion,
@@ -36,6 +36,7 @@ export function ErrorBanner({
 }) {
   const { colors } = useTheme()
   const s = useMemo(() => styles(colors), [colors])
+  const [expanded, setExpanded] = useState(false)
   const reveal = useSharedValue(0)
   useEffect(() => {
     reveal.value = withTiming(1, { duration: 200, reduceMotion: ReduceMotion.System })
@@ -56,9 +57,21 @@ export function ErrorBanner({
         )}
         <ScrollView style={s.details} nestedScrollEnabled>
           <Text selectable={false} style={s.message}>
-            {boundDetail(message)}
+            {expanded ? message : boundDetail(message)}
           </Text>
         </ScrollView>
+        {message.length > 200 && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={expanded ? 'Hide full details' : 'Show full details'}
+            onPress={() => setExpanded((value) => !value)}
+            style={s.detailToggle}
+          >
+            <Text style={s.detailToggleText}>
+              {expanded ? 'Hide details' : 'Show full details'}
+            </Text>
+          </Pressable>
+        )}
         {actions?.length ? (
           <View style={s.actions}>
             {actions.map((action) => (
@@ -114,6 +127,16 @@ function styles(colors: ReturnType<typeof useTheme>['colors']) {
       fontSize: 14,
       lineHeight: 20,
       fontFamily: 'DMSans_400Regular',
+    },
+    detailToggle: {
+      alignSelf: 'flex-start',
+      marginTop: 2,
+      paddingVertical: 2,
+    },
+    detailToggleText: {
+      color: colors.accent,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 12,
     },
     code: {
       color: colors.muted,
