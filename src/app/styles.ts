@@ -92,7 +92,7 @@ function makeStyles(colors: ThemeColors) {
       fontSize: 14,
       color: colors.ink,
     },
-    barPillAction: { color: colors.accent },
+    barPillAction: { color: colors.accentInk },
     pressed: { opacity: 0.66 },
     disabled: { opacity: 0.42 },
     errorInset: { paddingHorizontal: 24, paddingVertical: 8 },
@@ -403,8 +403,8 @@ function makeStyles(colors: ThemeColors) {
       textAlign: 'center',
       maxWidth: 280,
     },
-    textLink: { padding: 12 },
-    linkText: { fontFamily: 'DMSans_600SemiBold', color: colors.accent, fontSize: 16 },
+    textLink: { minHeight: 44, padding: 12 },
+    linkText: { fontFamily: 'DMSans_600SemiBold', color: colors.accentInk, fontSize: 16 },
     pdf: { flex: 1, width: '100%', backgroundColor: colors.crust },
     templateHint: {
       marginHorizontal: 20,
@@ -562,7 +562,7 @@ function makeStyles(colors: ThemeColors) {
     trashUndoText: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 15,
-      color: colors.accent,
+      color: colors.accentInk,
     },
     searchList: { paddingTop: 12, paddingBottom: 140 },
     highlight: {
@@ -663,8 +663,8 @@ function makeStyles(colors: ThemeColors) {
       paddingHorizontal: 0,
     },
     searchFieldAction: {
-      width: 32,
-      height: 32,
+      width: 44,
+      height: 44,
       alignItems: 'center',
       justifyContent: 'center',
     },
@@ -884,7 +884,7 @@ function makeStyles(colors: ThemeColors) {
       paddingHorizontal: 8,
       paddingVertical: 14,
     },
-    moveNewText: { fontFamily: 'DMSans_600SemiBold', fontSize: 17, color: colors.accent },
+    moveNewText: { fontFamily: 'DMSans_600SemiBold', fontSize: 17, color: colors.accentInk },
     moveNewInputRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1079,7 +1079,7 @@ function makeStyles(colors: ThemeColors) {
       flexDirection: 'row',
       gap: 8,
       height: BAR_HEIGHT,
-      padding: 4,
+      padding: 2,
       borderRadius: BAR_HEIGHT / 2,
       backgroundColor: colors.surface,
       elevation: 8,
@@ -1091,7 +1091,7 @@ function makeStyles(colors: ThemeColors) {
     templatePill: {
       flex: 1,
       minWidth: 0,
-      height: BAR_HEIGHT - 8,
+      height: 44,
       paddingHorizontal: 4,
       borderRadius: (BAR_HEIGHT - 8) / 2,
       backgroundColor: colors.paper,
@@ -1103,7 +1103,7 @@ function makeStyles(colors: ThemeColors) {
       flexShrink: 1,
       fontFamily: 'JetBrainsMono_400Regular',
       fontSize: 13,
-      color: colors.accent,
+      color: colors.accentInk,
     },
     moveButtonDisabled: { backgroundColor: colors.surface },
     moveButtonTextDisabled: { color: colors.muted },
@@ -1190,7 +1190,7 @@ function makeStyles(colors: ThemeColors) {
     },
     accentPressable: {
       width: '14.2857%',
-      height: 40,
+      height: 44,
       alignItems: 'center',
     },
     accentSwatch: {
@@ -1250,7 +1250,7 @@ function makeStyles(colors: ThemeColors) {
     customEditText: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 14,
-      color: colors.accent,
+      color: colors.accentInk,
     },
     amoledRow: {
       flexDirection: 'row',

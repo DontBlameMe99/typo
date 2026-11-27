@@ -462,6 +462,8 @@ function ColorSlider({
   label,
   valueLabel,
   knobColor,
+  step,
+  accessibilityLabel,
 }: {
   value: number
   onChange: (value: number) => void
@@ -469,6 +471,8 @@ function ColorSlider({
   label: string
   valueLabel: string
   knobColor: string
+  step: number
+  accessibilityLabel: string
 }) {
   const s = useStyles()
   const width = useRef(0)
@@ -541,6 +545,16 @@ function ColorSlider({
       </View>
       <GestureDetector gesture={pan}>
         <View
+          accessible
+          accessibilityRole="adjustable"
+          accessibilityLabel={accessibilityLabel}
+          accessibilityValue={{ min: 0, max: 1, now: value, text: valueLabel }}
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={(event) => {
+            const delta = event.nativeEvent.actionName === 'increment' ? step : -step
+            commitFraction(value + delta)
+          }}
+          hitSlop={15}
           style={s.sliderTrack}
           onLayout={(event) => {
             width.current = event.nativeEvent.layout.width
@@ -630,6 +644,8 @@ function CustomColorSheet({
           value={hue / 360}
           valueLabel={`${Math.round(hue)}°`}
           knobColor={hex}
+          step={1 / 360}
+          accessibilityLabel="Hue"
           onChange={(value) => {
             const nextHue = value * 360
             setHue(nextHue)
@@ -657,6 +673,8 @@ function CustomColorSheet({
           value={lightness}
           valueLabel={`${Math.round(lightness * 100)}%`}
           knobColor={hex}
+          step={0.01}
+          accessibilityLabel="Lightness"
           onChange={(value) => {
             setLightness(value)
             applyHsl(hue, value)

@@ -1,3 +1,4 @@
+import { contrastRatio, hexToHsl, hslToHex } from './color'
 export const accentNames = [
   'rosewater',
   'flamingo',
@@ -199,9 +200,30 @@ export function parseThemeSettings(value: unknown): ThemeSettings {
   if (typeof candidate.amoled === 'boolean') result.amoled = candidate.amoled
   return result
 }
-
 export function accentColor(settings: ThemeSettings, palette: Palette): string {
   return parseCustomAccent(settings.customAccent) ?? palette[settings.accent]
+}
+
+const ACCESSIBLE_CONTRAST = 4.5
+
+// Text and icons need 4.5:1 on both the page and its raised surfaces. Keep the
+// hue and only move lightness, so the selected accent still reads as itself.
+export function accentInk(accent: string, backgrounds: readonly string[]): string {
+  const color = parseCustomAccent(accent) ?? accent
+  const readable = (candidate: string) =>
+    backgrounds.every((background) => contrastRatio(candidate, background) >= ACCESSIBLE_CONTRAST)
+  if (readable(color)) return color
+  const { h, s, l } = hexToHsl(color)
+  const target = luminance(backgrounds[0]) > 0.18 ? 0 : 1
+  let low = Math.min(l, target)
+  let high = Math.max(l, target)
+  for (let step = 0; step < 16; step++) {
+    const middle = (low + high) / 2
+    if (readable(hslToHex({ h, s, l: middle }))) high = middle
+    else low = middle
+  }
+  const best = hslToHex({ h, s, l: high })
+  return readable(best) ? best : target === 0 ? '#000000' : '#ffffff'
 }
 
 export function luminance(hex: string): number {
@@ -224,10 +246,12 @@ export function resolveTheme(settings: ThemeSettings, systemDark: boolean) {
   const palette = palettes[flavor]
   const isDark = flavor !== 'latte'
   const accent = accentColor(settings, palette)
+  const paper = isDark && settings.amoled ? '#000000' : palette.base
+  const soft = isDark && settings.amoled ? palette.crust : palette.mantle
   const colors = {
-    paper: isDark && settings.amoled ? '#000000' : palette.base,
+    paper,
     ink: palette.text,
-    muted: palette.subtext0,
+    muted: isDark ? palette.subtext0 : palette.subtext1,
     subtle: palette.subtext1,
     line: palette.surface0,
     surface: palette.surface0,
@@ -237,8 +261,9 @@ export function resolveTheme(settings: ThemeSettings, systemDark: boolean) {
     crust: palette.crust,
     sage: accent,
     accent,
+    accentInk: accentInk(accent, [paper, soft, palette.surface0]),
     onAccent: onColor(accent),
-    soft: isDark && settings.amoled ? palette.crust : palette.mantle,
+    soft,
     white: isDark && settings.amoled ? palette.mantle : palette.base,
     coral: palette.red,
     coralSoft: palette.surface0,
