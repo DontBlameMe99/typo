@@ -14,11 +14,13 @@ type BannerAction = { label: string; onPress: () => void }
 export function ErrorBanner({
   message,
   title,
+  code,
   onDismiss,
   actions,
 }: {
   message: string
   title?: string
+  code?: string
   onDismiss?: () => void
   actions?: BannerAction[]
 }) {
@@ -37,9 +39,14 @@ export function ErrorBanner({
       <Icon name="alert" color={colors.coral} />
       <View style={s.body}>
         {title && <Text style={s.title}>{title}</Text>}
+        {code && (
+          <Text selectable={false} style={s.code}>
+            {code}
+          </Text>
+        )}
         <ScrollView style={s.details} nestedScrollEnabled>
-          <Text selectable style={s.message}>
-            {message}
+          <Text selectable={false} style={s.message}>
+            {message.slice(0, 200)}
           </Text>
         </ScrollView>
         {actions?.length ? (
@@ -97,6 +104,12 @@ function styles(colors: ReturnType<typeof useTheme>['colors']) {
       fontSize: 14,
       lineHeight: 20,
       fontFamily: 'DMSans_400Regular',
+    },
+    code: {
+      color: colors.muted,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 11,
+      marginBottom: 4,
     },
     actions: {
       flexDirection: 'row',

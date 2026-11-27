@@ -15,11 +15,13 @@ import {
 } from 'react-native'
 import Reanimated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { ERROR_CODES } from '../compiler/message'
 import type { PdfWorkspace } from '../compiler/workspace'
 import { isRootTemplate } from '../core'
 import { ErrorBanner } from '../ErrorBanner'
 import { Icon } from '../icons'
 import Pdf from '../PdfViewer'
+import { WEBVIEW_RUNTIME_ERROR } from '../runtime-errors'
 import { SourceEditor, type SourceEditorHandle } from '../SourceEditor'
 import { useTheme } from '../theme'
 import type { Note } from '../types'
@@ -390,6 +392,7 @@ function NoteDetailScreen({
   const pdfSource = useMemo(() => (pdfUri ? { uri: pdfUri } : null), [pdfUri])
   const compileError = autoPdf.error
   const issues = autoPdf.diagnostics
+  const compileCode = issues.length ? ERROR_CODES.diagnostics : ERROR_CODES.error
   const bannerMessage = error || openError || autoPdf.storageError || ''
   const bannerConflict = isSyncConflict(bannerMessage)
   const conflictActions = bannerConflict
@@ -484,6 +487,7 @@ function NoteDetailScreen({
                 message={bannerMessage}
                 onDismiss={error ? () => setError(null) : undefined}
                 actions={conflictActions}
+                code={autoPdf.storageError ? ERROR_CODES.error : undefined}
               />
             </View>
           )}
@@ -534,7 +538,11 @@ function NoteDetailScreen({
             >
               {pdfError && (
                 <View style={s.errorInset}>
-                  <ErrorBanner title="PDF viewer failed" message={pdfError} />
+                  <ErrorBanner
+                    title="PDF viewer failed"
+                    message={pdfError}
+                    code={WEBVIEW_RUNTIME_ERROR}
+                  />
                   <Action
                     label="Retry PDF"
                     onPress={() => {
@@ -561,6 +569,12 @@ function NoteDetailScreen({
                 >
                   <Icon name="alert" size={30} color={colors.coral} />
                   <Text style={s.pdfFailureTitle}>PDF compilation failed</Text>
+                  <Text
+                    selectable={false}
+                    style={[s.pdfFailureText, { fontSize: 11, marginBottom: 0, marginTop: -2 }]}
+                  >
+                    {compileCode}
+                  </Text>
                   <Text numberOfLines={8} style={s.pdfFailureText}>
                     {failureHint}
                   </Text>
