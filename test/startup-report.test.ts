@@ -71,6 +71,15 @@ describe('compareStartup', () => {
     expect(comparison.rows.map((row) => row.name)).toEqual(['Cold start', 'bundle', 'paint'])
     expect(comparison.rows[1]?.delta).toBe('+50%')
   })
+
+  test('fails when a phase passes its budget', () => {
+    const head = report(500, { bundle: 176, paint: 400 })
+    const comparison = compareStartup(head, floor)
+    expect(comparison.status).toBe('fail')
+    expect(comparison.note).toContain('Phases over budget: bundle.')
+    expect(comparison.phaseBudgets[0]?.budgetMs).toBe(175)
+    expect(renderComment(head, comparison)).toContain('`bundle` 176 / 175 ms (fail)')
+  })
 })
 
 describe('renderComment', () => {

@@ -21,7 +21,13 @@ const report = (covered: number, valid: number) => `<?xml version="1.0" ?>
 </coverage>
 `
 
-async function run(name: string, current: string, baseline?: string, minimum = 80) {
+async function run(
+  name: string,
+  current: string,
+  baseline?: string,
+  minimum = 80,
+  expected = 'src/a.ts'
+) {
   const input = join(directory, `${name}.xml`)
   const output = join(directory, `${name}.md`)
   await writeFile(input, current)
@@ -30,6 +36,7 @@ async function run(name: string, current: string, baseline?: string, minimum = 8
   const child = Bun.spawn(command, {
     env: {
       ...process.env,
+      EXPECTED_COVERAGE_PATHS: expected,
       GITHUB_REPOSITORY: 'owner/repo',
       GITHUB_SERVER_URL: 'https://github.com',
       HEAD_SHA: 'abcdef0123456',
@@ -67,4 +74,23 @@ test('local runs without a baseline keep the plain coverage summary', async () =
   expect(code).toBe(0)
   expect(body).toContain('### Coverage\n')
   expect(body).not.toContain('Coverage impact')
+})
+
+test('a critical runtime module missing from the report fails', async () => {
+  const { code, body } = await run('missing-path', report(95, 100), undefined, 80, 'src/vault.ts')
+  expect(code).toBe(1)
+  expect(body).toContain('Missing expected coverage: `src/vault.ts`')
+})
+
+test('a missing expected path fails the baseline comparison too', async () => {
+  const { code, body } = await run(
+    'missing-path-baseline',
+    report(95, 100),
+    report(90, 100),
+    80,
+    'src/a.ts,src/vault.ts'
+  )
+  expect(code).toBe(1)
+  expect(body).toContain('Missing expected coverage: `src/vault.ts`')
+  expect(body).toContain('80% ❌')
 })

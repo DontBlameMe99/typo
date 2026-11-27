@@ -22,15 +22,29 @@ function totals(path: string, xml: string): Totals {
 
 const count = (value: number) => value.toString().replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
 
+const DEFAULT_EXPECTED_PATHS = [
+  'src/vault.ts',
+  'src/library-index.ts',
+  'src/compiler/engine.ts',
+  'src/editor/document.ts',
+  'src/pdf/document.ts',
+  'src/search/deadline-state.ts',
+]
+
 const xml = await Bun.file(input).text()
 const current = totals(input, xml)
-const passed = current.percent >= minimum
 const baselinePath = process.env.BASELINE_COVERAGE
 const baseline = baselinePath ? totals(baselinePath, await Bun.file(baselinePath).text()) : null
 const files = [...xml.matchAll(/<class name="[^"]+" filename="([^"]+)" line-rate="([\d.]+)"/g)]
   .map((match) => ({ filename: match[1], percent: Number(match[2]) * 100 }))
   .sort((a, b) => a.percent - b.percent || a.filename.localeCompare(b.filename))
-
+const expected: string[] = (process.env.EXPECTED_COVERAGE_PATHS ?? DEFAULT_EXPECTED_PATHS.join(','))
+  .split(',')
+  .map((path: string) => path.trim())
+  .filter(Boolean)
+const present = new Set(files.map((file) => file.filename))
+const missing = expected.filter((path) => !present.has(path))
+const passed = current.percent >= minimum && missing.length === 0
 const rows = files.map((file) => `| ${file.filename} | ${file.percent.toFixed(1)}% |`).join('\n')
 const details = `<details><summary>Files</summary>
 
@@ -53,6 +67,9 @@ const source = [
   baselineSha && `Baseline: ${baselineSha}`,
   headSha && `PR result: ${headSha}`,
 ].filter(Boolean)
+const missingLine = missing.length
+  ? `\nMissing expected coverage: ${missing.map((path) => `\`${path}\``).join(', ')}.\n`
+  : ''
 
 const delta = baseline ? current.percent - baseline.percent : 0
 const impact = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)} pp`
@@ -60,7 +77,7 @@ const status = passed ? '✅' : '❌'
 const summary = baseline
   ? `### Coverage impact
 
-${status} **${current.percent.toFixed(1)}%** of ${count(current.valid)} instrumented lines are covered, ${passed ? 'above' : 'below'} the ${minimum}% threshold.
+${status} **${current.percent.toFixed(1)}%** of ${count(current.valid)} instrumented lines are covered, ${passed ? 'above' : 'below'} the ${minimum}% threshold.${missingLine}
 
 | Scope | Main baseline | This PR | Impact | Threshold |
 | :---- | ------------: | ------: | -----: | --------: |
@@ -71,7 +88,7 @@ ${source.length ? `${source.join(' · ')}\n\n` : ''}${details}
 Updated in place by CI. The baseline is measured from \`main\`; this PR is measured from its head commit.`
   : `### Coverage
 
-**${current.percent.toFixed(1)}%** (${current.covered}/${current.valid} lines), ${passed ? 'meets' : 'is below'} the ${minimum}% threshold.
+**${current.percent.toFixed(1)}%** (${current.covered}/${current.valid} lines), ${passed ? 'meets' : 'is below'} the ${minimum}% threshold.${missingLine}
 
 Files that no test imports are not part of the report.
 

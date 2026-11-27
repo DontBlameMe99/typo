@@ -167,11 +167,23 @@ test('a workload over its budget fails when the ceiling meets the budget', () =>
   const compared = report.compare({
     reference: reference([
       metric('search/1000/literal', { medianMs: 30, worstMedianMs: 33, budgetMs: 33.4 }),
-      metric('search/1000/names', { medianMs: 30, worstMedianMs: 33, budgetMs: 33.4 }),
+      metric('search/1000/names', {
+        medianMs: 30,
+        worstMedianMs: 33,
+        p95Ms: 30,
+        worstP95Ms: 33,
+        budgetMs: 33.4,
+      }),
     ]),
     current: artifact([
       metric('search/1000/literal', { medianMs: 40, budgetMs: 33.4 }),
-      metric('search/1000/names', { medianMs: 30, budgetMs: 33.4 }),
+      metric('search/1000/names', {
+        medianMs: 30,
+        worstMedianMs: 33,
+        p95Ms: 30,
+        worstP95Ms: 33,
+        budgetMs: 33.4,
+      }),
     ]),
   })
   assert.equal(compared.failed, true)
@@ -299,6 +311,34 @@ test('a budget is material only above five percent', () => {
     current: artifact([metric('syntax/1000/scroll', { medianMs: 17.6, budgetMs: 16.7 })]),
   })
   assert.equal(over.failed, true)
+})
+
+test('a p95 above budget fails while the ceiling meets the budget', () => {
+  const compared = report.compare({
+    reference: reference([
+      metric('syntax/1000/scroll', {
+        medianMs: 20,
+        worstMedianMs: 22,
+        p95Ms: 95,
+        worstP95Ms: 98,
+        budgetMs: 100,
+      }),
+    ]),
+    current: artifact([
+      metric('syntax/1000/scroll', {
+        medianMs: 20,
+        worstMedianMs: 22,
+        p95Ms: 106,
+        worstP95Ms: 106,
+        budgetMs: 100,
+      }),
+    ]),
+  })
+  assert.equal(compared.failed, true)
+  assert.deepEqual(statuses(compared), [['syntax/1000/scroll', 'fail']])
+  const body = report.markdown({ rows: compared.rows, failed: true })
+  assert.match(body, /1 workload is over budget/)
+  assert.match(body, /p95 106\.0 ms > budget 100\.0 ms/)
 })
 
 test('the ceiling worst run is shown only when it renders differently', () => {

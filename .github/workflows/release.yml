@@ -34,6 +34,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: ./.github/actions/setup
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Tests
+        run: bun test
       # The main ruleset requires pull requests and lets deploy keys bypass it.
       - name: Use deploy key
         env:
@@ -143,19 +153,31 @@ jobs:
       - name: Verify APK
         env:
           CODE: ${{ steps.version.outputs.code }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SIGNER_SHA256: f0da07f559e988a0d983cff24b6c4d76f888d299f24cc9d0888eb9678cdd9b90
         run: |
           set -euo pipefail
           sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           aapt2=$(find "$sdk/build-tools" -name aapt2 -type f | sort -V | tail -1)
-          if [ -z "$aapt2" ]; then
-            echo "aapt2 was not found in $sdk/build-tools." >&2
+          apksigner=$(find "$sdk/build-tools" -name apksigner -type f | sort -V | tail -1)
+          if [ -z "$aapt2" ] || [ -z "$apksigner" ]; then
+            echo "Android build tools were not found in $sdk/build-tools." >&2
             exit 1
           fi
-          case "$("$aapt2" dump badging "$RUNNER_TEMP/apk/typo.apk")" in
+          apk="$RUNNER_TEMP/apk/typo.apk"
+          badging=$("$aapt2" dump badging "$apk")
+          case "$badging" in
             *"versionCode='$CODE'"*) ;;
             *) echo "The APK versionCode does not match $CODE." >&2; exit 1 ;;
           esac
-
+          case "$badging" in
+            *"versionName='$VERSION'"*) ;;
+            *) echo "The APK versionName does not match $VERSION." >&2; exit 1 ;;
+          esac
+          if ! "$apksigner" verify --print-certs "$apk" | grep -q "Signer: certificate SHA-256 digest: $SIGNER_SHA256"; then
+            echo "The APK is not signed by the release certificate." >&2
+            exit 1
+          fi
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
