@@ -10,7 +10,8 @@ import {
   searchDeadline,
   shouldArmDeadline,
 } from './search/deadline-state'
-import { type SearchHit, SearchTransport } from './search/protocol'
+import { type SearchHit, type SearchScope, SearchTransport } from './search/protocol'
+import { parseSearchQuery } from './search/query'
 import type { Note, SearchMode, SearchResult } from './types'
 import { webRuntime } from './web-runtime'
 import { useWebViewForegroundReload } from './webview-resume'
@@ -19,11 +20,26 @@ import { useWebViewForegroundReload } from './webview-resume'
 // telling anyone, and a killed runtime looks exactly like a slow one. A query
 // that stays unanswered this long is lost, not slow.
 const SEARCH_DEADLINE = 30_000
+const QUERY_DEBOUNCE = 100
+type PendingRequest = { at: number; query: string; mode: SearchMode; scope?: SearchScope }
+
+const scopeKey = (scope?: SearchScope) =>
+  `${scope?.folder ?? ''}|${scope?.favorites?.join('\u0000') ?? ''}`
+
+function effectiveRequest(query: string, mode: SearchMode, scope?: SearchScope) {
+  const parsed = parseSearchQuery(query)
+  return {
+    mode: parsed.mode ?? mode,
+    scope:
+      parsed.folder || scope?.folder ? { ...scope, folder: parsed.folder ?? scope?.folder } : scope,
+  }
+}
 
 type Props = {
   notes: Note[]
   query: string
   mode: SearchMode
+  scope?: SearchScope
   onResults(results: SearchResult[]): void
   onError(message: string): void
   onPending?(pending: boolean): void
@@ -35,9 +51,16 @@ export function NoteSearch(props: Props) {
   const web = useRef<WebView<object>>(null)
   const transport = useRef(new SearchTransport())
   const sequence = useRef(0)
-  const requested = useRef<{ at: number; mode: SearchMode } | null>(null)
+  const requested = useRef<PendingRequest | null>(null)
   const deadline = useRef<ReturnType<typeof setTimeout> | null>(null)
   const deadlineState = useRef(searchDeadline())
+  const [debouncedQuery, setDebouncedQuery] = useState(props.query)
+  useEffect(() => {
+    if (props.query === debouncedQuery) return
+    clearDeadlineRestart(deadlineState.current)
+    const timer = setTimeout(() => setDebouncedQuery(props.query), QUERY_DEBOUNCE)
+    return () => clearTimeout(timer)
+  }, [props.query, debouncedQuery])
   const [uri, setUri] = useState<string | null>(null)
   const [started, setStarted] = useState(false)
   const [session, setSession] = useState(0)
@@ -127,21 +150,32 @@ export function NoteSearch(props: Props) {
   }, [started, fail])
   useEffect(() => {
     if (booted?.session !== session) return
-    const searching = !!props.query.trim()
-    if (!searching) {
+    if (props.query.trim()) arm(props.query)
+    else {
       disarm()
       clearDeadlineRestart(deadlineState.current)
     }
-    const request = transport.current.request(props.notes, props.query, props.mode)
+    if (props.query !== debouncedQuery) return
+    const { mode, scope } = effectiveRequest(debouncedQuery, props.mode, props.scope)
+    const request = transport.current.request(props.notes, debouncedQuery, mode, scope)
     const view = web.current
     if (!request || !view) return
-    requested.current = { at: performance.now(), mode: props.mode }
-    latest.current.onPending?.(searching)
+    requested.current = { at: performance.now(), query: debouncedQuery, mode, scope }
+    latest.current.onPending?.(!!latest.current.query.trim())
     view.injectJavaScript(
       `window.typoSearch(${inlineJson({ ...request, id: ++sequence.current })});true;`
     )
-    if (searching) arm(props.query)
-  }, [props.notes, props.query, props.mode, booted, session, arm, disarm])
+  }, [
+    props.notes,
+    props.query,
+    debouncedQuery,
+    props.mode,
+    props.scope,
+    booted,
+    session,
+    arm,
+    disarm,
+  ])
 
   return (
     <View
@@ -176,14 +210,27 @@ export function NoteSearch(props: Props) {
           onMessage={(event) => {
             try {
               const message = JSON.parse(event.nativeEvent.data)
+              const fresh = (id: number) => {
+                const pending = requested.current
+                if (id !== sequence.current || !pending) return false
+                const current = effectiveRequest(
+                  latest.current.query,
+                  latest.current.mode,
+                  latest.current.scope
+                )
+                return (
+                  pending.query === latest.current.query &&
+                  pending.mode === current.mode &&
+                  scopeKey(pending.scope) === scopeKey(current.scope)
+                )
+              }
               if (message.type === 'boot') {
                 disarm()
                 transport.current = new SearchTransport()
                 setBooted({ session })
               } else if (message.type === 'error') {
-                if (message.id == null || message.id === sequence.current)
-                  fail(String(message.message))
-              } else if (message.type === 'results' && message.id === sequence.current) {
+                if (message.id == null || fresh(message.id)) fail(String(message.message))
+              } else if (message.type === 'results' && fresh(message.id)) {
                 disarm()
                 clearDeadlineRestart(deadlineState.current)
                 if (!Array.isArray(message.results)) throw new Error('Invalid search results')

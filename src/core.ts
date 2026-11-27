@@ -1,5 +1,9 @@
 import { Fzf } from 'fzf'
+import type { SearchScope } from './search/protocol'
+import { foldSearchText, isAsciiText, isSpace, noteFolder, parseSearchQuery } from './search/query'
 import type { Note, SearchMode, SearchResult } from './types'
+
+export type { SearchScope }
 
 export const DEFAULT_TEMPLATE = `#set page(margin: 2.5cm)
 #set text(font: "Libertinus Serif")
@@ -409,24 +413,6 @@ type RankedResult = {
   length: number
 }
 
-const encoder = new TextEncoder()
-let asciiScratch = new Uint8Array(0)
-
-// UTF-8 encoding is a native pass, unlike a per-character scan over the source.
-// A string is ASCII exactly when every character encodes to a single byte.
-function isAsciiText(text: string): boolean {
-  if (asciiScratch.length < text.length) asciiScratch = new Uint8Array(text.length)
-  const { read, written } = encoder.encodeInto(text, asciiScratch)
-  return read === text.length && written === read
-}
-
-const UPPERCASE = /[A-Z]/u
-
-function foldSearchText(text: string, plain = isAsciiText(text)): string {
-  if (plain) return UPPERCASE.test(text) ? text.toLowerCase() : text
-  return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
-}
-
 function nameEntry(note: Note, text: string): NameEntry {
   const plain = isAsciiText(text)
   return { note, text, folded: foldSearchText(text, plain), plain }
@@ -448,6 +434,7 @@ function uiBudget() {
       ),
   }
 }
+type UiBudget = ReturnType<typeof uiBudget>
 
 function isBoundary(text: string, index: number): boolean {
   if (index === 0) return true
@@ -490,24 +477,6 @@ function fuzzyScoreInRange(text: string, pattern: string, start: number, end: nu
   }
   score -= (end - start) * 0.02 + Math.min(first, 40) * 0.1
   return score
-}
-
-// Same whitespace set as String.prototype.trim.
-function isSpace(code: number): boolean {
-  if (code > 32 && code < 0x7f) return false
-  return (
-    code === 32 ||
-    (code >= 9 && code <= 13) ||
-    code === 0xa0 ||
-    code === 0x1680 ||
-    (code >= 0x2000 && code <= 0x200a) ||
-    code === 0x2028 ||
-    code === 0x2029 ||
-    code === 0x202f ||
-    code === 0x205f ||
-    code === 0x3000 ||
-    code === 0xfeff
-  )
 }
 
 type LineInfo = { line: number; left: number; right: number }
@@ -590,7 +559,7 @@ function contentHit(
   const text = lineText(entry, folded, info.line, info.left, info.right)
   // Folded offsets only address the source when folding kept every length.
   const at =
-    folded.length === entry.text.length ? offset : Math.max(0, text.toLowerCase().indexOf(lower))
+    folded.length === entry.text.length ? offset : Math.max(0, foldSearchText(text).indexOf(lower))
   return { text, line: info.line + 1, offset: at, score }
 }
 
@@ -603,12 +572,13 @@ function snippetText(text: string, offset: number): string {
 // first. Every matching line is scored, so the reported line and the score that
 // orders results do not depend on how many times the term occurs. Bounds are
 // kept in locals because this loop runs once per occurrence in the vault.
-function literalHit(
+async function literalHit(
   entry: ContentEntry,
   text: string,
   term: string,
-  lower: string
-): ContentHit | null {
+  lower: string,
+  budget: UiBudget
+): Promise<ContentHit | null> {
   const length = term.length
   let at = text.indexOf(term)
   if (at < 0) return null
@@ -619,6 +589,7 @@ function literalHit(
   let bestLine = 0
   let bestLeft = 0
   let bestRight = 0
+  let scanned = 0
   while (at >= 0) {
     while (line + 1 < starts.length && starts[line + 1] <= at) line++
     const end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length
@@ -641,6 +612,7 @@ function literalHit(
         bestRight = right
       }
     }
+    if ((++scanned & 511) === 0 && budget.over()) await budget.yieldFrame()
     at = text.indexOf(term, end + 1)
   }
   if (best === -Infinity) return null
@@ -656,12 +628,13 @@ function literalHit(
 
 // The best line whose characters hold `pattern` in order. Every line is scored,
 // so the result does not depend on where in the note the best line sits.
-function fuzzyHit(
+async function fuzzyHit(
   entry: ContentEntry,
   text: string,
   pattern: string,
-  lower: string
-): ContentHit | null {
+  lower: string,
+  budget: UiBudget
+): Promise<ContentHit | null> {
   const starts = lineOffsets(entry, text)
   let best = -Infinity
   let bestLength = 0
@@ -685,6 +658,7 @@ function fuzzyHit(
         bestRight = right
       }
     }
+    if ((line & 255) === 255 && budget.over()) await budget.yieldFrame()
   }
   if (best === -Infinity) return null
   return contentHit(
@@ -715,7 +689,8 @@ function dropOldest<K, V>(map: Map<K, V>): void {
 export type NoteSearch = ((
   query: string,
   mode: SearchMode,
-  cancelled?: () => boolean
+  cancelled?: () => boolean,
+  scope?: SearchScope
 ) => Promise<SearchResult[]>) & {
   update(notes: readonly Note[]): void
   warm(): Promise<void>
@@ -733,14 +708,15 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   // query keeps reuse cheap without allocating state for every note on the first
   // search after launch.
   const hitCache = new Map<string, Map<string, { text: string; hit: ContentHit | null }>>()
-  const cachedHit = (
+  const cachedHit = async (
     key: string,
     entry: ContentEntry,
     text: string,
     term: string,
     lower: string,
-    kind: 'literal' | 'fuzzy'
-  ): ContentHit | null => {
+    kind: 'literal' | 'fuzzy',
+    budget: UiBudget
+  ): Promise<ContentHit | null> => {
     let byNote = hitCache.get(key)
     if (!byNote) {
       if (hitCache.size === HIT_CACHE_LIMIT) dropOldest(hitCache)
@@ -751,7 +727,9 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     const cached = byNote.get(path)
     if (cached?.text === text) return cached.hit
     const hit =
-      kind === 'literal' ? literalHit(entry, text, term, lower) : fuzzyHit(entry, text, term, lower)
+      kind === 'literal'
+        ? await literalHit(entry, text, term, lower, budget)
+        : await fuzzyHit(entry, text, term, lower, budget)
     byNote.set(path, { text, hit })
     return hit
   }
@@ -833,28 +811,39 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   const search = async (
     query: string,
     mode: SearchMode,
-    cancelled = () => false
+    cancelled = () => false,
+    scope?: SearchScope
   ): Promise<SearchResult[]> => {
     const current = ++request
     const budget = uiBudget()
-    const value = query.trim()
-    if (!value) {
+    const parsed = parseSearchQuery(query)
+    const terms = parsed.terms.map((term) => foldSearchText(term)).filter(Boolean)
+    const folder = parsed.folder ?? scope?.folder
+    const favorites = scope?.favorites?.length ? new Set(scope.favorites) : null
+    const inScope = (note: Note) => folder === undefined || noteFolder(note.path) === folder
+    const boost = (note: Note) => (favorites?.has(note.path) ? 500 : 0)
+    const visible = (results: SearchResult[]) => results.filter((result) => inScope(result.note))
+    if (!parsed.terms.length) {
       all ??= notes.map((note) => ({ note }))
-      return all
+      const list = all.filter(({ note }) => inScope(note)).map(({ note }) => note)
+      if (!favorites) return list.map((note) => ({ note }))
+      return [
+        ...list.filter((note) => favorites.has(note.path)),
+        ...list.filter((note) => !favorites.has(note.path)),
+      ].map((note) => ({ note }))
     }
-    const folded = foldSearchText(value)
-    // A query made only of combining marks folds to nothing, and an empty pattern
-    // would match every position. Treat it as no query rather than matching all.
-    if (!folded) return []
+    if (!terms.length) return []
+    const effectiveMode = parsed.mode ?? mode
 
     const searchTerms = async (terms: string[]): Promise<SearchResult[]> => {
       if (!content) content = indexContent(notes, version)
       const currentEntries = await content
-      const namesOnly = mode === 'names'
-      const contentOnly = mode === 'content'
+      const namesOnly = effectiveMode === 'names'
+      const contentOnly = effectiveMode === 'content'
       const hits: { result: SearchResult; matched: number; titleHits: number; score: number }[] = []
       for (const entry of currentEntries) {
         if (current !== request || cancelled()) return []
+        if (!inScope(entry.note)) continue
         const note = entry.note
         const name = foldedName(note)
         const title = name.foldedTitle
@@ -862,7 +851,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         const foldedText = namesOnly ? '' : foldedOf(entry)
         let matched = 0
         let titleHits = 0
-        let score = 0
+        let score = boost(note)
         let snippetTerm = ''
         for (const term of terms) {
           const inTitle = !contentOnly && title.includes(term)
@@ -898,9 +887,11 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         .map(({ result }) => result)
     }
 
-    const lower = value.toLowerCase()
-    const terms = folded.split(/\s+/u).filter(Boolean)
     if (terms.length > 1) return searchTerms(terms)
+
+    const raw = parsed.terms[0]
+    const folded = terms[0]
+    const lower = folded
     const found = new Map<string, RankedResult>()
     const add = (
       note: Note,
@@ -928,37 +919,75 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     }
 
     const first = folded[0]
+    const phrase = /\s/u.test(folded)
     const literalKey = JSON.stringify(['literal', folded, lower])
     const fuzzyKey = JSON.stringify(['fuzzy', folded, lower])
-    if (mode !== 'content') {
-      for (const { item, score } of names.find(value))
-        add(item.note, item.text, undefined, item.folded.includes(folded) ? 0 : 2, score, 0)
+    if (effectiveMode !== 'content') {
+      for (const { item, score } of names.find(raw)) {
+        const literal = item.folded.includes(folded)
+        if (phrase && !literal) continue
+        add(item.note, item.text, undefined, literal ? 0 : 2, score + boost(item.note), 0)
+      }
     }
-    if (mode !== 'names') {
+    if (effectiveMode !== 'names') {
       if (!content) content = indexContent(notes, version)
       const currentEntries = await content
       for (const entry of currentEntries) {
         if (current !== request || cancelled()) return []
+        if (!inScope(entry.note)) continue
         // Nothing in the content can outrank a name hit for the same note.
         if (found.get(entry.note.path)?.rank !== 0) {
           const foldedText = foldedOf(entry)
           // A note without the query's first character can match neither way.
           if (foldedText.indexOf(first) >= 0) {
-            const literal = cachedHit(literalKey, entry, foldedText, folded, lower, 'literal')
+            const literal = await cachedHit(
+              literalKey,
+              entry,
+              foldedText,
+              folded,
+              lower,
+              'literal',
+              budget
+            )
             if (literal)
-              add(entry.note, literal.text, literal.line, 1, literal.score, literal.offset)
-            else if (containsAll(foldedText, folded)) {
-              const fuzzy = cachedHit(fuzzyKey, entry, foldedText, folded, lower, 'fuzzy')
-              if (fuzzy) add(entry.note, fuzzy.text, fuzzy.line, 3, fuzzy.score, fuzzy.offset)
+              add(
+                entry.note,
+                literal.text,
+                literal.line,
+                1,
+                literal.score + boost(entry.note),
+                literal.offset
+              )
+            else if (!phrase && containsAll(foldedText, folded)) {
+              const fuzzy = await cachedHit(
+                fuzzyKey,
+                entry,
+                foldedText,
+                folded,
+                lower,
+                'fuzzy',
+                budget
+              )
+              if (fuzzy)
+                add(
+                  entry.note,
+                  fuzzy.text,
+                  fuzzy.line,
+                  3,
+                  fuzzy.score + boost(entry.note),
+                  fuzzy.offset
+                )
             }
           }
         }
         if (budget.over()) await budget.yieldFrame()
       }
     }
-    return [...found.values()]
-      .sort((a, b) => a.rank - b.rank || b.score - a.score || a.length - b.length)
-      .map(({ result }) => result)
+    return visible(
+      [...found.values()]
+        .sort((a, b) => a.rank - b.rank || b.score - a.score || a.length - b.length)
+        .map(({ result }) => result)
+    )
   }
 
   search.warm = async () => {

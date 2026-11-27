@@ -104,3 +104,20 @@ test('search sends edits, title changes, moves, and deleted notes', () => {
   })
   expect(transport.request([], '', 'names')?.removed).toEqual(['nested/one.typ'])
 })
+
+test('scope changes are sent without resending note sources', () => {
+  const transport = new SearchTransport()
+  expect(transport.request([note], 'one', 'all', { folder: 'work' })?.scope).toEqual({
+    folder: 'work',
+  })
+  expect(transport.request([note], 'one', 'all', { folder: 'work' })).toBeNull()
+  expect(
+    transport.request([note], 'one', 'all', { folder: 'home', favorites: [note.path] })
+  ).toEqual({
+    query: 'one',
+    mode: 'all',
+    updated: [],
+    removed: [],
+    scope: { folder: 'home', favorites: [note.path] },
+  })
+})

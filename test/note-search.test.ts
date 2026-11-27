@@ -97,6 +97,7 @@ function search(initial: Omit<Props, 'onResults' | 'onError' | 'onPending'>, fai
     exports: module.exports,
     __DEV__: false,
     performance,
+    TextEncoder,
     setTimeout(run: () => void, delay = 0) {
       const id = nextTimer++
       timers.set(id, { at: clock + Number(delay), run })
@@ -420,5 +421,41 @@ test('an answered query never reaches the deadline', async () => {
   api.message({ type: 'results', id, results: [] })
   await api.advance(60_000)
   expect(api.onError).not.toHaveBeenCalled()
+  expect(api.onResults).toHaveBeenCalledWith([])
+})
+
+test('typing debounces the search and drops answers queued for the old query', async () => {
+  const api = search({ notes: [], query: 'one', mode: 'names' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  const first = api.requestId()
+  api.setProps({ query: 'two' })
+  await api.settle()
+  api.message({ type: 'error', id: first, message: 'Stale' })
+  expect(api.onError).not.toHaveBeenCalled()
+  await api.advance(99)
+  expect(api.request().id).toBe(first)
+  api.message({ type: 'results', id: first, results: [] })
+  expect(api.onResults).not.toHaveBeenCalled()
+  await api.advance(1)
+  const second = api.request()
+  expect(second.query).toBe('two')
+  expect(second.id).toBe(first + 1)
+  api.message({ type: 'results', id: second.id, results: [] })
+  expect(api.onResults).toHaveBeenCalledWith([])
+})
+
+test('reverting a query before the debounce keeps its in-flight answer', async () => {
+  const api = search({ notes: [], query: 'one', mode: 'names' })
+  await api.settle()
+  api.boot()
+  await api.settle()
+  const id = api.requestId()
+  api.setProps({ query: 'two' })
+  await api.settle()
+  api.setProps({ query: 'one' })
+  await api.settle()
+  api.message({ type: 'results', id, results: [] })
   expect(api.onResults).toHaveBeenCalledWith([])
 })

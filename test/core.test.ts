@@ -13,6 +13,7 @@ import {
   resetDateFormatters,
   sortNotes,
 } from '../src/core'
+import { parseSearchQuery } from '../src/search/query'
 import type { Note } from '../src/types'
 
 const note = (path: string, source: string): Note => ({
@@ -597,5 +598,76 @@ describe('relative note time', () => {
   })
   test('a clock that runs backwards still reads as just now', () => {
     expect(noteTime(now + 5_000, now)).toBe('Just now')
+  })
+})
+
+describe('search query parsing', () => {
+  test('quoted spans become one phrase without quote characters', () => {
+    expect(parseSearchQuery('"weekly goals" cafe')).toEqual({
+      terms: ['weekly goals', 'cafe'],
+      mode: undefined,
+      folder: undefined,
+    })
+    expect(parseSearchQuery("folder:work 'weekly goals'")).toEqual({
+      terms: ['weekly goals'],
+      mode: undefined,
+      folder: 'work',
+    })
+    expect(parseSearchQuery('name:"weekly goals"')).toEqual({
+      terms: ['weekly goals'],
+      mode: 'names',
+      folder: undefined,
+    })
+    expect(parseSearchQuery('"folder:work"')).toEqual({
+      terms: ['folder:work'],
+      mode: undefined,
+      folder: undefined,
+    })
+    expect(parseSearchQuery('name: content')).toEqual({
+      terms: ['content'],
+      mode: 'names',
+      folder: undefined,
+    })
+  })
+
+  test('a quoted phrase only matches adjacent words', async () => {
+    const items = [
+      note('a.typ', '#title[A]\nPlan weekly goals today.'),
+      note('b.typ', '#title[B]\nWeekly review of the goals.'),
+      note('c.typ', '#title[Weekly Goals]\nNothing else.'),
+    ]
+    expect(
+      (await createNoteSearch(items)('"weekly goals"', 'content')).map((r) => r.note.path)
+    ).toEqual(['c.typ', 'a.typ'])
+    expect((await createNoteSearch(items)('name:"A"', 'all')).map((r) => r.note.path)).toContain(
+      'a.typ'
+    )
+    expect(
+      (await createNoteSearch(items)('"weekly goals"', 'names')).map((r) => r.note.path)
+    ).toEqual(['c.typ'])
+  })
+})
+
+describe('scoped search', () => {
+  test('filters to one folder and ranks pinned notes first', async () => {
+    const pinned = note('work/beta.typ', '#title[Beta]\nLEGO bricks.')
+    const plain = note('work/alpha.typ', '#title[Alpha]\nLEGO bricks.')
+    const elsewhere = note('home/gamma.typ', '#title[Gamma]\nLEGO bricks.')
+    const root = note('root.typ', '#title[Root]\nLEGO bricks.')
+    const search = createNoteSearch([plain, pinned, elsewhere, root])
+    const scope = { folder: 'work', favorites: [pinned.path] }
+    expect(
+      (await search('LEGO', 'content', undefined, scope)).map((result) => result.note.path)
+    ).toEqual([pinned.path, plain.path])
+    expect((await search('', 'all', undefined, scope)).map((result) => result.note.path)).toEqual([
+      pinned.path,
+      plain.path,
+    ])
+    expect((await search('folder:home LEGO', 'all')).map((result) => result.note.path)).toEqual([
+      elsewhere.path,
+    ])
+    expect((await search('', 'all', undefined, { folder: '' })).map((r) => r.note.path)).toEqual([
+      root.path,
+    ])
   })
 })
