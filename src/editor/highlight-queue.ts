@@ -15,6 +15,12 @@ export type HighlightResponse =
   | { type: 'highlights'; id: number; ranges: Highlight[] }
   | { type: 'error'; message: string }
 
+export type FrameScheduler = (callback: () => void) => void
+
+const nextFrame: FrameScheduler = (callback) => {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(callback)
+  else callback()
+}
 type Pending = {
   id: number
   doc: Text
@@ -39,11 +45,17 @@ export class HighlightQueue {
   private pending: Pending | null = null
   private sent: Text | null = null
 
-  constructor(private send: (request: HighlightRequest) => void) {}
+  private frameScheduled = false
+  private retryUsed = false
+  constructor(
+    private send: (request: HighlightRequest) => void,
+    private schedule: FrameScheduler = nextFrame
+  ) {}
 
   ready() {
+    if (this.disposed) return
     this.booted = true
-    this.pump()
+    this.scheduleFlush()
   }
 
   request(doc: Text, range: Pending['range'], apply: Pending['apply'], changes?: ChangeSet) {
@@ -55,7 +67,7 @@ export class HighlightQueue {
       else carried = this.pending.changes
     }
     this.pending = { id: ++this.sequence, doc, range, changes: carried, apply }
-    this.pump()
+    this.scheduleFlush()
   }
 
   complete(id: number, ranges: Highlight[]) {
@@ -63,7 +75,7 @@ export class HighlightQueue {
     const active = this.active
     this.active = null
     if (id === this.sequence) active.apply(ranges)
-    this.pump()
+    this.scheduleFlush()
   }
 
   dispose() {
@@ -71,6 +83,31 @@ export class HighlightQueue {
     this.pending = null
     this.active = null
     this.sent = null
+    this.frameScheduled = false
+  }
+
+  // A replacement worker gets one retry with the newest document as a full
+  // source. Call this instead of dispose() when the worker dies, then call
+  // ready() from the replacement worker's ready message.
+  workerFailed() {
+    if (this.disposed || this.retryUsed) return false
+    this.retryUsed = true
+    const latest = this.pending ?? this.active
+    this.pending = null
+    this.active = null
+    this.sent = null
+    this.booted = false
+    if (latest) this.pending = { ...latest, id: ++this.sequence, changes: null }
+    return true
+  }
+
+  private scheduleFlush() {
+    if (this.disposed || this.frameScheduled) return
+    this.frameScheduled = true
+    this.schedule(() => {
+      this.frameScheduled = false
+      if (!this.disposed) this.pump()
+    })
   }
 
   private pump() {

@@ -1,4 +1,4 @@
-import { Edit, Language, type Node, Parser, Query, type Range, type Tree } from 'web-tree-sitter'
+import { Edit, Language, Parser, Query, type Range, type Tree } from 'web-tree-sitter'
 import { typstHighlights } from './highlights'
 
 export type Highlight = { from: number; to: number; style: string }
@@ -150,6 +150,71 @@ type Span = Highlight & { patternIndex: number }
 const byPrecedence = (a: Span, b: Span) =>
   a.from - b.from || b.to - a.to || a.patternIndex - b.patternIndex
 
+export type NodeBounds = { startIndex: number; endIndex: number }
+
+function firstEndAfter(children: readonly NodeBounds[], index: number) {
+  let low = 0
+  let high = children.length
+  while (low < high) {
+    const middle = (low + high) >> 1
+    if (children[middle].endIndex <= index) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+function firstStartAtLeast(children: readonly NodeBounds[], index: number) {
+  let low = 0
+  let high = children.length
+  while (low < high) {
+    const middle = (low + high) >> 1
+    if (children[middle].startIndex < index) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+// Top-level siblings are ordered and disjoint, so the nodes overlapping the
+// dirty span form one run. Search by endIndex to reach the viewport and by
+// startIndex to leave it, then binary-search that run when edits touch it.
+export function windowBounds(
+  children: readonly NodeBounds[],
+  range: { from: number; to: number },
+  dirty: { from: number; to: number },
+  length: number
+): { from: number; to: number } {
+  if (children.length === 0) return { from: 0, to: length }
+  const overlaps = (node: NodeBounds) => node.startIndex < dirty.to && node.endIndex > dirty.from
+
+  let first = firstEndAfter(children, range.from)
+  if (first < children.length && overlaps(children[first])) {
+    let low = 0
+    let high = first
+    while (low < high) {
+      const middle = (low + high) >> 1
+      if (overlaps(children[middle])) high = middle
+      else low = middle + 1
+    }
+    first = low - 1
+  }
+
+  let last = firstStartAtLeast(children, range.to) - 1
+  if (last >= 0 && overlaps(children[last])) {
+    let low = last
+    let high = children.length - 1
+    while (low < high) {
+      const middle = (low + high + 1) >> 1
+      if (overlaps(children[middle])) low = middle
+      else high = middle - 1
+    }
+    last = low + 1
+  }
+
+  return {
+    from: first >= children.length ? length : (children[first]?.startIndex ?? 0),
+    to: last < 0 ? 0 : last >= children.length ? length : children[last].endIndex,
+  }
+}
 export class TypstSyntax {
   private tree: Tree | null = null
   private viewTree: Tree | null = null
@@ -230,19 +295,12 @@ export class TypstSyntax {
     tree: Tree,
     range: { from: number; to: number }
   ): { from: number; to: number } {
-    const children = tree.rootNode.children
-    const overlaps = (node: Node) =>
-      node.startIndex < this.dirtyTo && node.endIndex > this.dirtyFrom
-    let first = 0
-    while (first < children.length && children[first].endIndex <= range.from) first++
-    while (first >= 0 && first < children.length && overlaps(children[first])) first--
-    let last = children.length - 1
-    while (last >= 0 && children[last].startIndex >= range.to) last--
-    while (last < children.length && last >= 0 && overlaps(children[last])) last++
-    if (children.length === 0) return { from: 0, to: this.source.length }
-    const from = first < 0 ? 0 : children[first].startIndex
-    const to = last >= children.length ? this.source.length : children[last].endIndex
-    return { from, to }
+    return windowBounds(
+      tree.rootNode.children,
+      range,
+      { from: this.dirtyFrom, to: this.dirtyTo },
+      this.source.length
+    )
   }
 
   private treeFor(source: string, range: { from: number; to: number }): Tree {

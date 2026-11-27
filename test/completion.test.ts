@@ -7,7 +7,7 @@ import {
   commandPrefix,
   localSymbols,
 } from '../src/editor/completion'
-import { isSyntaxStale, mapSyntaxRanges, setSyntaxRanges } from '../src/editor/ghost'
+import { acceptGhost, isSyntaxStale, mapSyntaxRanges, setSyntaxRanges } from '../src/editor/ghost'
 import { isLiteralPosition } from '../src/editor/literal'
 
 const suggestion = (lineBefore: string, context = '', lineAfter = '') =>
@@ -186,5 +186,36 @@ describe('command prefix gate', () => {
     expect(commandPrefix('text')).toBeNull()
     expect(commandPrefix('##tit')).toBeNull()
     expect(commandPrefix('// #tit')).toBeNull()
+  })
+})
+
+describe('ghost acceptance', () => {
+  test('a stale ghost leaves Tab to the editor', () => {
+    let state = EditorState.create({ doc: '#ti' })
+    const dispatched: unknown[] = []
+    const view = {
+      state: { field: () => ({ pos: 3, text: 'tle' }) },
+      dispatch: (spec: unknown) => dispatched.push(spec),
+    } as unknown as EditorView
+    setSyntaxRanges(view, state.doc, [])
+    for (let index = 0; index < 33; index++) {
+      const transaction = state.update({ changes: { from: state.doc.length, insert: 'x' } })
+      mapSyntaxRanges(view, transaction.startState.doc, transaction.state.doc, transaction.changes)
+      state = transaction.state
+    }
+    expect(isSyntaxStale(view)).toBe(true)
+    expect(acceptGhost(view)).toBe(false)
+    expect(dispatched).toEqual([])
+  })
+
+  test('a fresh ghost is still accepted', () => {
+    const dispatched: unknown[] = []
+    const view = {
+      state: { field: () => ({ pos: 3, text: 'tle' }) },
+      dispatch: (spec: unknown) => dispatched.push(spec),
+    } as unknown as EditorView
+    setSyntaxRanges(view, Text.of(['#ti']), [])
+    expect(acceptGhost(view)).toBe(true)
+    expect(dispatched).toHaveLength(1)
   })
 })
