@@ -48,6 +48,8 @@ declare global {
 }
 
 const send = (message: object) => window.ReactNativeWebView?.postMessage(JSON.stringify(message))
+// Android marks a composition as started before `composing` turns true.
+const composing = (view: EditorView) => view.composing || view.compositionStarted
 
 const font = document.fonts.load('14px "JetBrains Mono"')
 const syntaxAssets = Promise.all([
@@ -174,7 +176,7 @@ const templatePlaceholders = ViewPlugin.fromClass(
 // List markers, backticks, and quotes act on the caret line. Enter arrives
 // through the keymap, other typed text through the input handler.
 function typing(view: EditorView, from: number, to: number, text: string) {
-  if (view.state.readOnly || from !== to) return false
+  if (composing(view) || view.state.readOnly || from !== to) return false
   const line = view.state.doc.lineAt(from)
   const edit = autoEdit(line.text, from - line.from, text)
   if (!edit) return false
@@ -329,7 +331,9 @@ async function main(config: EditorConfig) {
             key: 'Enter',
             run: (view) => {
               const { ranges, main } = view.state.selection
-              return ranges.length === 1 && typing(view, main.from, main.to, '\n')
+              return (
+                !composing(view) && ranges.length === 1 && typing(view, main.from, main.to, '\n')
+              )
             },
           },
           ...defaultKeymap,
@@ -337,7 +341,7 @@ async function main(config: EditorConfig) {
           indentWithTab,
         ]),
         EditorView.inputHandler.of(
-          (view, from, to, text) => !view.composing && typing(view, from, to, text)
+          (view, from, to, text) => !composing(view) && typing(view, from, to, text)
         ),
         EditorView.updateListener.of((update) => {
           if (update.focusChanged)
@@ -394,7 +398,14 @@ async function main(config: EditorConfig) {
   // an edge is left alone.
   const BACK_ZONE = 40
   const inBackZone = (x: number) => x <= BACK_ZONE || x >= window.innerWidth - BACK_ZONE
-  let backTouch: { id: number; x: number; y: number; drag: boolean; focused: boolean } | null = null
+  let backTouch: {
+    id: number
+    x: number
+    y: number
+    drag: boolean
+    focused: boolean
+    selected: boolean
+  } | null = null
   let backSwipeAt = 0
   const stopBackTouch = (event: Event) => {
     event.preventDefault()
@@ -420,6 +431,7 @@ async function main(config: EditorConfig) {
         y: touch.clientY,
         drag: false,
         focused: view.hasFocus,
+        selected: !view.state.selection.main.empty,
       }
     },
     { capture: true, passive: true }
@@ -430,6 +442,10 @@ async function main(config: EditorConfig) {
       if (!backTouch) return
       const touch = findTouch(event.touches, backTouch.id)
       if (!touch) return
+      if (!backTouch.selected && !view.state.selection.main.empty) {
+        backTouch = null
+        return
+      }
       const across = Math.abs(touch.clientX - backTouch.x)
       const down = Math.abs(touch.clientY - backTouch.y)
       if (!backTouch.drag && across > 8 && across > down && inward(backTouch.x, touch.clientX))
@@ -443,6 +459,10 @@ async function main(config: EditorConfig) {
     if (!touched) return
     const touch = findTouch(event.changedTouches, touched.id)
     if (!touch) return
+    if (!touched.selected && !view.state.selection.main.empty) {
+      backTouch = null
+      return
+    }
     backTouch = null
     if (!touched.drag) return
     stopBackTouch(event)

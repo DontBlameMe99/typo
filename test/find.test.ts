@@ -12,9 +12,9 @@ describe('findMatches', () => {
     expect(findMatches('aXaXa', 'a')).toEqual([0, 2, 4])
   })
 
-  test('folds case with locale lowercasing', () => {
-    expect(findMatches('AbA aBa', 'aB')).toEqual([0, 4])
-    expect(findFirst('AbA aBa', 'aB')).toEqual({ start: 0, end: 2 })
+  test('folds case without locale-dependent offsets', () => {
+    expect(findMatches('AbA abA', 'aB')).toEqual([0, 4])
+    expect(findFirst('AbA abA', 'aB')).toEqual({ start: 0, end: 2 })
   })
 })
 
@@ -39,5 +39,26 @@ describe('initialFindSelection', () => {
       selection: { start: 6, end: 10 },
     })
     expect(initialFindSelection('Alpha', undefined, 'beta')).toBeUndefined()
+  })
+})
+
+describe('case folding and line endings', () => {
+  test('CRLF matches use normalized offsets', () => {
+    const source = 'İlk\r\nIkinci\r\nÜçüncü'
+    expect(findMatches(source, 'ikinci')).toEqual([4])
+    expect(findFirst(source, 'ikinci')).toEqual({ start: 4, end: 10 })
+    expect(initialFindSelection(source, 3, 'üçüncü')).toEqual({
+      selection: { start: 11, end: 17 },
+      matchIndex: 0,
+    })
+  })
+
+  test('Turkish dotted and dotless I fold without changing offsets', () => {
+    const source = 'İstanbul ıstanbul Istanbul'
+    expect(findMatches(source, 'istanbul')).toEqual([0, 18])
+    expect(findMatches(source, 'İSTANBUL')).toEqual([0, 18])
+    expect(findMatches(source, 'ıstanbul')).toEqual([9])
+    expect(findFirst(source, 'İ')).toEqual({ start: 0, end: 1 })
+    expect(findMatches('A𝔸B İ', 'b')).toEqual([3])
   })
 })

@@ -144,20 +144,21 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
         latest.current.onError(failure.current)
         return
       }
+      const source = normalizeSource(props.value)
       if (!ready) {
         synced.current = false
-        mirror.current = props.value
+        mirror.current = source
         return
       }
       if (!synced.current) {
         synced.current = true
-        mirror.current = props.value
+        mirror.current = source
         // The boot payload already carries this source.
-        if (props.value === bootValue.current && props.documentId === bootDocument.current) return
-      } else if (!switched && props.value === mirror.current) return
-      mirror.current = props.value
+        if (source === bootValue.current && props.documentId === bootDocument.current) return
+      } else if (!switched && source === mirror.current) return
+      mirror.current = source
       web.current?.injectJavaScript(
-        `window.typoEditor?.setDocument(${inlineJson(props.documentId)},${inlineJson(props.value)},${++session.current});true;`
+        `window.typoEditor?.setDocument(${inlineJson(props.documentId)},${inlineJson(source)},${++session.current});true;`
       )
     }, [props.documentId, props.value, ready])
     useLayoutEffect(() => {
@@ -231,10 +232,11 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(
                   const message = editorMessage(event.nativeEvent.data, latest.current.documentId)
                   if (!message) return
                   if (message.type === 'boot') {
-                    bootValue.current = normalizeSource(latest.current.value)
+                    const source = normalizeSource(latest.current.value)
+                    bootValue.current = source
                     bootDocument.current = latest.current.documentId
                     inject(
-                      `window.typoStart(${inlineJson({ documentId: latest.current.documentId, source: latest.current.value, session: session.current, editable: latest.current.editable, template: latest.current.template, theme, issues: latest.current.issues })})`
+                      `window.typoStart(${inlineJson({ documentId: latest.current.documentId, source, session: session.current, editable: latest.current.editable, template: latest.current.template, theme, issues: latest.current.issues })})`
                     )
                   } else if (message.type === 'ready') {
                     failure.current = null
