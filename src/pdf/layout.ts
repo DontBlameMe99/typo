@@ -83,6 +83,39 @@ export function pageGeometry(ratios: number[], pageWidth: number): PageGeometry 
   return { tops, bottoms }
 }
 
+export const RANGE_HYSTERESIS = 0.25
+
+export type PageRange = { first: number; last: number }
+
+// Page positions keep the fraction inside a page so a range can move only after
+// the viewport has settled into the next page, not on every scroll frame.
+export function pagePosition(geometry: PageGeometry, y: number): number {
+  const index = pageAtOffset(geometry, y)
+  const top = geometry.tops[index] ?? y
+  const height = Math.max(1, (geometry.bottoms[index] ?? top + 1) - top)
+  return index + Math.min(1, Math.max(0, (y - top) / height))
+}
+
+export function quantizeRange(
+  first: number,
+  last: number,
+  previous: PageRange | null,
+  count = Number.POSITIVE_INFINITY
+): PageRange {
+  const clamp = (value: number) => Math.min(Math.max(0, value), Math.max(0, count - 1))
+  const nextFirst = clamp(Math.floor(first))
+  const nextLast = clamp(Math.floor(last))
+  if (!previous) return { first: nextFirst, last: Math.max(nextFirst, nextLast) }
+  const edge = (desired: number, held: number, position: number) => {
+    if (desired > held) return position >= held + 1 ? desired : held
+    if (desired < held) return position <= held - RANGE_HYSTERESIS ? desired : held
+    return held
+  }
+  const start = edge(nextFirst, previous.first, first)
+  const end = edge(Math.max(nextFirst, nextLast), previous.last, last)
+  return { first: Math.min(start, end), last: Math.max(start, end) }
+}
+
 // The first page whose bottom is at or below the point, which is the page under it.
 export function pageAtOffset(geometry: PageGeometry, y: number): number {
   const { bottoms } = geometry

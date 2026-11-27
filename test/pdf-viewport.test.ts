@@ -1,6 +1,13 @@
 import { expect, test } from 'bun:test'
 import { runInNewContext } from 'node:vm'
-import { pageLayout, viewportPages } from '../src/pdf/layout'
+import {
+  pageGeometry,
+  pageLayout,
+  pagePosition,
+  quantizeRange,
+  RANGE_HYSTERESIS,
+  viewportPages,
+} from '../src/pdf/layout'
 
 const build = await Bun.build({
   entrypoints: [`${import.meta.dir}/../src/pdf/web.ts`],
@@ -17,7 +24,7 @@ const build = await Bun.build({
           contents:
             args.path === './local'
               ? 'export const localBytes=async()=>new Uint8Array([1])'
-              : 'export const GlobalWorkerOptions={}; export const getDocument=()=>globalThis.pdfTask; export class TextLayer{constructor({container}){this.container=container;this.textDivs=[]} render(){const span=document.createElement("span");span.textContent="selectable";this.container.append(span);this.textDivs.push(span);return Promise.resolve()} cancel(){}}',
+              : 'export const GlobalWorkerOptions=globalThis.workerOptions; export const getDocument=()=>globalThis.pdfTask; export class TextLayer{constructor({container}){this.container=container;this.textDivs=[]} render(){const span=document.createElement("span");span.textContent="selectable";this.container.append(span);this.textDivs.push(span);return Promise.resolve()} cancel(){}}',
           loader: 'js',
         }))
       },
@@ -119,7 +126,15 @@ const touches = (distance: number, x = 180, y = 200) => [
   { clientX: x + distance / 2, clientY: y },
 ]
 
-async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
+async function viewer(
+  count = 120,
+  options: {
+    holdLayout?: boolean
+    bridge?: boolean
+    renderer?: boolean
+    unsafeLink?: boolean
+  } = {}
+) {
   const scroll = new Node('scroll')
   const pages = new Node('pages')
   const status = new Node('status')
@@ -137,6 +152,12 @@ async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
     url?: string
     message?: string
   }[] = []
+  const opened: string[] = []
+  const workerInstances: { onerror?: ((event: { message: string }) => void) | null }[] = []
+  const workerOptions: {
+    workerPort?: unknown
+    rendererPorts?: unknown[]
+  } = {}
   let id = 0
   let destroyed = 0
   let workers = 0
@@ -176,6 +197,9 @@ async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
           getAnnotations: () =>
             Promise.resolve([
               { subtype: 'Link', rect: [0, 0, 100, 50], url: 'https://example.com/' },
+              ...(options.unsafeLink
+                ? [{ subtype: 'Link', rect: [0, 60, 100, 110], url: 'javascript:alert(1)' }]
+                : []),
             ]),
           render() {
             renders.push(number)
@@ -200,7 +224,14 @@ async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
   const window = {
     devicePixelRatio: 2,
     typoPdf: undefined as unknown as { load(uri: string): void },
-    ReactNativeWebView: { postMessage: (message: string) => messages.push(JSON.parse(message)) },
+    open: (url: string) => opened.push(url),
+    ...(options.bridge === false
+      ? {}
+      : {
+          ReactNativeWebView: {
+            postMessage: (message: string) => messages.push(JSON.parse(message)),
+          },
+        }),
     addEventListener: (type: string, callback: () => void) => events.set(type, callback),
   }
   runInNewContext(code, {
@@ -210,14 +241,19 @@ async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
       createElement: (tag: string) => new Node(tag),
       createDocumentFragment: () => new Node('fragment'),
       addEventListener() {},
+      fonts: options.renderer ? ({} as object) : undefined,
     },
     pdfTask,
+    workerOptions,
+    OffscreenCanvas: options.renderer ? class {} : undefined,
     AbortController,
     Blob,
     URL: { createObjectURL: () => 'blob:worker', revokeObjectURL() {} },
     Worker: class {
+      onerror?: ((event: { message: string }) => void) | null
       constructor() {
         workers++
+        workerInstances.push(this)
       }
       terminate() {
         terminated++
@@ -241,15 +277,18 @@ async function viewer(count = 120, options: { holdLayout?: boolean } = {}) {
     await settle()
   }
   window.typoPdf.load('file:///first.pdf')
-  // Page sizes arrive in batches, so let the viewer finish before reading the tree.
+  // The placeholders arrive before the first raster pass finishes.
   for (let turn = 0; turn < 64 && pages.children.length < count; turn++) await settle()
-  await settle()
+  for (let turn = 0; turn < 8; turn++) await settle()
   return {
     scroll,
     pages,
     frames,
     renders,
     messages,
+    opened,
+    workerInstances,
+    workerOptions,
     frame,
     counts: () => ({ destroyed, workers, terminated, maxInFlight }),
     fetches,
@@ -333,21 +372,22 @@ test('a distant jump renders visible mixed-size pages first and keeps a bounded 
     view.renders.length = 0
     view.scroll.dispatch('scroll')
     await view.frame()
-    expect(view.renders).toEqual([101, 102, 100, 103])
+    expect(view.renders).toEqual([101, 102, 103, 100, 104])
     expect(view.pages.children[100].children[0].height).toBe(896)
+    // The page just above the viewport is overscan, but it still gets real dimensions.
+    expect(view.pages.children[99].children[0].height).toBe(336)
     expect(view.pages.children[101].children[0].height).toBe(336)
     // The pages of the first view stay behind for a scroll back.
-    expect(view.pages.querySelectorAll('canvas')).toHaveLength(7)
+    expect(view.pages.querySelectorAll('canvas')).toHaveLength(8)
 
-    // A second jump keeps the newest four pages and releases the older canvases.
+    // A distant jump releases the old canvases, including the refined overscan page.
     const stale = view.pages.children[0]
     const recent = view.pages.children[100].children[0]
     view.scroll.scrollTop = view.pages.children[50].offsetTop
     view.scroll.dispatch('scroll')
     await view.frame()
     expect(stale.children).toHaveLength(0)
-    expect(recent.parent).toBe(view.pages.children[100])
-    expect(view.pages.querySelectorAll('canvas')).toHaveLength(8)
+    expect(recent.parent).toBeNull()
   } finally {
     await view.close()
   }
@@ -364,13 +404,14 @@ test('scrolling away and back reuses the cached canvases', async () => {
     view.scroll.clientHeight = 500
     view.renders.length = 0
     await show(100)
-    expect(view.renders).toEqual([101, 102, 100, 103])
+    expect(view.renders).toEqual([101, 102, 103, 100, 104])
     view.renders.length = 0
     await show(95)
     expect(view.renders).toHaveLength(4)
     view.renders.length = 0
     await show(100)
-    expect(view.renders).toEqual([])
+    // Five pages fit in one refined viewport, so one older page leaves the cache.
+    expect(view.renders).toEqual([101])
     expect(view.pages.children[100].querySelectorAll('canvas')).toHaveLength(1)
   } finally {
     await view.close()
@@ -425,13 +466,9 @@ test('zooming redraws a cached page without parsing it again', async () => {
 test('a loaded document does not trip the load watchdog', async () => {
   const view = await viewer(40, { holdLayout: true })
   try {
-    // The first pages are drawn while the rest of the sizes are still being read, so
-    // a render pass finishes before the last batch arms the watchdog.
-    for (let turn = 0; turn < 8; turn++) await settle()
-    expect(view.pages.children).toHaveLength(16)
-    await view.releaseLayout()
-    for (let turn = 0; turn < 64 && view.pages.children.length !== 40; turn++) await settle()
-    await settle()
+    // Only the first viewport is measured; the remaining placeholders use an estimate.
+    expect(view.pages.children).toHaveLength(40)
+    expect([...view.fetches.keys()].some((number) => number > 16)).toBe(false)
     view.fireTimers()
     expect(view.messages.filter((message) => message.type === 'error')).toEqual([])
   } finally {
@@ -439,17 +476,18 @@ test('a loaded document does not trip the load watchdog', async () => {
   }
 })
 
-test('a stalled size batch keeps the watchdog armed', async () => {
+test('a stalled refinement keeps the watchdog armed and aborts the session', async () => {
   const view = await viewer(40, { holdLayout: true })
   try {
-    // The first pages are drawn while the second batch waits on the document. That
-    // pass must not disarm the timer covering the wait.
-    for (let turn = 0; turn < 8; turn++) await settle()
-    expect(view.pages.children).toHaveLength(16)
+    view.scroll.scrollTop = view.pages.children[20].offsetTop
+    view.scroll.dispatch('scroll')
+    await view.frame()
     view.fireTimers()
     const errors = view.messages.filter((message) => message.type === 'error')
     expect(errors).toHaveLength(1)
     expect(errors[0].message).toContain('took too long')
+    expect(view.counts().destroyed).toBeGreaterThan(0)
+    await view.releaseLayout()
   } finally {
     await view.close()
   }
@@ -632,4 +670,97 @@ test('touch cancellation flushes pinch and source switching drops its pending fr
   } finally {
     await view.close()
   }
+})
+
+test('quantized ranges hold their edges until the viewport crosses the next page', () => {
+  expect(RANGE_HYSTERESIS).toBe(0.25)
+  expect(quantizeRange(2.1, 4.9, null, 40)).toEqual({ first: 2, last: 4 })
+  expect(quantizeRange(2.9, 4.99, { first: 2, last: 4 }, 40)).toEqual({ first: 2, last: 4 })
+  expect(quantizeRange(3, 5.1, { first: 2, last: 4 }, 40)).toEqual({ first: 3, last: 5 })
+  expect(quantizeRange(2.9, 4.8, { first: 3, last: 5 }, 40)).toEqual({ first: 3, last: 5 })
+  expect(quantizeRange(2.7, 4.7, { first: 3, last: 5 }, 40)).toEqual({ first: 2, last: 4 })
+  expect(quantizeRange(0.9, 120.1, { first: 0, last: 119 }, 120)).toEqual({ first: 0, last: 119 })
+})
+
+test('page positions carry the fraction used by the range hysteresis', () => {
+  const geometry = pageGeometry([1, 2], 300)
+  expect(pagePosition(geometry, 24)).toBe(0)
+  expect(pagePosition(geometry, 324)).toBe(1)
+  expect(pagePosition(geometry, 24 + 300 + 16 + 600)).toBe(2)
+  expect(pagePosition(geometry, 24 + 300 + 16 + 300)).toBeCloseTo(1.5)
+})
+
+test('pages beyond the first viewport refine when they are reached', async () => {
+  const view = await viewer(40)
+  try {
+    const late = view.pages.children[30]
+    expect(Number(late.properties.get('--page-ratio'))).toBeCloseTo(11 / 12, 12)
+    expect(view.fetches.has(31)).toBe(false)
+    view.scroll.clientHeight = 500
+    view.scroll.scrollTop = late.offsetTop
+    view.scroll.dispatch('scroll')
+    await view.frame()
+    expect(view.fetches.get(31)).toBe(1)
+    expect(late.properties.get('--page-ratio')).toBe(String(800 / 600))
+  } finally {
+    await view.close()
+  }
+})
+
+test('annotation links use window.open without the native bridge and keep the allowlist', async () => {
+  const view = await viewer(1, { bridge: false, unsafeLink: true })
+  try {
+    const links = view.pages.children[0].children.find(
+      (child) => child.className === 'linkLayer'
+    )?.children
+    // The disallowed annotation never becomes a clickable link.
+    expect(links).toHaveLength(1)
+    expect(links?.[0].attributes.get('href')).toBe('https://example.com/')
+    links?.[0].dispatch('click')
+    expect(view.opened).toEqual(['https://example.com/'])
+  } finally {
+    await view.close()
+  }
+})
+
+test('a warm page keeps its canvas, text and links when the viewport moves', async () => {
+  const view = await viewer()
+  try {
+    const page = view.pages.children[2]
+    const layers = () => page.children.filter((child) => child.className === 'textLayer')
+    view.scroll.clientHeight = 500
+    view.scroll.scrollTop = view.pages.children[1].offsetTop
+    view.scroll.dispatch('scroll')
+    await view.frame()
+    expect(layers()).toHaveLength(1)
+    expect(layers()[0].children).toHaveLength(1)
+    view.scroll.scrollTop = view.pages.children[4].offsetTop
+    view.scroll.dispatch('scroll')
+    await view.frame()
+    expect(page.querySelectorAll('canvas')).toHaveLength(1)
+    expect(layers()).toHaveLength(1)
+    expect(layers()[0].children).toHaveLength(1)
+  } finally {
+    await view.close()
+  }
+})
+
+test('a renderer worker error drops the renderer port', async () => {
+  const view = await viewer(4, { renderer: true })
+  try {
+    expect(view.workerInstances).toHaveLength(2)
+    expect(view.workerOptions.rendererPorts).toHaveLength(1)
+    view.workerInstances[1].onerror?.({ message: 'renderer broke' })
+    expect(view.workerOptions.rendererPorts).toEqual([])
+  } finally {
+    await view.close()
+  }
+})
+
+test('unloading resets prepared workers so a later load starts fresh', async () => {
+  const view = await viewer(4)
+  await view.close()
+  view.load('file:///again.pdf')
+  for (let turn = 0; turn < 16; turn++) await settle()
+  expect(view.counts().workers).toBe(2)
 })

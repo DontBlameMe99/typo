@@ -9,10 +9,13 @@ import {
   clampZoom,
   MAX_PDF_BYTES,
   type PageGeometry,
+  type PageRange,
   pageAtOffset,
   pageGeometry,
   pageLayout,
   pageLeft,
+  pagePosition,
+  quantizeRange,
   retainPages,
   viewportPages,
 } from './layout'
@@ -37,6 +40,7 @@ type Page = {
   // A page builds its selection layer when it comes on screen and keeps it while
   // its canvas stays in the cache, so a scroll back does not rebuild it.
   layers: boolean
+  estimated: boolean
 }
 type SelectionBox = { left: number; top: number; right: number; bottom: number }
 type Render = { order: number[]; zoom: number; width: number; key: string }
@@ -49,6 +53,8 @@ type Session = {
   pages: Page[]
   published: number[]
   requested: string
+  window: PageRange | null
+  refining: Map<number, Promise<void>>
   latest: Render | null
   rasterizing: number | null
   rasterKey: string
@@ -84,6 +90,15 @@ const pages = element<HTMLElement>('pages')
 const status = element<HTMLElement>('status')
 let selectionCanvas: HTMLCanvasElement | null = null
 const send = (message: object) => window.ReactNativeWebView?.postMessage(JSON.stringify(message))
+const LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:'])
+const canOpen = (url: string) => {
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1]
+  return !!scheme && LINK_PROTOCOLS.has(`${scheme.toLowerCase()}:`)
+}
+const openExternal = (url: string) => {
+  if (window.ReactNativeWebView) send({ type: 'link', url })
+  else window.open(url, '_blank', 'noopener,noreferrer')
+}
 selectionCanvas = createSelectionCanvas()
 let session: Session | null = null
 let zoom = 1
@@ -102,6 +117,8 @@ let renderer: Worker | null = null
 // Both worker scripts are parsed once per viewer. The viewer starts them while the
 // host is still handing over the first file, so opening a PDF only reads the file.
 let prepared: Promise<void> | null = null
+// A pagehide tears down the workers. Work already in flight must not start new ones.
+let workerGeneration = 0
 
 function workerScript(name: string) {
   return localBytes(name).then((bytes) =>
@@ -110,9 +127,12 @@ function workerScript(name: string) {
 }
 
 function prepare(): Promise<void> {
+  const generation = workerGeneration
   prepared ??= (async () => {
     workerUrl ??= workerScript('pdf-worker.bundle.js')
-    worker ??= new Worker(await workerUrl)
+    const script = await workerUrl
+    if (generation !== workerGeneration) return
+    worker ??= new Worker(script)
     worker.onerror = (event) => {
       if (session)
         fail(session, new Error(event.message || 'The offline PDF worker could not start.'))
@@ -126,7 +146,16 @@ function prepare(): Promise<void> {
     try {
       if (typeof OffscreenCanvas === 'undefined' || !document.fonts) return
       rendererUrl ??= workerScript('pdf-renderer.bundle.js')
-      renderer ??= new Worker(await rendererUrl)
+      const rendererScript = await rendererUrl
+      if (generation !== workerGeneration) return
+      renderer ??= new Worker(rendererScript)
+      renderer.onerror = () => {
+        renderer?.terminate()
+        void rendererUrl?.then((url) => URL.revokeObjectURL(url))
+        renderer = null
+        rendererUrl = null
+        GlobalWorkerOptions.rendererPorts = []
+      }
       GlobalWorkerOptions.rendererPorts = [renderer]
     } catch {
       GlobalWorkerOptions.rendererPorts = []
@@ -183,39 +212,56 @@ function stopWatchdog(current: Session) {
   if (current.timeout) clearTimeout(current.timeout)
   current.timeout = null
 }
-
 function watchProgress(current: Session) {
   stopWatchdog(current)
-  current.timeout = setTimeout(
-    () => fail(current, new Error('Displaying this PDF took too long. Try a smaller document.')),
-    60_000
-  )
+  current.timeout = setTimeout(() => {
+    fail(current, new Error('Displaying this PDF took too long. Try a smaller document.'))
+    // A stalled document must stop drawing and decoding, not only report an error.
+    current.abort.abort()
+    void current.queue?.dispose().catch(() => {})
+    void current.task?.destroy().catch(() => {})
+  }, 60_000)
 }
 
 function pageAt(y: number) {
   return pageAtOffset(geometry, y)
 }
 
-function release(current: Session, index: number) {
+function releaseLayers(current: Session, index: number) {
   const page = current.pages[index]
   page.textLayer?.cancel()
   page.textLayer = null
   page.text?.remove()
   page.links?.remove()
   page.text = page.links = null
+  page.layers = false
+  queueSelectionPaint(true)
+}
+
+function release(current: Session, index: number) {
+  const page = current.pages[index]
+  const warm = current.warm.get(index)
+  if (warm && page.canvas) {
+    // Keep the text and links with the warm page proxy: scrolling back must not
+    // pay for another text pass when only the canvas was recycled.
+    page.canvas.remove()
+    parkCanvas(page.canvas)
+    page.canvas = null
+    page.rendered = ''
+    queueSelectionPaint(true)
+    return
+  }
+  releaseLayers(current, index)
   if (page.canvas) {
     page.canvas.remove()
     parkCanvas(page.canvas)
     page.canvas = null
   }
   page.rendered = ''
-  page.layers = false
-  const warm = current.warm.get(index)
   if (warm) {
     current.warm.delete(index)
     warm.cleanup()
   }
-  queueSelectionPaint(true)
 }
 
 function warmPage(current: Session, pdf: PDFDocumentProxy, index: number) {
@@ -238,25 +284,76 @@ function warmPage(current: Session, pdf: PDFDocumentProxy, index: number) {
   })
 }
 
+function refinePage(current: Session, index: number): Promise<void> {
+  const pending = current.refining.get(index)
+  if (pending) return pending
+  const page = current.pages[index]
+  const pdf = current.pdf
+  if (!page?.estimated || !pdf) return Promise.resolve()
+  const work = warmPage(current, pdf, index)
+    .then((proxy) => {
+      if (session !== current || !page.estimated) return
+      const viewport = proxy.getViewport({ scale: 1 })
+      page.width = viewport.width
+      page.height = viewport.height
+      page.estimated = false
+      // The placeholder size may have produced a canvas already. Drop it so the
+      // real geometry is rendered instead of keeping a stale raster.
+      if (page.canvas) {
+        page.canvas.remove()
+        parkCanvas(page.canvas)
+        page.canvas = null
+      }
+      page.rendered = ''
+      current.published = current.published.filter((value) => value !== index)
+      page.element.style.setProperty('--page-ratio', String(viewport.height / viewport.width))
+      page.element.style.setProperty('--user-unit', String(viewport.userUnit || 1))
+      geometryKey = ''
+      resizePreview()
+    })
+    .finally(() => current.refining.delete(index))
+  current.refining.set(index, work)
+  return work
+}
+
 function requestRender() {
   const current = session
   if (!current?.queue || !current.pages.length || pinch) return
   measure(current)
-  const firstVisible = pageAt(scroll.scrollTop)
-  const lastVisible = pageAt(scroll.scrollTop + scroll.clientHeight)
-  const { first, last, order } = viewportPages(firstVisible, lastVisible, current.pages.length)
+  const firstPos = pagePosition(geometry, scroll.scrollTop)
+  const lastPos = pagePosition(geometry, scroll.scrollTop + scroll.clientHeight)
+  const range = quantizeRange(firstPos, lastPos, current.window, current.pages.length)
+  const renderWindow = viewportPages(range.first, range.last, current.pages.length)
+  const estimated: Promise<void>[] = []
+  for (let index = renderWindow.first; index <= renderWindow.last; index++)
+    if (current.pages[index]?.estimated) estimated.push(refinePage(current, index))
+  if (estimated.length) {
+    watchProgress(current)
+    void Promise.all(estimated).then(
+      () => {
+        if (session === current) requestRender()
+      },
+      (cause: unknown) => {
+        if (session === current) fail(current, cause)
+      }
+    )
+    return
+  }
+  const { first, last, order } = renderWindow
   const key = `${zoom}:${scroll.clientWidth}`
-  const requested = `${firstVisible}:${lastVisible}:${key}`
+  const requested = `${range.first}:${range.last}:${key}`
   if (current.requested === requested) return
   current.requested = requested
+  current.window = range
   const { drop } = retainPages(current.published, first, last, (index) => {
     const page = current.pages[index]
     if (page.rendered !== key || !page.canvas) return 0
     return page.canvas.width * page.canvas.height
   })
   for (const index of drop) release(current, index)
-  if (drop.length) current.published = current.published.filter((index) => !drop.includes(index))
-  for (let index = firstVisible; index <= lastVisible; index++) requestLayers(current, index)
+  // A warm page keeps its canvas, so it stays available to the next viewport too.
+  current.published = current.published.filter((index) => current.pages[index].canvas)
+  for (let index = range.first; index <= range.last; index++) requestLayers(current, index)
   watchProgress(current)
   const render = { order, zoom, width: scroll.clientWidth, key }
   current.latest = render
@@ -493,12 +590,13 @@ async function attachLayers(
     if (data?.subtype !== 'Link' || !Array.isArray(data.rect)) continue
     const link = document.createElement('a')
     link.setAttribute('role', 'link')
-    link.setAttribute('href', typeof data.url === 'string' ? data.url : '#')
+    const url = typeof data.url === 'string' ? data.url : null
+    link.setAttribute('href', url && canOpen(url) ? url : '#')
     link.tabIndex = 0
     let activate: (() => void) | null = null
-    if (typeof data.url === 'string') {
+    if (url && canOpen(url)) {
       link.setAttribute('aria-label', 'Open link. Opens in your browser')
-      activate = () => send({ type: 'link', url: data.url })
+      activate = () => openExternal(url)
     } else if (data.dest) {
       link.setAttribute('aria-label', 'Go to page')
       const dest = data.dest
@@ -539,6 +637,8 @@ async function load(uri: string) {
     pages: [],
     published: [],
     requested: '',
+    window: null,
+    refining: new Map(),
     latest: null,
     rasterizing: null,
     rasterKey: '',
@@ -645,52 +745,56 @@ async function load(uri: string) {
       },
       (cause) => fail(current, cause)
     )
-    // The first page is rastered while the rest of the pages are still being measured,
-    // so a long document does not wait for its whole layout before it shows anything.
-    for (let start = 1; start <= pdf.numPages; start += LAYOUT_BATCH) {
-      // A render pass ends the watchdog, and this loop keeps reading pages after it.
-      watchProgress(current)
-      const numbers: number[] = []
-      for (let number = start; number <= Math.min(start + LAYOUT_BATCH - 1, pdf.numPages); number++)
-        numbers.push(number)
-      const loaded = await Promise.all(numbers.map((number) => pdf.getPage(number)))
-      if (session !== current) return
-      const fragment = document.createDocumentFragment()
-      for (const [offset, page] of loaded.entries()) {
-        try {
-          const number = numbers[offset]
-          const viewport = page.getViewport({ scale: 1 })
-          const node = document.createElement('section')
-          node.className = 'page'
-          node.style.setProperty('--page-ratio', String(viewport.height / viewport.width))
-          node.style.setProperty('--user-unit', String(viewport.userUnit || 1))
-          node.setAttribute('data-page', `${number} / ${pdf.numPages}`)
-          node.setAttribute('aria-label', `Page ${number} of ${pdf.numPages}`)
-          fragment.append(node)
-          current.pages.push({
-            element: node,
-            width: viewport.width,
-            height: viewport.height,
-            canvas: null,
-            rendered: '',
-            text: null,
-            links: null,
-            textLayer: null,
-            layers: false,
-          })
-        } finally {
-          page.cleanup()
-        }
+    // Only the first viewport is measured before layout. Later pages use the
+    // measured aspect ratio until they are reached and refined on demand.
+    watchProgress(current)
+    const measuredCount = Math.min(LAYOUT_BATCH, pdf.numPages)
+    const loaded = await Promise.all(
+      Array.from({ length: measuredCount }, (_, offset) => pdf.getPage(offset + 1))
+    )
+    if (session !== current) return
+    const sizes = loaded.map((page) => {
+      const viewport = page.getViewport({ scale: 1 })
+      const size = {
+        width: viewport.width,
+        height: viewport.height,
+        userUnit: viewport.userUnit || 1,
+        ratio: viewport.height / viewport.width,
       }
-      pages.append(fragment)
-      resizePreview()
-      if (start === 1) requestRender()
+      page.cleanup()
+      return size
+    })
+    const estimate = sizes.reduce((sum, size) => sum + size.ratio, 0) / sizes.length || 1
+    const fragment = document.createDocumentFragment()
+    for (let number = 1; number <= pdf.numPages; number++) {
+      const size = sizes[number - 1]
+      const ratio = size?.ratio ?? estimate
+      const node = document.createElement('section')
+      node.className = 'page'
+      node.style.setProperty('--page-ratio', String(ratio))
+      node.style.setProperty('--user-unit', String(size?.userUnit ?? 1))
+      node.setAttribute('data-page', `${number} / ${pdf.numPages}`)
+      node.setAttribute('aria-label', `Page ${number} of ${pdf.numPages}`)
+      fragment.append(node)
+      current.pages.push({
+        element: node,
+        width: size?.width ?? 1,
+        height: size?.height ?? ratio,
+        canvas: null,
+        rendered: '',
+        text: null,
+        links: null,
+        textLayer: null,
+        layers: false,
+        estimated: !size,
+      })
     }
+    pages.append(fragment)
+    resizePreview()
     loading = false
     clearSelection()
     requestRender()
-    // The last batch arms the watchdog, and a pass that already finished will not
-    // clear it. Once nothing is left to draw, a loaded document needs no watchdog.
+    // Once nothing is left to draw, a loaded document needs no watchdog.
     if (!current.queue?.busy) stopWatchdog(current)
   } catch (cause) {
     fail(current, cause)
@@ -841,7 +945,14 @@ document.addEventListener('selectionchange', () => queueSelectionPaint(true))
 document.addEventListener('touchend', () => queueSelectionPaint(true), { passive: true })
 window.addEventListener('pagehide', () => {
   cancelPinch()
-  const stop = session ? destroy(session) : Promise.resolve()
+  const closing = session
+  session = null
+  const scripts = [workerUrl, rendererUrl]
+  workerUrl = null
+  rendererUrl = null
+  prepared = null
+  workerGeneration++
+  const stop = closing ? destroy(closing) : Promise.resolve()
   void stop
     .catch(() => {})
     .then(() => {
@@ -852,8 +963,7 @@ window.addEventListener('pagehide', () => {
       renderer = null
       GlobalWorkerOptions.rendererPorts = []
     })
-  void workerUrl?.then((url) => URL.revokeObjectURL(url))
-  void rendererUrl?.then((url) => URL.revokeObjectURL(url))
+  for (const script of scripts) void script?.then((url) => URL.revokeObjectURL(url))
 })
 window.typoPdf = {
   load: (uri: string) => void load(uri),
