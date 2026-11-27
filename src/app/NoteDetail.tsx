@@ -24,7 +24,7 @@ import { SourceEditor, type SourceEditorHandle } from '../SourceEditor'
 import { useTheme } from '../theme'
 import type { Note } from '../types'
 import { useAutoPdf } from '../useAutoPdf'
-import { preparePdf, prepareSource, saveNote } from '../vault'
+import { preparePdf, prepareSource, readNote, saveNote } from '../vault'
 import { findFirst, findMatches, initialFindSelection } from './find'
 import { Fade, IconFade, PillTabs, SLIDE_TIMING, Ticker, timing } from './motion'
 import { errorText, keyboardBehavior } from './shared'
@@ -38,7 +38,18 @@ const NOTE_MODE_OPTIONS = [
 
 const AUTO_SAVE_DELAY = 600
 
-export function NoteDetail({
+export function NoteDetail(props: Parameters<typeof NoteDetailScreen>[0]) {
+  const { note, session } = props
+  return <NoteDetailScreen key={`${note.uri}:${session}`} {...props} />
+}
+
+function isSyncConflict(message: string | null): boolean {
+  return (
+    !!message &&
+    (message.includes('changed outside this editor') || message.includes('changed on disk'))
+  )
+}
+function NoteDetailScreen({
   workspace,
   active,
   instantIn,
@@ -71,7 +82,6 @@ export function NoteDetail({
   const { colors } = useTheme()
   const { top } = useSafeAreaInsets()
   const documentId = `${note.uri}:${session}`
-  const [currentDocument, setCurrentDocument] = useState(documentId)
   const [savedNote, setSavedNote] = useState(note)
   const [source, setSource] = useState(note.source)
   const [mode, setMode] = useState<'source' | 'pdf'>('source')
@@ -105,6 +115,7 @@ export function NoteDetail({
   const [selection, setSelection] = useState<{ start: number; end: number } | undefined>()
   const [sharing, setSharing] = useState(false)
   const [openingPdf, setOpeningPdf] = useState(false)
+  const [pdfReloadEpoch, setPdfReloadEpoch] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [pdfError, setPdfError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
@@ -165,23 +176,6 @@ export function NoteDetail({
       if (initial.matchIndex !== undefined) setMatchIndex(initial.matchIndex)
     }
   }, [initialLine, initialQuery, note.source, documentId])
-
-  if (currentDocument !== documentId) {
-    setCurrentDocument(documentId)
-    setSavedNote(note)
-    setSource(note.source)
-    setMode('source')
-    setFind(initialQuery)
-    setFindOpen(!!initialQuery || !!initialLine)
-    setFocusFind(false)
-    setMatchIndex(0)
-    setSelection(undefined)
-    setSharing(false)
-    setError(null)
-    setPdfError(null)
-    editor.current?.blur()
-    setEditing(false)
-  }
 
   async function close() {
     if (closing.current) return
@@ -246,6 +240,38 @@ export function NoteDetail({
     if (nextSource !== undefined) editState.current.source = nextSource
     return save()
   }
+
+  function cancelPendingSave() {
+    if (pendingSave.current) {
+      clearTimeout(pendingSave.current)
+      pendingSave.current = null
+    }
+  }
+
+  async function resolveConflict(overwrite: boolean) {
+    if (!active || !alive.current) return
+    cancelPendingSave()
+    setError(null)
+    try {
+      const disk = await readNote(editState.current.savedNote)
+      if (!alive.current) return
+      if (overwrite) {
+        const saved = await saveNote(disk, editState.current.source)
+        if (!alive.current) return
+        editState.current.savedNote = saved
+        setSavedNote(saved)
+        onSave(saved)
+      } else {
+        editState.current.savedNote = disk
+        editState.current.source = disk.source
+        setSavedNote(disk)
+        setSource(disk.source)
+        onSave(disk)
+      }
+    } catch (cause) {
+      if (alive.current) setError(errorText(cause))
+    }
+  }
   async function share() {
     if (!active || opening || sharing) return
     const epoch = ++shareEpoch.current
@@ -259,9 +285,9 @@ export function NoteDetail({
         const uri = await prepareSource(savedNote, source)
         if (current())
           await Sharing.shareAsync(uri, {
-            mimeType: 'application/octet-stream',
+            mimeType: 'text/plain',
             dialogTitle: savedNote.title,
-            UTI: 'public.data',
+            UTI: 'public.plain-text',
           })
       } else {
         const preview = await autoPdf.current()
@@ -293,11 +319,21 @@ export function NoteDetail({
       if (!current()) return
       if (Platform.OS === 'android') {
         const content = await FileSystem.getContentUriAsync(uri)
-        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-          data: content,
-          type: 'application/pdf',
-          flags: 1,
-        })
+        try {
+          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+            data: content,
+            type: 'application/pdf',
+            flags: 1,
+          })
+        } catch {
+          if (!(await Sharing.isAvailableAsync()))
+            throw new Error('No PDF app is installed and sharing is not available.')
+          await Sharing.shareAsync(uri, {
+            mimeType: 'application/pdf',
+            dialogTitle: savedNote.title,
+            UTI: 'com.adobe.pdf',
+          })
+        }
       } else {
         if (!(await Sharing.isAvailableAsync()))
           throw new Error('Opening PDFs is not available on this device.')
@@ -351,8 +387,18 @@ export function NoteDetail({
 
   // Show whatever PDF already exists instead of waiting for the next compile.
   const pdfUri = autoPdf.preview?.uri ?? null
+  const pdfSource = useMemo(() => (pdfUri ? { uri: pdfUri } : null), [pdfUri])
   const compileError = autoPdf.error
   const issues = autoPdf.diagnostics
+  const bannerMessage = error || openError || autoPdf.storageError || ''
+  const bannerConflict = isSyncConflict(bannerMessage)
+  const conflictActions = bannerConflict
+    ? [
+        { label: 'Reload from disk', onPress: () => void resolveConflict(false) },
+        { label: 'Overwrite', onPress: () => void resolveConflict(true) },
+      ]
+    : undefined
+  const compileConflict = isSyncConflict(compileError)
   // Only the open note can be underlined. Issues from imports still show their
   // file in the popup, so pass them through with their path.
   const editorIssues = useMemo(
@@ -380,11 +426,16 @@ export function NoteDetail({
     issues.findIndex((issue) => issue.severity === 'error')
   )
   const firstIssue = issues[revealIndex]
-  const failureHint = firstIssue
-    ? firstIssue.path === savedNote.path
-      ? 'Check the source for the error.'
-      : `The error is in ${firstIssue.path}, line ${firstIssue.line}.`
-    : compileError
+  const failureHint =
+    firstIssue?.severity === 'error'
+      ? firstIssue.path === savedNote.path
+        ? 'Check the source for the error.'
+        : `The error is in ${firstIssue.path}, line ${firstIssue.line}.`
+      : compileError
+  const warningHint = issues
+    .filter((issue) => issue.severity !== 'error')
+    .map((issue) => issue.message)
+    .join('\n')
   // In PDF mode the viewer also mounts before the first compile, so it can show the spinner
   // and have its webview booted by the time the PDF is ready.
   const showPdf = !pdfError && (!!autoPdf.preview || (mode === 'pdf' && !autoPdf.error))
@@ -430,8 +481,9 @@ export function NoteDetail({
           {(error || openError || autoPdf.storageError) && (
             <View style={s.errorInset}>
               <ErrorBanner
-                message={error || openError || autoPdf.storageError || ''}
+                message={bannerMessage}
                 onDismiss={error ? () => setError(null) : undefined}
+                actions={conflictActions}
               />
             </View>
           )}
@@ -487,6 +539,7 @@ export function NoteDetail({
                     label="Retry PDF"
                     onPress={() => {
                       setPdfError(null)
+                      setPdfReloadEpoch((value) => value + 1)
                       autoPdf.retry()
                     }}
                   />
@@ -494,8 +547,9 @@ export function NoteDetail({
               )}
               {showPdf ? (
                 <Pdf
-                  source={pdfUri ? { uri: pdfUri } : null}
+                  source={pdfSource}
                   style={s.pdf}
+                  reloadEpoch={pdfReloadEpoch}
                   onError={(cause) => setPdfError(errorText(cause))}
                 />
               ) : null}
@@ -510,6 +564,18 @@ export function NoteDetail({
                   <Text numberOfLines={8} style={s.pdfFailureText}>
                     {failureHint}
                   </Text>
+                  {warningHint ? (
+                    <Text numberOfLines={4} style={s.pdfFailureText}>
+                      {warningHint}
+                    </Text>
+                  ) : null}
+                  <Action
+                    label="Retry"
+                    onPress={() => {
+                      setPdfReloadEpoch((value) => value + 1)
+                      autoPdf.retry()
+                    }}
+                  />
                   {issues.length > 0 && (
                     <Action
                       label="Check source"
@@ -519,6 +585,15 @@ export function NoteDetail({
                         setTimeout(() => editor.current?.revealIssue(revealIndex), 50)
                       }}
                     />
+                  )}
+                  {compileConflict && (
+                    <>
+                      <Action
+                        label="Reload from disk"
+                        onPress={() => void resolveConflict(false)}
+                      />
+                      <Action label="Overwrite" onPress={() => void resolveConflict(true)} />
+                    </>
                   )}
                 </Reanimated.View>
               ) : null}
