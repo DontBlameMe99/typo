@@ -18,12 +18,12 @@
       "updatedAt": "2026-11-26T02:48:24.764Z"
     },
     "compiler/20-pages/cold": {
-      "sha": "f454aca85eac2936af6338add20820ba366dc205",
+      "sha": "ef7cf1daf9ef7ff1e3288a301f1182df6824920c",
       "method": 2,
-      "medianMs": 11.159399000000121,
-      "worstMedianMs": 11.224036999999953,
+      "medianMs": 7.03135199999997,
+      "worstMedianMs": 7.070542000000387,
       "budgetMs": 100,
-      "updatedAt": "2026-11-27T16:23:26.217Z"
+      "updatedAt": "2026-11-27T18:42:58.818Z"
     },
     "compiler/20-pages/warm": {
       "sha": "1295785112250704339f953e23017b2d771df6a9",
