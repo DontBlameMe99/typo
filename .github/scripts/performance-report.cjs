@@ -147,6 +147,15 @@ function assess({ after, reference, budget }) {
         ? `median ${precise(after.medianMs)} > budget ${precise(budget)}`
         : `median ${precise(after.medianMs)} > budget ${precise(budget)}, and so is the ceiling on this runner`,
     })
+  } else if (after.p95Ms > budget * (1 + BUDGET_MARGIN)) {
+    const judgeable = reference ? reference.p95Ms <= budget : false
+    findings.push({
+      kind: 'budget',
+      status: judgeable ? 'fail' : 'warn',
+      note: judgeable
+        ? `p95 ${precise(after.p95Ms)} > budget ${precise(budget)}`
+        : `p95 ${precise(after.p95Ms)} > budget ${precise(budget)}, and so is the ceiling on this runner`,
+    })
   }
   if (reference)
     findings.push(
@@ -400,7 +409,7 @@ ${table.join('\n')}
 
 ${ceilingLine}
 
-Every workload has a criterion and a budget: the time it may take on this runner, at the median and for every single operation. A workload fails when its best of three runs is more than ${(CEILING_MARGIN * 100).toFixed(0)}% slower than the ceiling's worst run at the median, the p95, or the p99 operation, or by more than either side's spread between rounds, whichever is larger. It warns at half that margin. It also fails when it is over budget while the ceiling is not. Budgets can only be tightened. Ceilings are the best merged measurement of each workload, re-measured on this runner in the same session, so runner speed cancels out. Native vault timings are not part of this report.${methodLine}${missingLine}
+Every workload has a criterion and a budget: the time it may take on this runner, at the median and for every single operation. A workload fails when its best of three runs is more than ${(CEILING_MARGIN * 100).toFixed(0)}% slower than the ceiling's worst run at the median, the p95, or the p99 operation, or by more than either side's spread between rounds, whichever is larger. It warns at half that margin. It also fails when its median or p95 is over budget while the ceiling's matching statistic is not. Budgets can only be tightened. Ceilings are the best merged measurement of each workload, re-measured on this runner in the same session, so runner speed cancels out. Native vault timings are not part of this report.${methodLine}${missingLine}
 `
 }
 

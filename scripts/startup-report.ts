@@ -33,9 +33,18 @@ export type Row = {
   delta: string
 }
 
+export type PhaseBudget = {
+  name: string
+  headMs: number
+  floorMs: number | null
+  budgetMs: number | null
+  status: 'ok' | 'warn' | 'fail' | 'pending'
+}
+
 export type Comparison = {
   status: 'ok' | 'warn' | 'fail' | 'pending'
   rows: Row[]
+  phaseBudgets: PhaseBudget[]
   note: string
 }
 
@@ -45,17 +54,39 @@ function percent(value: number, reference: number) {
   return `${rounded > 0 ? '+' : ''}${rounded}%`
 }
 
-function phaseRows(head: StartupReport, floor: Floor | null): Row[] {
-  return [...new Set(Object.keys(head.phases))].sort().map((name) => {
-    const value = head.phases[name] ?? 0
-    const reference = floor?.phases[name] ?? null
+function phaseBudgets(head: StartupReport, floor: Floor | null): PhaseBudget[] {
+  const names = [
+    ...new Set([...Object.keys(head.phases), ...Object.keys(floor?.phases ?? {})]),
+  ].sort()
+  return names.map((name) => {
+    const headMs = head.phases[name] ?? 0
+    const floorMs = floor?.phases[name] ?? null
+    const budgetMs = floorMs === null ? null : Math.round(floorMs * (1 + FAIL_MARGIN) + FLOOR_MS)
+    const warnMs = floorMs === null ? null : Math.round(floorMs * (1 + WARN_MARGIN) + FLOOR_MS)
     return {
       name,
-      headMs: value,
-      floorMs: reference,
-      delta: reference === null ? 'new' : percent(value, reference),
+      headMs,
+      floorMs,
+      budgetMs,
+      status:
+        budgetMs === null
+          ? 'pending'
+          : headMs > budgetMs
+            ? 'fail'
+            : headMs > (warnMs ?? 0)
+              ? 'warn'
+              : 'ok',
     }
   })
+}
+
+function phaseRows(budgets: PhaseBudget[]): Row[] {
+  return budgets.map(({ name, headMs, floorMs }) => ({
+    name,
+    headMs,
+    floorMs,
+    delta: floorMs === null ? 'new' : percent(headMs, floorMs),
+  }))
 }
 
 export function compareStartup(head: StartupReport, floor: Floor | null): Comparison {
@@ -65,21 +96,38 @@ export function compareStartup(head: StartupReport, floor: Floor | null): Compar
     floorMs: reference,
     delta,
   })
+  const budgets = phaseBudgets(head, floor)
+  const phaseStatus = budgets.some((budget) => budget.status === 'fail')
+    ? 'fail'
+    : budgets.some((budget) => budget.status === 'warn')
+      ? 'warn'
+      : 'ok'
+  const failedPhases = budgets
+    .filter((budget) => budget.status === 'fail')
+    .map((budget) => budget.name)
   if (floor === null)
     return {
       status: 'pending',
-      rows: [coldStart('new', null), ...phaseRows(head, null)],
+      rows: [coldStart('new', null), ...phaseRows(budgets)],
+      phaseBudgets: budgets,
       note: 'No floor is recorded for this method yet. This run becomes the floor once it lands on main.',
     }
   if (floor.method !== METHOD)
     return {
       status: 'pending',
-      rows: [coldStart('new method', null), ...phaseRows(head, null)],
+      rows: [coldStart('new method', null), ...phaseRows(budgets)],
+      phaseBudgets: budgets,
       note: `The floor was recorded with method ${floor.method}, not ${METHOD}. This run becomes the new floor once it lands on main.`,
     }
   const limit = floor.bestMs * (1 + FAIL_MARGIN) + FLOOR_MS
   const warn = floor.bestMs * (1 + WARN_MARGIN) + FLOOR_MS
-  const status = head.bestMs > limit ? 'fail' : head.bestMs > warn ? 'warn' : 'ok'
+  const coldStatus = head.bestMs > limit ? 'fail' : head.bestMs > warn ? 'warn' : 'ok'
+  const status =
+    coldStatus === 'fail' || phaseStatus === 'fail'
+      ? 'fail'
+      : coldStatus === 'warn' || phaseStatus === 'warn'
+        ? 'warn'
+        : 'ok'
   const note =
     status === 'fail'
       ? `Cold start grew by more than ${FAIL_MARGIN * 100}% + ${FLOOR_MS} ms over the floor.`
@@ -88,8 +136,9 @@ export function compareStartup(head: StartupReport, floor: Floor | null): Compar
         : 'Cold start is within the floor.'
   return {
     status,
-    rows: [coldStart(percent(head.bestMs, floor.bestMs), floor.bestMs), ...phaseRows(head, floor)],
-    note,
+    rows: [coldStart(percent(head.bestMs, floor.bestMs), floor.bestMs), ...phaseRows(budgets)],
+    phaseBudgets: budgets,
+    note: failedPhases.length ? `${note} Phases over budget: ${failedPhases.join(', ')}.` : note,
   }
 }
 
@@ -107,9 +156,15 @@ export function renderComment(head: StartupReport, comparison: Comparison) {
     lines.push(
       `| ${row.name} | ${row.headMs} ms | ${row.floorMs === null ? '-' : `${row.floorMs} ms`} | ${row.delta} |`
     )
+  const budgets = comparison.phaseBudgets
+    .filter((budget) => budget.budgetMs !== null)
+    .map(
+      (budget) => `\`${budget.name}\` ${budget.headMs} / ${budget.budgetMs} ms (${budget.status})`
+    )
   lines.push(
     '',
     'Phases are marks from the first line of the JS bundle: `bundle` is module evaluation, `theme` and `library` are the saved appearance and library reads, `commit` is the first library commit behind the launch screen, `reveal` is the layout-effect handoff, and `paint` is the first frame the user can see.',
+    budgets.length ? `Phase budgets: ${budgets.join(', ')}.` : 'Phase budgets: pending.',
     '',
     `Samples: ${head.samples.join(', ')} ms`
   )

@@ -5,17 +5,43 @@ on:
   pull_request_review:
     types: [submitted]
   pull_request:
-    types: [labeled]
+    # Native paths build on every PR. The label and review triggers stay
+    # available for changes that the path list cannot see.
+    types: [labeled, opened, synchronize, reopened]
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      native: ${{ steps.filter.outputs.native }}
+    steps:
+      - name: Check native paths
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')
+          if printf '%s\n' "$files" | grep -Eq '^modules/|^app\.json$|\.gradle(\.kts)?$'; then
+            echo 'native=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'native=false' >> "$GITHUB_OUTPUT"
+          fi
+
   apk:
+    needs: changes
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved') ||
-      (github.event_name == 'pull_request' && github.event.label.name == 'build-android')
+      always() && needs.changes.result != 'failure' && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request_review' && github.event.review.state == 'approved') ||
+        (github.event_name == 'pull_request' &&
+          (github.event.label.name == 'build-android' || needs.changes.outputs.native == 'true'))
+      )
     # Skipped review events must not cancel a requested APK build, and a
     # manual dispatch must not cancel a release build.
     concurrency:
