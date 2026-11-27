@@ -10,6 +10,7 @@ import {
   validateNoteTemplate,
 } from './core'
 import { sha256 } from './hash'
+import { sourceStamp, type VaultIndex } from './library-index'
 import type { Note, Vault } from './types'
 import { listVaultEntries, readVaultBase64, readVaultText } from './vault-native'
 
@@ -166,7 +167,7 @@ function modifiedAt(info: { modificationTime?: number }): number | null {
     : null
 }
 
-function listingStamp(info: EntryInfo): string | undefined {
+function listingStamp(info: { modificationTime?: number; size?: number }): string | undefined {
   const modified = modifiedAt(info)
   return modified !== null && typeof info.size === 'number' ? `${modified}:${info.size}` : undefined
 }
@@ -582,6 +583,7 @@ export type VaultLibrary = {
   notes: Note[]
   folders: string[]
   skipped: string[]
+  stamps: (string | null)[]
 }
 
 async function readNoteSource(uri: string, cancelled: () => boolean): Promise<string> {
@@ -609,13 +611,14 @@ export async function scanVault(
   return (await scanVaultLibrary(vault, onProgress, cancelled, onBatch)).notes
 }
 
-type NoteEntry = { uri: string; path: string; modifiedAt: number | null }
+type NoteEntry = { uri: string; path: string; modifiedAt: number | null; stamp?: string }
 
 export async function scanVaultLibrary(
   vault: Vault,
   onProgress?: (progress: VaultScanProgress) => void,
   cancelled: () => boolean = () => false,
-  onBatch?: (notes: Note[], folders: string[]) => void
+  onBatch?: (notes: Note[], folders: string[]) => void,
+  known?: VaultIndex
 ): Promise<VaultLibrary> {
   const folders = new Set<string>([''])
   const skipped: string[] = []
@@ -624,6 +627,7 @@ export async function scanVaultLibrary(
   const hashUris: { uri: string; stem: string }[] = []
   const seen = new Set<string>()
   const notes: Note[] = []
+  const stamps: (string | null)[] = []
   const hashes = new Map<string, string>()
   const sharedHashes = new Map<string, string>()
   const late: Pending[] = []
@@ -633,6 +637,14 @@ export async function scanVaultLibrary(
   let publishedFolders = 0
   let sortedNotes: Note[] = []
   let lastBatch = 0
+  const knownByUri = new Map<string, { note: Note; stamp: string | null }>()
+  if (known)
+    known.notes.forEach((note, index) => {
+      knownByUri.set(note.uri, {
+        note,
+        stamp: known.stamps?.[index] ?? sourceStamp(note.modifiedAt, note.source),
+      })
+    })
   const report = (stage: VaultScanProgress['stage'], done: number, path: string) => {
     onProgress?.({ stage, folders: folders.size, notes: found.length, done, path })
   }
@@ -691,10 +703,8 @@ export async function scanVaultLibrary(
             const path = directory.path ? `${directory.path}/${name}` : name
             const known = metadata.get(uri)?.isDirectory
             if (!directory.output && /\.typ$/iu.test(name) && known !== true) {
-              // Without provider metadata a note and a folder can share the
-              // extension. Reading tells them apart; statting every note first
-              // would block the JS thread for a long time on the fallback.
-              found.push({ uri, path, modifiedAt: modifiedAt(metadata.get(uri) ?? {}) })
+              const info: { modificationTime?: number; size?: number } = metadata.get(uri) ?? {}
+              found.push({ uri, path, modifiedAt: modifiedAt(info), stamp: listingStamp(info) })
               return
             }
             // Output files have known extensions and are never directories.
@@ -730,9 +740,17 @@ export async function scanVaultLibrary(
   const read = async (entries: NoteEntry[]) => {
     await boundedMap(
       entries,
-      async ({ uri, path, modifiedAt: modified }) => {
+      async ({ uri, path, modifiedAt: modified, stamp }) => {
         if (cancelled()) throw new Error('Indexing cancelled.')
         try {
+          const cached = knownByUri.get(uri)
+          if (cached && stamp && cached.stamp === stamp && cached.note.source.length > 0) {
+            notes.push(cached.note)
+            stamps.push(stamp)
+            report('notes', notes.length, path)
+            if (notes.length === 1 || performance.now() - lastBatch >= 50) publish()
+            return
+          }
           const source = await readNoteSource(uri, cancelled)
           if (cancelled()) throw new Error('Indexing cancelled.')
           notes.push({
@@ -742,6 +760,7 @@ export async function scanVaultLibrary(
             title: extractTitle(source, documentName(uri)),
             modifiedAt: modified,
           })
+          stamps.push(stamp ?? sourceStamp(modified, source))
           report('notes', notes.length, path)
           if (notes.length === 1 || performance.now() - lastBatch >= 50) publish()
         } catch (error) {
@@ -802,7 +821,18 @@ export async function scanVaultLibrary(
       .sort((a, b) => a.path.localeCompare(b.path)),
     folders: [...folders].sort((a, b) => a.localeCompare(b)),
     skipped: skipped.sort((a, b) => a.localeCompare(b)),
+    stamps: stamps.slice(),
   }
+}
+
+export async function refreshVaultLibrary(
+  vault: Vault,
+  known: VaultIndex,
+  onProgress?: (progress: VaultScanProgress) => void,
+  cancelled: () => boolean = () => false,
+  onBatch?: (notes: Note[], folders: string[]) => void
+): Promise<VaultLibrary> {
+  return scanVaultLibrary(vault, onProgress, cancelled, onBatch, known)
 }
 
 async function writeSource(uri: string, source: string): Promise<void> {
