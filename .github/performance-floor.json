@@ -18,12 +18,12 @@
       "updatedAt": "2026-11-26T02:48:24.764Z"
     },
     "compiler/20-pages/cold": {
-      "sha": "1295785112250704339f953e23017b2d771df6a9",
+      "sha": "e9609616eedd0b2f417320ce4d656e8ab5fb740e",
       "method": 2,
-      "medianMs": 6.253511000000344,
-      "worstMedianMs": 6.39494299999933,
+      "medianMs": 6.9584789999998975,
+      "worstMedianMs": 7.054892999999993,
       "budgetMs": 100,
-      "updatedAt": "2026-11-20T02:19:45.823Z"
+      "updatedAt": "2026-11-27T15:29:20.599Z"
     },
     "compiler/20-pages/warm": {
       "sha": "1295785112250704339f953e23017b2d771df6a9",
@@ -106,12 +106,12 @@
       "updatedAt": "2026-11-27T14:59:45.681Z"
     },
     "search/1000/fuzzy": {
-      "sha": "cfc2e8a41712e15c9c9321029cbd19c267938113",
+      "sha": "e9609616eedd0b2f417320ce4d656e8ab5fb740e",
       "method": 2,
-      "medianMs": 0.21983299999999417,
-      "worstMedianMs": 0.2346340000000282,
+      "medianMs": 0.3260999999999967,
+      "worstMedianMs": 0.3426210000000083,
       "budgetMs": 33.4,
-      "updatedAt": "2026-11-26T02:13:15.843Z"
+      "updatedAt": "2026-11-27T15:29:20.599Z"
     },
     "search/1000/literal": {
       "sha": "8c643fc2c9e4110f7c4358f9eb8686ddf5794004",
@@ -274,12 +274,12 @@
       "updatedAt": "2026-11-26T04:43:36.221Z"
     },
     "library/5000/sort-name-desc": {
-      "sha": "e8dcc62fcfe2d775a063fb81104ac1bbeff56c01",
+      "sha": "e9609616eedd0b2f417320ce4d656e8ab5fb740e",
       "method": 2,
-      "medianMs": 0.4597200000000612,
-      "worstMedianMs": 0.49398500000006607,
+      "medianMs": 0.47534700000005614,
+      "worstMedianMs": 0.4765820000000076,
       "budgetMs": 16.7,
-      "updatedAt": "2026-11-18T01:46:37.942Z"
+      "updatedAt": "2026-11-27T15:29:20.599Z"
     },
     "pdf/20-pages/open": {
       "sha": "cfc2e8a41712e15c9c9321029cbd19c267938113",
