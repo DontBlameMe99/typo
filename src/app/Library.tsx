@@ -26,9 +26,21 @@ import { BackGate } from '../back-gate'
 import { type CompilerHandle, CompilerHost } from '../CompilerHost'
 import { DEFAULT_TEMPLATE, isRootTemplate, type NoteSort, reconcileNotes } from '../core'
 import { ErrorBanner } from '../ErrorBanner'
-import { loadFavorites, loadFavoritesSync, storeFavorites } from '../favorites'
+import {
+  loadFavorites,
+  loadFavoritesSync,
+  loadTrashedFavoritesSync,
+  storeFavorites,
+  storeTrashedFavorites,
+} from '../favorites'
 import { Icon } from '../icons'
-import { loadVaultIndex, loadVaultIndexSync, storeVaultIndex } from '../library-cache'
+import { subscribeIntake } from '../intake'
+import {
+  loadVaultIndex,
+  loadVaultIndexSources,
+  loadVaultIndexSync,
+  scheduleVaultIndexWrite,
+} from '../library-cache'
 import type { VaultIndex } from '../library-index'
 import type { FolderRowItem, FolderRowsCache, LibraryRow } from '../library-rows'
 import { TypoMark } from '../Mark'
@@ -53,6 +65,7 @@ import {
   pickVault,
   readNote,
   readSavedVaultSync,
+  refreshVaultLibrary,
   restoreFolder,
   restoreNote,
   scanVaultLibrary,
@@ -63,10 +76,13 @@ import {
 } from '../vault'
 import { afterPaint, webRuntime } from '../web-runtime'
 import { FolderSheet, SortSheet } from './FolderSheet'
-import { buildLibraryViews } from './library-view'
+import { buildFavoriteView, buildLibraryViews, folderStackFor } from './library-view'
+import { noteMetadataKey } from './lifecycle'
 import { Fade, SwapFaces } from './motion'
 import { NewNote } from './NewNote'
 import { NoteDetail } from './NoteDetail'
+import { RenameSheet } from './RenameSheet'
+import { renameVaultFolder, renameVaultNote } from './rename'
 import { FolderChip, LibraryNotice, NoteCard, SearchResultRow, TrashNotice } from './rows'
 import { Settings } from './Settings'
 import {
@@ -87,6 +103,8 @@ import {
 } from './shared'
 import { useStyles } from './styles'
 import { TemplateEditor } from './TemplateEditor'
+import { TrashSheet } from './TrashSheet'
+import type { TrashedItem } from './trash'
 
 const MemoNoteDetail = memo(NoteDetail)
 const MemoNoteSearch = memo(NoteSearch)
@@ -94,8 +112,6 @@ const MemoCompilerHost = memo(CompilerHost)
 
 const folderIn = SlideInRight.duration(147).reduceMotion(ReduceMotion.System)
 const folderOut = SlideOutRight.duration(147).reduceMotion(ReduceMotion.System)
-
-const SEARCH_MODE: SearchMode = 'all'
 
 // These are local reads, so the first library render can start with the rows,
 // favorites, and theme already in hand. That removes the empty commit and the
@@ -154,8 +170,13 @@ export function Library({
   notesRef.current = notes
   const foldersRef = useRef(folders)
   foldersRef.current = folders
+  const indexRef = useRef<VaultIndex | null>(launch.index)
+  const previousPaths = useRef<string[]>(launch.index?.notes.map((note) => note.path).sort() ?? [])
+  const hydratedLaunch = useRef(false)
   const [folder, setFolder] = useState('')
   const [folderStack, setFolderStack] = useState<string[]>([''])
+  const folderRef = useRef(folder)
+  folderRef.current = folder
   const [startupReady, setStartupReady] = useState(launch.vault === null || cachedRows)
   const [scanning, setScanning] = useState(false)
   const [setup, setSetup] = useState<VaultScanProgress | null>(null)
@@ -164,6 +185,7 @@ export function Library({
   const [error, setError] = useState<string | null>(launch.error)
   const [saveError, setSaveError] = useState<{ uri: string; message: string } | null>(null)
   const [query, setQuery] = useState('')
+  const [searchMode] = useState<SearchMode>('all')
   const queryRef = useRef(query)
   queryRef.current = query
   const [sort, setSort] = useState<NoteSort>(loadSortSync)
@@ -171,7 +193,9 @@ export function Library({
   const [selected, setSelected] = useState<NoteSession | null>(null)
   const [prepared, setPrepared] = useState<NoteSession | null>(null)
   const pendingNote = useRef<NoteSession | null>(null)
-  const openingScreen = useRef<'note' | 'new' | 'move' | 'settings' | null>(null)
+  const openingScreen = useRef<
+    'note' | 'new' | 'move' | 'settings' | 'rename' | 'trash' | 'create-folder' | null
+  >(null)
   const libraryVisibleRef = useRef(true)
   const [backGate] = useState(() => new BackGate())
   const backFrame = useRef<number | null>(null)
@@ -188,6 +212,15 @@ export function Library({
   const creatingRef = useRef(false)
   creatingRef.current = creating
   const [moving, setMoving] = useState<MovingItem | null>(null)
+  const [renaming, setRenaming] = useState<{
+    kind: 'note' | 'folder'
+    path: string
+    name: string
+  } | null>(null)
+  const [trashOpen, setTrashOpen] = useState(false)
+  const [folderCreateOpen, setFolderCreateOpen] = useState(false)
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
+  const [transitionFrom, setTransitionFrom] = useState<string | null>(null)
   const [notice, setNotice] = useState<NoticeData | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [favorites, setFavorites] = useState<string[]>(launch.favorites)
@@ -204,6 +237,11 @@ export function Library({
   // the item first cannot put it back.
   const trashing = useRef(new Set<string>())
   const settledTrash = useRef<string[]>([])
+  const trashedFavorites = useRef(
+    new Map<string, string[]>(
+      Object.entries(launch.vault ? loadTrashedFavoritesSync(launch.vault) : {})
+    )
+  )
   const [templateCache, setTemplateCache] = useState<{ vault: string; source: string } | null>(null)
   const templateVersion = useRef(0)
   const compiler = useRef<CompilerHandle>(null)
@@ -255,38 +293,56 @@ export function Library({
         setSetup({ stage: 'folders', folders: 1, notes: 0, done: 0, path: '' })
       }
       try {
-        const result = await scanVaultLibrary(
-          target,
-          quiet
-            ? undefined
-            : (progress) => {
-                if (!mounted.current || request !== generation.current) return
-                const now = performance.now()
-                if (progress.done < progress.notes && now - lastProgress < 100) return
-                lastProgress = now
-                setSetup(progress)
-              },
-          () => !mounted.current || request !== generation.current,
-          quiet
-            ? undefined
-            : (partial, partialFolders) => {
-                if (mounted.current && request === generation.current) {
-                  if (__DEV__ && firstBatch) {
-                    console.info(
-                      `[performance] First notes: ${Math.round(performance.now() - started)} ms`
-                    )
-                    firstBatch = false
-                  }
-                  const visible = partial.filter((note) => !isTrashing(note.path))
-                  setNotes((previous) => (sameList(previous, visible) ? previous : visible))
-                  const scanned = partialFolders.filter((path) => !isTrashing(path))
-                  setFolders((previous) => (sameList(previous, scanned) ? previous : scanned))
-                  // A cold vault has no cache to paint, so show the first scan batch.
-                  if (visible.length > 0) setStartupReady(true)
+        const onProgress = quiet
+          ? undefined
+          : (progress: VaultScanProgress) => {
+              if (!mounted.current || request !== generation.current) return
+              const now = performance.now()
+              if (progress.done < progress.notes && now - lastProgress < 100) return
+              lastProgress = now
+              setSetup(progress)
+            }
+        const onBatch = quiet
+          ? undefined
+          : (partial: Note[], partialFolders: string[]) => {
+              if (mounted.current && request === generation.current) {
+                if (__DEV__ && firstBatch) {
+                  console.info(
+                    `[performance] First notes: ${Math.round(performance.now() - started)} ms`
+                  )
+                  firstBatch = false
                 }
+                const active = folderRef.current
+                const inside = (path: string) =>
+                  !active || path === active || path.startsWith(`${active}/`)
+                const visible = partial.filter(
+                  (note) => !isTrashing(note.path) && inside(note.path)
+                )
+                setNotes((previous) => (sameList(previous, visible) ? previous : visible))
+                const scanned = partialFolders.filter(
+                  (path) =>
+                    !isTrashing(path) &&
+                    (path === '' || inside(path) || active.startsWith(`${path}/`))
+                )
+                setFolders((previous) => (sameList(previous, scanned) ? previous : scanned))
+                // A cold vault has no cache to paint, so show the first scan batch.
+                if (visible.length > 0) setStartupReady(true)
               }
-        )
+            }
+        const cancelled = () => !mounted.current || request !== generation.current
+        const known: VaultIndex = indexRef.current ?? {
+          notes: notesRef.current,
+          folders: foldersRef.current,
+        }
+        const result = quiet
+          ? await refreshVaultLibrary(target, known, onProgress, cancelled, onBatch)
+          : await scanVaultLibrary(target, onProgress, cancelled, onBatch)
         if (mounted.current && request === generation.current) {
+          indexRef.current = {
+            notes: result.notes,
+            folders: result.folders,
+            stamps: result.stamps,
+          }
           const scannedNotes = result.notes.filter((note) => !isTrashing(note.path))
           const scannedFolders = result.folders.filter((path) => !isTrashing(path))
           setNotes((previous) => reconcileNotes(previous, scannedNotes))
@@ -409,6 +465,22 @@ export function Library({
   }, [index, launch.vault, cachedRows])
 
   useEffect(() => {
+    if (!painted || hydratedLaunch.current) return
+    const target = launch.vault
+    const cached = launch.index
+    if (!target || !cached) return
+    hydratedLaunch.current = true
+    void loadVaultIndexSources(target, cached)
+      .then((hydrated) => {
+        if (!hydrated || !mounted.current || scanningRef.current) return
+        const notes = reconcileNotes(cached.notes, hydrated.notes)
+        setNotes((previous) => reconcileNotes(previous, notes))
+        indexRef.current = { notes, folders: hydrated.folders, stamps: hydrated.stamps }
+      })
+      .catch(() => {})
+  }, [painted, launch.index, launch.vault])
+
+  useEffect(() => {
     if (!painted) return
     const pending = initialScan.current
     if (!pending) return
@@ -444,6 +516,12 @@ export function Library({
   }, [favorites])
 
   useEffect(() => {
+    if (!transitionFrom) return
+    const timer = setTimeout(() => setTransitionFrom(null), 200)
+    return () => clearTimeout(timer)
+  }, [transitionFrom])
+
+  useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
     let cancelled = false
     const run = async () => {
@@ -466,10 +544,17 @@ export function Library({
   }, [quietScan])
 
   useEffect(() => {
-    const open = !!selected || creating || !!moving || settingsOpen
+    const open =
+      !!selected ||
+      creating ||
+      !!moving ||
+      settingsOpen ||
+      !!renaming ||
+      trashOpen ||
+      folderCreateOpen
     if (modalWasOpen.current && !open) void quietScan()
     modalWasOpen.current = open
-  }, [selected, creating, moving, settingsOpen, quietScan])
+  }, [selected, creating, moving, settingsOpen, renaming, trashOpen, folderCreateOpen, quietScan])
 
   async function chooseVault() {
     if (picking || backGate.blockOpening()) return
@@ -488,9 +573,12 @@ export function Library({
       scanningRef.current = false
       favoritesReady.current = false
       folderRows.current.clear()
+      indexRef.current = null
+      previousPaths.current = []
       if (vaultRef.current?.uri !== next.uri) {
         trashing.current.clear()
         settledTrash.current = []
+        trashedFavorites.current.clear()
         try {
           if (readQuickAppendTarget()?.vaultUri !== next.uri) {
             void clearQuickAppendTarget().catch(() => {})
@@ -508,6 +596,10 @@ export function Library({
       setFavorites([])
       setFolder('')
       setFolderStack([''])
+      setTransitionFrom(null)
+      setFavoritesOnly(false)
+      setRenaming(null)
+      setTrashOpen(false)
       setTemplateCache(null)
       setMoving(null)
       setNotice(null)
@@ -522,6 +614,8 @@ export function Library({
       const cachedFolders = cached ? cached.folders.filter((path) => !isTrashing(path)) : ['']
       setNotes(cachedNotes)
       setFolders(cachedFolders)
+      indexRef.current = cached
+      previousPaths.current = cachedNotes.map((note) => note.path).sort()
       // The library can only cover the setup when the cache has rows to paint.
       const cachedRows = cachedNotes.length > 0 || cachedFolders.length > 1
       if (cachedRows) {
@@ -529,6 +623,7 @@ export function Library({
         setSetupDone(false)
       }
       setFavorites(await loadFavorites(next))
+      trashedFavorites.current = new Map(Object.entries(loadTrashedFavoritesSync(next)))
       favoritesReady.current = true
       if (!mounted.current) return
       setQuery('')
@@ -549,7 +644,20 @@ export function Library({
   const searchFailure = useRef<string | null>(null)
   const [searchPending, setSearchPending] = useState(false)
   const searchBusy = searchPending || deferredQuery !== query
+  const { workspace, notesRevision } = usePdfWorkspace({
+    vault,
+    notes,
+    enabled: painted && !scanning && !picking,
+    compiler,
+  })
+  // Autosaves replace note objects on every keystroke. The library only needs
+  // displayed fields, so hidden source-only edits keep these memos.
+  const metadataKey = useMemo(() => noteMetadataKey(notes), [notes])
+  const displayCache = useRef({ key: '', notes })
+  if (displayCache.current.key !== metadataKey) displayCache.current = { key: metadataKey, notes }
+  const displayNotes = displayCache.current.notes
   const notesByUri = useMemo(() => new Map(notes.map((note) => [note.uri, note])), [notes])
+  const noteResults = useRef(new WeakMap<Note, SearchResult>())
   const results = useMemo(
     () =>
       searchResults.flatMap((result) => {
@@ -574,15 +682,16 @@ export function Library({
     return () => listener.remove()
   }, [])
   const notesByFolder = useMemo(() => {
+    void notesRevision
     const map = new Map<string, Note[]>()
-    for (const note of notes) {
+    for (const note of notesRef.current) {
       const parent = parentFolder(note.path)
       const list = map.get(parent)
       if (list) list.push(note)
       else map.set(parent, [note])
     }
     return map
-  }, [notes])
+  }, [notesRevision])
   const foldersByParent = useMemo(() => {
     const map = new Map<string, FolderRowItem[]>()
     for (const path of folders) {
@@ -596,9 +705,14 @@ export function Library({
     return map
   }, [folders])
   const favoritePaths = useMemo(() => new Set(favorites), [favorites])
+  const searchScope = useMemo(
+    () => ({ folder, favorites: [...favoritePaths] }),
+    [favoritePaths, folder]
+  )
   const noteCounts = useMemo(() => {
+    void notesRevision
     const counts = new Map<string, number>()
-    for (const note of notes) {
+    for (const note of notesRef.current) {
       // A folder counts everything below it, not just its direct notes.
       let path = parentFolder(note.path)
       while (true) {
@@ -608,12 +722,19 @@ export function Library({
       }
     }
     return counts
-  }, [notes])
+  }, [notesRevision])
   const folderRows = useRef<FolderRowsCache>(new Map())
+  const displayStack = useMemo(
+    () =>
+      transitionFrom && !folderStack.includes(transitionFrom)
+        ? [...folderStack, transitionFrom]
+        : folderStack,
+    [folderStack, transitionFrom]
+  )
   const folderViews = useMemo(
     () =>
       buildLibraryViews(
-        folderStack,
+        displayStack,
         folder,
         foldersByParent,
         notesByFolder,
@@ -621,7 +742,20 @@ export function Library({
         folderRows.current,
         sort
       ),
-    [favoritePaths, folder, folderStack, foldersByParent, notesByFolder, sort]
+    [favoritePaths, folder, displayStack, foldersByParent, notesByFolder, sort]
+  )
+  const favoriteView = useMemo(
+    () => buildFavoriteView(folders, displayNotes, favoritePaths, folderRows.current, sort),
+    [displayNotes, favoritePaths, folders, sort]
+  )
+  const visibleViews = useMemo(
+    () =>
+      favoritesOnly
+        ? [favoriteView]
+        : folderViews
+            .filter((view) => view.current || view.path === transitionFrom)
+            .sort((a, b) => Number(a.current) - Number(b.current)),
+    [favoriteView, favoritesOnly, folderViews, transitionFrom]
   )
   const clearSearch = useCallback(() => {
     if (!queryRef.current) return
@@ -640,17 +774,25 @@ export function Library({
   }, [])
   const goToFolder = useCallback(
     (path: string) => {
-      if (path === folder || backGate.blockOpening()) return
+      if (backGate.blockOpening()) return
+      if (favoritesOnly) {
+        setFavoritesOnly(false)
+        setFolder(path)
+        setFolderStack(folderStackFor(path))
+        setTransitionFrom(null)
+        return
+      }
+      if (path === folder) return
       Keyboard.dismiss()
       searchInput.current?.blur()
-      stopIndex()
+      setTransitionFrom(folder)
       setFolderStack((stack) => {
         const index = stack.lastIndexOf(path)
         return index >= 0 ? stack.slice(0, index + 1) : [...stack, path]
       })
       setFolder(path)
     },
-    [backGate, folder, stopIndex]
+    [backGate, favoritesOnly, folder]
   )
   const toggleFavorite = useCallback((path: string) => {
     setFavorites((previous) =>
@@ -690,7 +832,17 @@ export function Library({
           try {
             const stored = await task()
             settle(stored)
-            if (vaultRef.current?.uri === target.uri) settledTrash.current.push(trashed.path)
+            if (vaultRef.current?.uri === target.uri) {
+              settledTrash.current.push(trashed.path)
+              trashedFavorites.current.set(
+                stored.path.replace(/^\.trash\//u, ''),
+                trashed.favorites
+              )
+              void storeTrashedFavorites(
+                target,
+                Object.fromEntries(trashedFavorites.current)
+              ).catch(() => {})
+            }
           } catch (cause) {
             settle(null)
             // The item is still on disk, so it comes back into the library.
@@ -779,6 +931,16 @@ export function Library({
     setError(null)
     const original =
       pending.item.kind === 'note' ? pending.item.result.note.path : pending.item.entry.path
+    if (
+      notesRef.current.some((note) => note.path === original) ||
+      foldersRef.current.includes(original)
+    ) {
+      setError(
+        `Cannot restore "${original}": that name is taken. Free or rename the conflicting item, then try again.`
+      )
+      undoingTrash.current = false
+      return
+    }
     // Put the item back in the library immediately; the filesystem catches up.
     trashing.current.delete(original)
     settledTrash.current = settledTrash.current.filter((path) => path !== original)
@@ -810,10 +972,15 @@ export function Library({
       })
       .catch((cause) => {
         if (!mounted.current || vaultRef.current?.uri !== target.uri) return
+        const restoredUris = new Set(pending.notes.map((note) => note.uri))
+        setNotes((previous) => previous.filter((note) => !restoredUris.has(note.uri)))
+        if (pending.folders.length > 0) {
+          setFolders((previous) => previous.filter((path) => !pending.folders.includes(path)))
+        }
         if (pending.favorites.length > 0) {
           setFavorites((previous) => previous.filter((path) => !pending.favorites.includes(path)))
         }
-        setError(errorText(cause))
+        setError(`${errorText(cause)} Free or rename the conflicting item, then try again.`)
         void index(target, { quiet: true })
       })
       .finally(() => {
@@ -847,6 +1014,9 @@ export function Library({
       setCreating(false)
       setMoving(null)
       setSettingsOpen(false)
+      setRenaming(null)
+      setTrashOpen(false)
+      setFolderCreateOpen(false)
       return true
     }
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -928,6 +1098,22 @@ export function Library({
       }
     },
     [backGate, prepareNote, stopIndex]
+  )
+  useEffect(
+    () =>
+      subscribeIntake((route) => {
+        if (route.kind === 'note') {
+          const note = notesRef.current.find((entry) => entry.path === route.path)
+          if (!note) {
+            void quietScan()
+            return
+          }
+          if (mounted.current) void openNote({ note })
+          return
+        }
+        void quietScan()
+      }),
+    [openNote, quietScan]
   )
   const updateNote = useCallback(
     (note: Note) => {
@@ -1076,6 +1262,147 @@ export function Library({
     (entry: FolderEntry) => toggleFavorite(entry.path),
     [toggleFavorite]
   )
+  const startRenameNote = useCallback(
+    (result: SearchResult) => {
+      if (backGate.blockOpening()) return
+      Keyboard.dismiss()
+      openingScreen.current = 'rename'
+      setRenaming({
+        kind: 'note',
+        path: result.note.path,
+        name: result.note.path.slice(result.note.path.lastIndexOf('/') + 1),
+      })
+    },
+    [backGate]
+  )
+  const startRenameFolder = useCallback(
+    (entry: FolderEntry) => {
+      if (backGate.blockOpening()) return
+      Keyboard.dismiss()
+      openingScreen.current = 'rename'
+      setRenaming({ kind: 'folder', path: entry.path, name: entry.name })
+    },
+    [backGate]
+  )
+  const confirmRename = useCallback(
+    async (name: string) => {
+      const item = renaming
+      const target = vaultRef.current
+      if (!item || !target) throw new Error('This item is no longer available.')
+      stopIndex()
+      let nextPath: string
+      if (item.kind === 'note') {
+        const note = notesRef.current.find((entry) => entry.path === item.path)
+        if (!note) throw new Error('This note is no longer available.')
+        const fresh = await readNote(note)
+        const renamed = await renameVaultNote(target, fresh, name)
+        nextPath = renamed.path
+        setNotes((previous) =>
+          previous
+            .map((entry) => (entry.uri === note.uri ? renamed : entry))
+            .sort((a, b) => a.path.localeCompare(b.path))
+        )
+        setFavorites((previous) => previous.map((path) => (path === item.path ? nextPath : path)))
+        setSelected((current) => (current?.note.uri === note.uri ? null : current))
+        setPrepared((current) => (current?.note.uri === note.uri ? null : current))
+      } else {
+        const result = await renameVaultFolder(
+          target,
+          item.path,
+          name,
+          notesRef.current,
+          foldersRef.current
+        )
+        nextPath = result.path
+        const renamedUris = new Map(result.notes.map((note) => [note.uri, note.nextUri]))
+        const inside = (path: string) => path === item.path || path.startsWith(`${item.path}/`)
+        const shifted = (path: string) => `${nextPath}${path.slice(item.path.length)}`
+        setFolders((previous) =>
+          previous
+            .map((path) => (inside(path) ? shifted(path) : path))
+            .sort((a, b) => a.localeCompare(b))
+        )
+        setNotes((previous) =>
+          previous
+            .map((note) =>
+              inside(note.path)
+                ? {
+                    ...note,
+                    uri: renamedUris.get(note.uri) ?? note.uri,
+                    path: shifted(note.path),
+                    pdfUri: undefined,
+                    pdfHash: undefined,
+                  }
+                : note
+            )
+            .sort((a, b) => a.path.localeCompare(b.path))
+        )
+        setFavorites((previous) => previous.map((path) => (inside(path) ? shifted(path) : path)))
+        setFolder((current) => (inside(current) ? shifted(current) : current))
+        setFolderStack((stack) => stack.map((path) => (inside(path) ? shifted(path) : path)))
+        setSelected((current) => (current && inside(current.note.path) ? null : current))
+        setPrepared((current) => (current && inside(current.note.path) ? null : current))
+      }
+      openingScreen.current = null
+      setRenaming(null)
+      showNotice('edit', 'Renamed', nextPath)
+      void index(target, { quiet: true })
+    },
+    [index, renaming, showNotice, stopIndex]
+  )
+  const restoreTrashed = useCallback(
+    async (item: TrashedItem) => {
+      const target = vaultRef.current
+      if (!target || !item.originalPath) throw new Error('This item cannot be restored.')
+      stopIndex()
+      const trashed = { uri: item.uri, path: item.path }
+      const storedFavorites = loadTrashedFavoritesSync(target)
+      if (item.directory) await restoreFolder(target, trashed, item.originalPath)
+      else await restoreNote(target, trashed, item.originalPath)
+      const restoreFavorites =
+        storedFavorites[item.path] ??
+        trashedFavorites.current.get(item.path) ??
+        (favoritesRef.current.includes(item.originalPath) ? [item.originalPath] : [])
+      if (restoreFavorites.length > 0) {
+        trashedFavorites.current.delete(item.path)
+        delete storedFavorites[item.path]
+        void storeTrashedFavorites(target, storedFavorites).catch(() => {})
+        setFavorites((previous) => [...new Set([...previous, ...restoreFavorites])])
+      }
+      void index(target, { quiet: true })
+    },
+    [index, stopIndex]
+  )
+  const trashEmptied = useCallback(async () => {
+    showNotice('checkCircle', 'Trash emptied')
+    setTrashUndo(null)
+    setTrashNotice(null)
+    trashedFavorites.current.clear()
+    const target = vaultRef.current
+    if (!target) return
+    await storeTrashedFavorites(target, {}).catch(() => {})
+    void index(target, { quiet: true })
+  }, [index, showNotice])
+  const openTrash = useCallback(() => {
+    if (backGate.blockOpening()) return
+    Keyboard.dismiss()
+    searchInput.current?.blur()
+    openingScreen.current = 'trash'
+    setTrashOpen(true)
+  }, [backGate])
+  const openFolderCreate = useCallback(() => {
+    if (backGate.blockOpening()) return
+    Keyboard.dismiss()
+    openingScreen.current = 'create-folder'
+    setFolderCreateOpen(true)
+  }, [backGate])
+  const toggleFavoriteView = useCallback(() => {
+    if (backGate.blockOpening()) return
+    Keyboard.dismiss()
+    searchInput.current?.blur()
+    setQuery('')
+    setFavoritesOnly((current) => !current)
+  }, [backGate])
   const keyExtractor = useCallback((item: LibraryRow) => item.key, [])
   const renderLibraryItem = useCallback(
     ({ item }: { item: LibraryRow }) => {
@@ -1098,11 +1425,17 @@ export function Library({
             {item.items.length === 1 ? <View style={s.chipSpacer} /> : null}
           </View>
         )
+      const note = notesByUri.get(item.result.note.uri) ?? item.result.note
+      let result = item.result
+      if (note !== item.result.note) {
+        result = noteResults.current.get(note) ?? { ...item.result, note }
+        noteResults.current.set(note, result)
+      }
       return (
         <NoteCard
-          result={item.result}
+          result={result}
           dateRevision={dateRevision}
-          favorite={favoritePaths.has(item.result.note.path)}
+          favorite={favoritePaths.has(result.note.path)}
           onPressIn={prepareNote}
           onPress={openNote}
           onLongPress={startMoveNote}
@@ -1117,6 +1450,7 @@ export function Library({
       favoriteNoteItem,
       favoritePaths,
       goToFolder,
+      notesByUri,
       noteCounts,
       openNote,
       prepareNote,
@@ -1127,13 +1461,6 @@ export function Library({
       trashNoteItem,
     ]
   )
-
-  const { workspace } = usePdfWorkspace({
-    vault,
-    notes,
-    enabled: painted && !scanning && !picking,
-    compiler,
-  })
 
   useEffect(() => {
     if (!vault) {
@@ -1179,7 +1506,14 @@ export function Library({
     setError(message)
   }, [])
   const noteVisible = !!selected
-  const libraryVisible = !noteVisible && !creating && !moving && !settingsOpen
+  const libraryVisible =
+    !noteVisible &&
+    !creating &&
+    !moving &&
+    !settingsOpen &&
+    !renaming &&
+    !trashOpen &&
+    !folderCreateOpen
   // The sort sheet is a sibling overlay, so the library has to ignore input
   // itself or row gestures fire through it.
   const libraryInteractive = libraryVisible && !setup && !sortOpen
@@ -1187,13 +1521,15 @@ export function Library({
     libraryVisibleRef.current = libraryVisible
   }, [libraryVisible])
   useEffect(() => {
-    // The index is only a launch cache, so keep the editor's autosaves from
-    // serializing the whole library behind a note. Write once it is covered.
     if (!vault || scanning || picking || !libraryVisible || !painted) return
-    const timer = setTimeout(() => {
-      void storeVaultIndex(vault, { notes, folders }).catch(() => {})
-    }, 300)
-    return () => clearTimeout(timer)
+    const paths = notes.map((note) => note.path).sort()
+    const structural = !sameList(paths, previousPaths.current)
+    previousPaths.current = paths
+    void scheduleVaultIndexWrite(
+      vault,
+      { notes, folders, stamps: indexRef.current?.stamps },
+      { structural }
+    ).catch(() => {})
   }, [vault, notes, folders, scanning, picking, libraryVisible, painted])
   const closeSettings = () => {
     settleBack(false, false)
@@ -1344,14 +1680,16 @@ export function Library({
                 </View>
               ) : (
                 <View style={s.flex}>
-                  {folderViews.map((view, index) => (
+                  {visibleViews.map((view) => (
                     <Reanimated.View
                       key={`folder:${view.path}`}
-                      entering={view.path === '' ? undefined : folderIn}
-                      exiting={view.path === '' ? undefined : folderOut}
-                      style={
-                        index === folderViews.length - 1 ? [s.flex, s.listLayer] : s.hiddenList
+                      entering={
+                        view.path === '' || view.path === 'favorites' ? undefined : folderIn
                       }
+                      exiting={
+                        view.path === '' || view.path === 'favorites' ? undefined : folderOut
+                      }
+                      style={view.current ? [s.flex, s.listLayer] : s.hiddenList}
                       pointerEvents={view.current ? 'auto' : 'none'}
                       accessibilityElementsHidden={!view.current}
                       importantForAccessibility={view.current ? 'auto' : 'no-hide-descendants'}
@@ -1373,7 +1711,14 @@ export function Library({
                         contentContainerStyle={[s.list, view.empty && s.emptyList]}
                         renderItem={renderLibraryItem}
                         ListHeaderComponent={
-                          view.path ? (
+                          view.path === 'favorites' ? (
+                            <Text
+                              accessibilityRole="header"
+                              style={[s.parentName, { height: 44, textAlignVertical: 'center' }]}
+                            >
+                              {'Favorites'}
+                            </Text>
+                          ) : view.path ? (
                             <Pressable
                               accessibilityRole="button"
                               accessibilityLabel={`Up to ${
@@ -1398,15 +1743,25 @@ export function Library({
                             <View style={s.empty}>
                               <View style={s.emptyIcon}>
                                 <Icon
-                                  name={view.path ? 'folderOpen' : 'file'}
+                                  name={
+                                    view.path === 'favorites'
+                                      ? 'star'
+                                      : view.path
+                                        ? 'folderOpen'
+                                        : 'file'
+                                  }
                                   size={32}
                                   color={view.path ? colors.accent : colors.ink}
                                 />
                               </View>
                               <Text style={s.emptyTitle}>
-                                {view.path ? 'This folder is empty.' : 'A fresh page awaits.'}
+                                {view.path === 'favorites'
+                                  ? 'No favorites yet.'
+                                  : view.path
+                                    ? 'This folder is empty.'
+                                    : 'A fresh page awaits.'}
                               </Text>
-                              {view.path ? null : (
+                              {view.path || view.path === 'favorites' ? null : (
                                 <Text style={s.emptyBody}>
                                   Create your first note, or add .typ files to this folder. They’ll
                                   feel right at home.
@@ -1414,12 +1769,18 @@ export function Library({
                               )}
                               <Pressable
                                 accessibilityRole="button"
-                                onPress={openCreate}
+                                onPress={
+                                  view.path === 'favorites' ? toggleFavoriteView : openCreate
+                                }
                                 style={({ pressed }) => [s.emptyButton, pressed && s.pressed]}
                               >
                                 <Icon name="plus" size={20} color={colors.onAccent} />
                                 <Text style={s.emptyButtonText}>
-                                  {view.path ? 'Write a note here' : 'Write your first note'}
+                                  {view.path === 'favorites'
+                                    ? 'Back to all notes'
+                                    : view.path
+                                      ? 'Write a note here'
+                                      : 'Write your first note'}
                                 </Text>
                               </Pressable>
                             </View>
@@ -1461,6 +1822,36 @@ export function Library({
                     front={<TypoMark size={30} />}
                     back={<Icon name="close" size={30} color={colors.ink} />}
                   />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={favoritesOnly ? 'Show all notes' : 'Show favorites'}
+                  accessibilityState={{ selected: favoritesOnly }}
+                  onPress={() => void toggleFavoriteView()}
+                  style={({ pressed }) => [s.searchFieldAction, pressed && s.pressed]}
+                >
+                  <Icon
+                    name="star"
+                    size={20}
+                    color={favoritesOnly ? colors.accent : colors.muted}
+                    fill={favoritesOnly ? colors.accent : undefined}
+                  />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Browse trash"
+                  onPress={() => void openTrash()}
+                  style={({ pressed }) => [s.searchFieldAction, pressed && s.pressed]}
+                >
+                  <Icon name="trashOpen" size={20} color={colors.muted} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Create a new folder"
+                  onPress={() => void openFolderCreate()}
+                  style={({ pressed }) => [s.searchFieldAction, pressed && s.pressed]}
+                >
+                  <Icon name="folder" size={20} color={colors.muted} />
                 </Pressable>
                 <Pressable
                   accessible={false}
@@ -1540,7 +1931,8 @@ export function Library({
           key={`search:${vault.uri}`}
           notes={notes}
           query={deferredQuery}
-          mode={SEARCH_MODE}
+          mode={searchMode}
+          scope={searchScope}
           onResults={searchResultsReady}
           onError={searchError}
           onPending={setSearchPending}
@@ -1624,6 +2016,12 @@ export function Library({
           itemIcon={moving.kind === 'note' ? 'file' : 'folder'}
           busyLabel="Moving…"
           onConfirm={moveTo}
+          onRename={() => {
+            const item = moving
+            setMoving(null)
+            if (item.kind === 'note') startRenameNote(item.result)
+            else startRenameFolder(item.entry)
+          }}
           onFolderCreated={folderCreated}
           onClose={() => {
             settleBack(false, false)
@@ -1662,6 +2060,51 @@ export function Library({
             })
           }}
           onClose={closeSettings}
+        />
+      )}
+      {renaming && vault && (
+        <RenameSheet
+          name={renaming.name}
+          kind={renaming.kind}
+          onConfirm={confirmRename}
+          onClose={() => {
+            settleBack(false, false)
+            openingScreen.current = null
+            setRenaming(null)
+          }}
+        />
+      )}
+      {trashOpen && vault && (
+        <TrashSheet
+          vault={vault}
+          onRestore={restoreTrashed}
+          onEmpty={trashEmptied}
+          onClose={() => {
+            settleBack(false, false)
+            openingScreen.current = null
+            setTrashOpen(false)
+          }}
+        />
+      )}
+      {folderCreateOpen && vault && (
+        <FolderSheet
+          folders={folders}
+          vault={vault}
+          initial={null}
+          defaultParent={folder}
+          mode="create-in"
+          title="New folder"
+          counts={noteCounts}
+          onFolderCreated={folderCreated}
+          onConfirm={async () => {
+            openingScreen.current = null
+            setFolderCreateOpen(false)
+          }}
+          onClose={() => {
+            settleBack(false, false)
+            openingScreen.current = null
+            setFolderCreateOpen(false)
+          }}
         />
       )}
       {sortOpen && (

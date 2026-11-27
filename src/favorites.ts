@@ -6,7 +6,11 @@ import type { Vault } from './types'
 function location(vault: Vault) {
   if (!FileSystem.documentDirectory) throw new Error('Private document storage is unavailable.')
   const directory = `${FileSystem.documentDirectory}typo-favorites/`
-  return { directory, uri: `${directory}${fingerprint(vault.uri)}.json` }
+  return {
+    directory,
+    uri: `${directory}${fingerprint(vault.uri)}.json`,
+    trashUri: `${directory}${fingerprint(vault.uri)}-trash.json`,
+  }
 }
 
 export function loadFavoritesSync(vault: Vault): string[] {
@@ -30,5 +34,33 @@ export async function storeFavorites(vault: Vault, favorites: string[]): Promise
   await FileSystem.writeAsStringAsync(
     uri,
     JSON.stringify({ version: 1, vault: vault.uri, favorites })
+  )
+}
+
+export function loadTrashedFavoritesSync(vault: Vault): Record<string, string[]> {
+  try {
+    const value = JSON.parse(new File(location(vault).trashUri).textSync())
+    if (value.version !== 1 || value.vault !== vault.uri || !value.trashed) return {}
+    const result: Record<string, string[]> = {}
+    for (const [path, favorites] of Object.entries(value.trashed)) {
+      if (Array.isArray(favorites) && favorites.every((item) => typeof item === 'string')) {
+        result[path] = favorites as string[]
+      }
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
+export async function storeTrashedFavorites(
+  vault: Vault,
+  trashed: Record<string, string[]>
+): Promise<void> {
+  const { directory, trashUri } = location(vault)
+  await FileSystem.makeDirectoryAsync(directory, { intermediates: true })
+  await FileSystem.writeAsStringAsync(
+    trashUri,
+    JSON.stringify({ version: 1, vault: vault.uri, trashed })
   )
 }

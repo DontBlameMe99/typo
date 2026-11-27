@@ -34,6 +34,7 @@ export function FolderSheet({
   itemIcon = 'file',
   counts,
   onConfirm,
+  onRename,
   onClose,
   onFolderCreated,
 }: {
@@ -49,6 +50,7 @@ export function FolderSheet({
   itemIcon?: IconName
   counts?: Map<string, number>
   onConfirm: (destination: string) => Promise<void>
+  onRename?: () => void
   onClose: () => void
   onFolderCreated: (folder: NoteFolder) => void
 }) {
@@ -355,6 +357,22 @@ export function FolderSheet({
           </View>
           <Text numberOfLines={1} style={s.moveNewText}>
             New folder here
+          </Text>
+        </Pressable>
+      ) : null}
+      {onRename && !newFolderOpen ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Rename this item"
+          disabled={busy}
+          onPress={onRename}
+          style={({ pressed }) => [s.moveRow, pressed && s.pressed, busy && s.disabled]}
+        >
+          <View style={s.moveRowIcon}>
+            <Icon name="edit" size={20} color={colors.accent} />
+          </View>
+          <Text numberOfLines={1} style={s.moveNewText}>
+            Rename here
           </Text>
         </Pressable>
       ) : null}
