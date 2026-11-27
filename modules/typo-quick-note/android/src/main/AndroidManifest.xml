@@ -28,6 +28,8 @@
       android:exported="false"
       android:launchMode="singleInstance"
       android:screenOrientation="portrait"
+      android:showWhenLocked="true"
+      android:turnScreenOn="true"
       android:taskAffinity=""
       android:theme="@style/Theme.Typo.QuickNote"
       android:windowSoftInputMode="adjustResize" />
@@ -38,6 +40,8 @@
       android:exported="false"
       android:launchMode="singleInstance"
       android:screenOrientation="portrait"
+      android:showWhenLocked="true"
+      android:turnScreenOn="true"
       android:taskAffinity=""
       android:theme="@style/Theme.Typo.QuickNote"
       android:windowSoftInputMode="adjustResize" />
