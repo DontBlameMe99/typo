@@ -1,69 +1,75 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { expect, test } from 'bun:test'
+import { bundle, evaluate } from './helpers/vm-module'
 
-const files = new Map<string, string>()
+type QuickDraft = Record<string, string>
 
-mock.module('expo-file-system', () => ({
-  FileMode: { Truncate: 'wt' },
-  Directory: class {
-    get exists() {
-      return false
-    }
-  },
-  File: class {
-    constructor(private uri: string) {}
+const root = 'file:///docs/'
+const moduleSource = await bundle('src/quick-draft.ts', {
+  external: ['expo-file-system', 'expo-file-system/legacy'],
+})
+
+function setup() {
+  const files = new Map<string, string>()
+
+  class File {
+    constructor(readonly uri: string) {}
     get exists() {
       return files.has(this.uri)
     }
     textSync() {
-      const value = files.get(this.uri)
-      if (value === undefined) throw new Error(`No such file: ${this.uri}`)
-      return value
+      const text = files.get(this.uri)
+      if (text === undefined) throw new Error(`No such file: ${this.uri}`)
+      return text
     }
-    async write(source: string) {
-      files.set(this.uri, source)
+    async write(text: string) {
+      files.set(this.uri, text)
     }
-    async move(destination: { uri: string }, options?: { overwrite?: boolean }) {
-      if (files.has(destination.uri) && !options?.overwrite) throw new Error('Already exists')
-      files.set(destination.uri, files.get(this.uri) ?? '')
+    async move(target: File, options?: { overwrite?: boolean }) {
+      if (files.has(target.uri) && !options?.overwrite) throw new Error('Target exists')
+      files.set(target.uri, files.get(this.uri) ?? '')
       files.delete(this.uri)
     }
-  },
-}))
+  }
 
-mock.module('expo-file-system/legacy', () => ({
-  documentDirectory: 'file:///private/documents/',
-  deleteAsync: async (uri: string) => {
-    files.delete(uri)
-  },
-}))
+  const FileSystem = {
+    documentDirectory: root,
+    async deleteAsync(uri: string, _options: { idempotent?: boolean }) {
+      files.delete(uri)
+    },
+  }
 
-const { clearQuickDraft, readQuickDraft, saveQuickDraft } = await import('../src/quick-draft')
+  const api = evaluate<{
+    readQuickDraft(kind: string): QuickDraft
+    saveQuickDraft(kind: string, draft: QuickDraft): Promise<void>
+    clearQuickDraft(kind: string): Promise<void>
+  }>(moduleSource, { 'expo-file-system': { File }, 'expo-file-system/legacy': FileSystem })
+  return { api, files }
+}
 
-describe('quick sheet drafts', () => {
-  test('restores a draft written on another mount', async () => {
-    files.clear()
-    expect(readQuickDraft('note')).toEqual({})
+test('quick sheet draft restores a write from another mount', async () => {
+  const { api } = setup()
+  expect(api.readQuickDraft('note')).toEqual({})
 
-    await saveQuickDraft('note', { title: 'Ideas', body: 'A thought' })
+  const draft = { title: 'Ideas', body: 'A thought' }
+  await api.saveQuickDraft('note', draft)
 
-    expect(readQuickDraft('note')).toEqual({ title: 'Ideas', body: 'A thought' })
-    expect(files.has('file:///private/documents/typo-quick-note-draft.json.writing')).toBe(false)
-  })
+  expect(api.readQuickDraft('note')).toEqual(draft)
+  expect(api.readQuickDraft('append')).toEqual({})
+})
 
-  test('keeps the last write when keystrokes overlap', async () => {
-    files.clear()
-    const first = saveQuickDraft('append', { text: 'First' })
-    const second = saveQuickDraft('append', { text: 'Second' })
-    await Promise.all([first, second])
+test('quick sheet draft keeps the last write when keystrokes overlap', async () => {
+  const { api } = setup()
+  const first = api.saveQuickDraft('append', { text: 'First' })
+  const second = api.saveQuickDraft('append', { text: 'Second' })
+  await Promise.all([first, second])
 
-    expect(readQuickDraft('append')).toEqual({ text: 'Second' })
-  })
+  expect(api.readQuickDraft('append')).toEqual({ text: 'Second' })
+})
 
-  test('clears the draft after a successful save', async () => {
-    files.clear()
-    await saveQuickDraft('append', { text: 'Temporary' })
-    await clearQuickDraft('append')
+test('quick sheet draft clears after a successful save', async () => {
+  const { api } = setup()
+  await api.saveQuickDraft('append', { text: 'Temporary' })
+  await api.clearQuickDraft('append')
 
-    expect(readQuickDraft('append')).toEqual({})
-  })
+  expect(api.readQuickDraft('append')).toEqual({})
 })

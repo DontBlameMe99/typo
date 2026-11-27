@@ -42,5 +42,5 @@ test('tile availability, launch targets, and background close stay wired', async
   )
   expect(noteActivity).toContain('QuickSheets.register(getMainComponentName(), this)')
   expect(sheet).toContain('markQuickTileOpened()')
-  expect(sheet).toContain("if (active && state === 'background') close()")
+  expect(sheet).toContain("if (active && state === 'background') void close()")
 })
