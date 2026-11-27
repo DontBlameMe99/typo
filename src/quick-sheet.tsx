@@ -1,13 +1,20 @@
 import { DMSans_400Regular, DMSans_600SemiBold, useFonts } from '@expo-google-fonts/dm-sans'
 import * as SplashScreen from 'expo-splash-screen'
 import type * as React from 'react'
-import { useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState, BackHandler, Pressable, StyleSheet, Text, View } from 'react-native'
 import {
   initialWindowMetrics,
   SafeAreaProvider,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context'
+import {
+  clearQuickDraft,
+  type QuickDraft,
+  type QuickDraftKind,
+  readQuickDraft,
+  saveQuickDraft,
+} from './quick-draft'
 import { markQuickTileOpened } from './quick-tile-session'
 import { ThemeProvider, useTheme } from './theme'
 
@@ -27,17 +34,20 @@ export function QuickSheetRoot({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function useQuickSheet(close: () => void, saving: boolean): void {
-  // A save can finish after the activity closes, so Back must not dismiss the
-  // sheet while it runs. Close is disabled for the same reason.
+export function useQuickSheet(close: () => void | Promise<void>): void {
+  // Back, background, and Close all go through close(), so a draft or note write
+  // settles before the tile activity ends.
   useEffect(() => {
-    if (!saving) return
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => true)
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      void close()
+      return true
+    })
     return () => subscription.remove()
-  }, [saving])
+  }, [close])
 
-  // Over the keyguard, a draft must not survive the screen locking or the app
-  // going to the background. A running save keeps going in the shared runtime.
+  // Backgrounding finishes the tile activity, so drafts are written to private
+  // storage and restored when the sheet opens again. A running save keeps going
+  // in the shared runtime and close waits for it.
   useEffect(() => {
     // A tile opens the activity while the Quick Settings panel closes, which
     // can emit a background event before this sheet is usable. Wait for an
@@ -48,10 +58,35 @@ export function useQuickSheet(close: () => void, saving: boolean): void {
         active = true
         return
       }
-      if (active && state === 'background') close()
+      if (active && state === 'background') void close()
     })
     return () => subscription.remove()
   }, [close])
+}
+
+export function useQuickDraft(kind: QuickDraftKind) {
+  const [draft, setDraft] = useState<QuickDraft>(() => readQuickDraft(kind))
+  const current = useRef(draft)
+  const pending = useRef<Promise<void>>(Promise.resolve())
+
+  const update = useCallback(
+    (patch: QuickDraft) => {
+      const next = { ...current.current, ...patch }
+      current.current = next
+      setDraft(next)
+      pending.current = saveQuickDraft(kind, next).catch(() => {})
+    },
+    [kind]
+  )
+
+  const clear = useCallback(async () => {
+    current.current = {}
+    setDraft({})
+    await pending.current
+    await clearQuickDraft(kind).catch(() => {})
+  }, [kind])
+
+  return { draft, update, clear, pending }
 }
 
 export function QuickToolbar({

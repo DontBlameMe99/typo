@@ -1,3 +1,5 @@
+export type SectionTarget = { level: number; text: string }
+
 export type Heading = {
   level: number
   text: string
@@ -26,6 +28,19 @@ function headingsFromLines(lines: string[]): Heading[] {
   return headings
 }
 
+export function headingKey(heading: SectionTarget): string {
+  return `${heading.level}:${heading.text}`
+}
+
+export function headingMatches(heading: Heading, section: string | SectionTarget): boolean {
+  const target = typeof section === 'string' ? { level: 0, text: section.trim() } : section
+  return heading.text === target.text && (target.level === 0 || heading.level === target.level)
+}
+
+function sectionText(section: string | SectionTarget): string {
+  return typeof section === 'string' ? section.trim() : section.text
+}
+
 function sourceLines(source: string): string[] {
   return source.split(/\r?\n/u)
 }
@@ -45,14 +60,21 @@ function headingText(value: string): string {
     .trim()
 }
 
-function sectionLines(lines: string[], section: string): { start: number; end: number } {
+function sectionLines(
+  lines: string[],
+  section: string | SectionTarget
+): { start: number; end: number } {
   const headings = headingsFromLines(lines)
-  const matches = headings.filter((heading) => heading.text === section.trim())
+  const matches = headings.filter((heading) => headingMatches(heading, section))
   if (matches.length === 0) {
-    throw new Error(`The section "${section}" was not found. The note was left unchanged.`)
+    throw new Error(
+      `The section "${sectionText(section)}" was not found. The note was left unchanged.`
+    )
   }
   if (matches.length > 1) {
-    throw new Error(`More than one "${section}" section exists. The note was left unchanged.`)
+    throw new Error(
+      `More than one "${sectionText(section)}" section exists. The note was left unchanged.`
+    )
   }
   const target = matches[0]
   const next = headings.find(
@@ -61,7 +83,11 @@ function sectionLines(lines: string[], section: string): { start: number; end: n
   return { start: target.line + 1, end: next?.line ?? lines.length }
 }
 
-export function appendToSection(source: string, section: string, text: string): string {
+export function appendToSection(
+  source: string,
+  section: string | SectionTarget,
+  text: string
+): string {
   const entry = text.replace(/\r?\n$/u, '').trim()
   if (!entry) throw new Error('Write something to append first.')
   const lines = sourceLines(source)

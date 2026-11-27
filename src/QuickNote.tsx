@@ -17,6 +17,7 @@ import {
   QuickSheetRoot,
   QuickToolbar,
   quickErrorText,
+  useQuickDraft,
   useQuickFormStyles,
   useQuickSheet,
   useQuickStyles,
@@ -24,6 +25,7 @@ import {
 import { useTheme } from './theme'
 import type { Vault } from './types'
 import { createNote, readSavedVault, readTemplate } from './vault'
+
 export default function QuickNoteRoot() {
   return (
     <QuickSheetRoot>
@@ -45,13 +47,18 @@ function QuickNote() {
   const s = useQuickStyles()
   const f = useQuickFormStyles(180)
   const [state, setState] = useState<VaultState>({ kind: 'loading' })
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
+  const {
+    draft,
+    update: updateDraft,
+    clear: clearDraft,
+    pending: pendingDraft,
+  } = useQuickDraft('note')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const bodyRef = useRef<React.ComponentRef<typeof TextInput>>(null)
   const template = useRef<Promise<TemplateResult> | null>(null)
   const alive = useRef(true)
+  const pendingSave = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
     alive.current = true
@@ -80,28 +87,35 @@ function QuickNote() {
     }
   }, [])
 
-  const close = useCallback(() => {
+  const close = useCallback(async () => {
     Keyboard.dismiss()
-    finishQuickNote()
-  }, [])
+    await Promise.all([pendingDraft.current, pendingSave.current])
+    finishQuickNote('quickNote')
+  }, [pendingDraft])
 
-  useQuickSheet(close, saving)
+  useQuickSheet(close)
   async function create() {
-    if (state.kind !== 'ready' || !title.trim() || saving) return
+    const title = draft.title?.trim() ?? ''
+    if (state.kind !== 'ready' || !title || saving) return
     setSaving(true)
     setError(null)
-    try {
+    const save = (async () => {
       const pending = template.current
       if (!pending) throw new Error('The note template is unavailable.')
       const result = await pending
       if ('error' in result) throw result.error
-      await createNote(state.vault, title.trim(), body, '', result.source)
-      if (alive.current) close()
+      await createNote(state.vault, title, draft.body ?? '', '', result.source)
+      await clearDraft()
+    })()
+    pendingSave.current = save.catch(() => {})
+    try {
+      await save
+      if (alive.current) await close()
     } catch (cause) {
       if (!alive.current) return
       // The error is only safe to keep on screen while the sheet is in front.
       if (AppState.currentState !== 'active') {
-        finishQuickNote()
+        await close()
         return
       }
       setError(quickErrorText(cause, 'Could not create the note.'))
@@ -109,7 +123,7 @@ function QuickNote() {
     }
   }
 
-  const canCreate = state.kind === 'ready' && !!title.trim() && !saving
+  const canCreate = state.kind === 'ready' && !!draft.title?.trim() && !saving
 
   if (!ready) return null
 
@@ -161,9 +175,9 @@ function QuickNote() {
                 accessibilityLabel="Note title"
                 placeholder="Give it a title"
                 placeholderTextColor={colors.muted}
-                value={title}
+                value={draft.title ?? ''}
                 onChangeText={(value) => {
-                  setTitle(value)
+                  updateDraft({ title: value })
                   setError(null)
                 }}
                 editable={!saving}
@@ -181,9 +195,9 @@ function QuickNote() {
                 accessibilityLabel="Note body"
                 placeholder="Start anywhere. A sentence, a thought, a possibility…"
                 placeholderTextColor={colors.muted}
-                value={body}
+                value={draft.body ?? ''}
                 onChangeText={(value) => {
-                  setBody(value)
+                  updateDraft({ body: value })
                   setError(null)
                 }}
                 editable={!saving}

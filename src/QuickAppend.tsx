@@ -10,25 +10,28 @@ import {
   TextInput,
   View,
 } from 'react-native'
-import { listHeadings } from './append'
+import { appendToSection, headingMatches, listHeadings } from './append'
 import { ErrorBanner } from './ErrorBanner'
+import { loadVaultIndexSync } from './library-cache'
 import {
   type QuickAppendTarget,
   quickAppendLabel,
   readQuickAppendTarget,
+  storeQuickAppendTarget,
 } from './quick-append-config'
 import { finishQuickNote } from './quick-note-native'
 import {
   QuickSheetRoot,
   QuickToolbar,
   quickErrorText,
+  useQuickDraft,
   useQuickFormStyles,
   useQuickSheet,
   useQuickStyles,
 } from './quick-sheet'
 import { useTheme } from './theme'
 import type { Note, Vault } from './types'
-import { appendToNoteAtPath, readNoteAtPath, readSavedVault } from './vault'
+import { readNote, readNoteAtPath, readSavedVault, saveNote } from './vault'
 
 export default function QuickAppendRoot() {
   return (
@@ -44,15 +47,39 @@ type LoadState =
   | { kind: 'missing'; message: string }
   | { kind: 'error'; message: string }
 
+async function readTargetNote(vault: Vault, target: QuickAppendTarget): Promise<Note> {
+  if (target.noteUri?.startsWith(`${vault.uri}/document/`)) {
+    const cached = loadVaultIndexSync(vault)?.notes.find((note) => note.uri === target.noteUri)
+    const note = cached ?? {
+      uri: target.noteUri,
+      path: target.notePath,
+      title: '',
+      source: '',
+      modifiedAt: null,
+    }
+    try {
+      return await readNote(note)
+    } catch {
+      // The document may have moved; the stored path is the fallback.
+    }
+  }
+  return readNoteAtPath(vault, target.notePath)
+}
 function QuickAppend() {
   const { colors, ready } = useTheme()
   const s = useQuickStyles()
   const f = useQuickFormStyles(220)
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
-  const [text, setText] = useState('')
+  const {
+    draft,
+    update: updateDraft,
+    clear: clearDraft,
+    pending: pendingDraft,
+  } = useQuickDraft('append')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const alive = useRef(true)
+  const pendingSave = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
     alive.current = true
@@ -79,10 +106,10 @@ function QuickAppend() {
           })
           return
         }
-        const note = await readNoteAtPath(vault, target.notePath)
+        const note = await readTargetNote(vault, target)
         if (!alive.current) return
-        const matches = listHeadings(note.source).filter(
-          (heading) => heading.text === target.section
+        const matches = listHeadings(note.source).filter((heading) =>
+          headingMatches(heading, { level: target.sectionLevel, text: target.section })
         )
         if (matches.length !== 1) {
           setState({
@@ -94,7 +121,20 @@ function QuickAppend() {
           })
           return
         }
-        setState({ kind: 'ready', vault, target, note })
+        const next = {
+          ...target,
+          noteUri: note.uri,
+          notePath: note.path,
+          sectionLevel: target.sectionLevel || matches[0].level,
+        }
+        if (
+          next.noteUri !== target.noteUri ||
+          next.notePath !== target.notePath ||
+          next.sectionLevel !== target.sectionLevel
+        ) {
+          void storeQuickAppendTarget(next).catch(() => {})
+        }
+        setState({ kind: 'ready', vault, target: next, note })
       } catch (cause) {
         if (alive.current)
           setState({
@@ -108,23 +148,36 @@ function QuickAppend() {
     }
   }, [])
 
-  const close = useCallback(() => {
+  const close = useCallback(async () => {
     Keyboard.dismiss()
-    finishQuickNote()
-  }, [])
-  useQuickSheet(close, saving)
+    await Promise.all([pendingDraft.current, pendingSave.current])
+    finishQuickNote('quickAppend')
+  }, [pendingDraft])
+  useQuickSheet(close)
 
   async function append() {
+    const text = draft.text ?? ''
     if (state.kind !== 'ready' || !text.trim() || saving) return
     setSaving(true)
     setError(null)
+    const save = (async () => {
+      const note = await readTargetNote(state.vault, state.target)
+      const source = appendToSection(
+        note.source,
+        { level: state.target.sectionLevel, text: state.target.section },
+        text
+      )
+      await saveNote(note, source)
+      await clearDraft()
+    })()
+    pendingSave.current = save.catch(() => {})
     try {
-      await appendToNoteAtPath(state.vault, state.target.notePath, state.target.section, text)
-      if (alive.current) close()
+      await save
+      if (alive.current) await close()
     } catch (cause) {
       if (!alive.current) return
       if (AppState.currentState !== 'active') {
-        finishQuickNote()
+        await close()
         return
       }
       setError(quickErrorText(cause, 'Could not append to the note.'))
@@ -132,7 +185,7 @@ function QuickAppend() {
     }
   }
 
-  const canAppend = state.kind === 'ready' && !!text.trim() && !saving
+  const canAppend = state.kind === 'ready' && !!draft.text?.trim() && !saving
 
   if (!ready) return null
 
@@ -186,9 +239,9 @@ function QuickAppend() {
                 accessibilityLabel="Quick append text"
                 placeholder="Write a quick note…"
                 placeholderTextColor={colors.muted}
-                value={text}
+                value={draft.text ?? ''}
                 onChangeText={(value) => {
-                  setText(value)
+                  updateDraft({ text: value })
                   setError(null)
                 }}
                 editable={!saving}
