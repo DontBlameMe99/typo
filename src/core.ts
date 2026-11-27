@@ -434,7 +434,6 @@ function uiBudget() {
       ),
   }
 }
-type UiBudget = ReturnType<typeof uiBudget>
 
 function isBoundary(text: string, index: number): boolean {
   if (index === 0) return true
@@ -572,13 +571,12 @@ function snippetText(text: string, offset: number): string {
 // first. Every matching line is scored, so the reported line and the score that
 // orders results do not depend on how many times the term occurs. Bounds are
 // kept in locals because this loop runs once per occurrence in the vault.
-async function literalHit(
+function literalHit(
   entry: ContentEntry,
   text: string,
   term: string,
-  lower: string,
-  budget: UiBudget
-): Promise<ContentHit | null> {
+  lower: string
+): ContentHit | null {
   const length = term.length
   let at = text.indexOf(term)
   if (at < 0) return null
@@ -590,7 +588,7 @@ async function literalHit(
   let bestLeft = 0
   let bestRight = 0
   let scanned = 0
-  while (at >= 0) {
+  while (at >= 0 && scanned < MAX_SCORED_OCCURRENCES) {
     while (line + 1 < starts.length && starts[line + 1] <= at) line++
     const end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length
     let left = starts[line]
@@ -612,7 +610,7 @@ async function literalHit(
         bestRight = right
       }
     }
-    if ((++scanned & 511) === 0 && budget.over()) await budget.yieldFrame()
+    scanned++
     at = text.indexOf(term, end + 1)
   }
   if (best === -Infinity) return null
@@ -628,20 +626,19 @@ async function literalHit(
 
 // The best line whose characters hold `pattern` in order. Every line is scored,
 // so the result does not depend on where in the note the best line sits.
-async function fuzzyHit(
+function fuzzyHit(
   entry: ContentEntry,
   text: string,
   pattern: string,
-  lower: string,
-  budget: UiBudget
-): Promise<ContentHit | null> {
+  lower: string
+): ContentHit | null {
   const starts = lineOffsets(entry, text)
   let best = -Infinity
   let bestLength = 0
   let bestLine = 0
   let bestLeft = 0
   let bestRight = 0
-  for (let line = 0; line < starts.length; line++) {
+  for (let line = 0; line < starts.length && line < MAX_SCORED_LINES; line++) {
     const end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length
     let left = starts[line]
     while (left < end && isSpace(text.charCodeAt(left))) left++
@@ -658,7 +655,6 @@ async function fuzzyHit(
         bestRight = right
       }
     }
-    if ((line & 255) === 255 && budget.over()) await budget.yieldFrame()
   }
   if (best === -Infinity) return null
   return contentHit(
@@ -680,6 +676,10 @@ function lineHit(entry: ContentEntry, folded: string, term: string): ContentHit 
 }
 
 const HIT_CACHE_LIMIT = 8
+// A single huge note must not hold the search runtime past its deadline. Scoring
+// a bounded slice keeps a query responsive without touching normal notes.
+const MAX_SCORED_OCCURRENCES = 4096
+const MAX_SCORED_LINES = 4096
 
 function dropOldest<K, V>(map: Map<K, V>): void {
   const oldest = map.keys().next()
@@ -708,15 +708,14 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   // query keeps reuse cheap without allocating state for every note on the first
   // search after launch.
   const hitCache = new Map<string, Map<string, { text: string; hit: ContentHit | null }>>()
-  const cachedHit = async (
+  const cachedHit = (
     key: string,
     entry: ContentEntry,
     text: string,
     term: string,
     lower: string,
-    kind: 'literal' | 'fuzzy',
-    budget: UiBudget
-  ): Promise<ContentHit | null> => {
+    kind: 'literal' | 'fuzzy'
+  ): ContentHit | null => {
     let byNote = hitCache.get(key)
     if (!byNote) {
       if (hitCache.size === HIT_CACHE_LIMIT) dropOldest(hitCache)
@@ -727,9 +726,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     const cached = byNote.get(path)
     if (cached?.text === text) return cached.hit
     const hit =
-      kind === 'literal'
-        ? await literalHit(entry, text, term, lower, budget)
-        : await fuzzyHit(entry, text, term, lower, budget)
+      kind === 'literal' ? literalHit(entry, text, term, lower) : fuzzyHit(entry, text, term, lower)
     byNote.set(path, { text, hit })
     return hit
   }
@@ -822,9 +819,11 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
     const favorites = scope?.favorites?.length ? new Set(scope.favorites) : null
     const inScope = (note: Note) => folder === undefined || noteFolder(note.path) === folder
     const boost = (note: Note) => (favorites?.has(note.path) ? 500 : 0)
-    const visible = (results: SearchResult[]) => results.filter((result) => inScope(result.note))
+    const visible = (results: SearchResult[]) =>
+      folder === undefined ? results : results.filter((result) => inScope(result.note))
     if (!parsed.terms.length) {
       all ??= notes.map((note) => ({ note }))
+      if (folder === undefined && !favorites) return all
       const list = all.filter(({ note }) => inScope(note)).map(({ note }) => note)
       if (!favorites) return list.map((note) => ({ note }))
       return [
@@ -940,15 +939,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
           const foldedText = foldedOf(entry)
           // A note without the query's first character can match neither way.
           if (foldedText.indexOf(first) >= 0) {
-            const literal = await cachedHit(
-              literalKey,
-              entry,
-              foldedText,
-              folded,
-              lower,
-              'literal',
-              budget
-            )
+            const literal = cachedHit(literalKey, entry, foldedText, folded, lower, 'literal')
             if (literal)
               add(
                 entry.note,
@@ -959,15 +950,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
                 literal.offset
               )
             else if (!phrase && containsAll(foldedText, folded)) {
-              const fuzzy = await cachedHit(
-                fuzzyKey,
-                entry,
-                foldedText,
-                folded,
-                lower,
-                'fuzzy',
-                budget
-              )
+              const fuzzy = cachedHit(fuzzyKey, entry, foldedText, folded, lower, 'fuzzy')
               if (fuzzy)
                 add(
                   entry.note,
