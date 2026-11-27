@@ -14,6 +14,8 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.FileNotFoundException
 import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 
 class TypoVaultModule : Module() {
   // Only one encoder allocates an output buffer at a time.
@@ -24,7 +26,7 @@ class TypoVaultModule : Module() {
 
     AsyncFunction("readText") Coroutine { uriString: String ->
       withContext(Dispatchers.IO) {
-        open(uriString).use { it.bufferedReader(Charsets.UTF_8).readText() }
+        decodeUtf8(open(uriString).use { it.readBytes() })
       }
     }
 
@@ -115,15 +117,28 @@ class TypoVaultModule : Module() {
 
   private fun vaultUri(value: String): Uri {
     val uri = Uri.parse(value)
-    val segments = uri.pathSegments
-    require(
-      uri.scheme == "content" &&
+    require(isVaultUri(value)) { "Expected a local external storage tree or tree document content URI." }
+    return uri
+  }
+
+  companion object {
+    internal fun decodeUtf8(bytes: ByteArray): String =
+      Charsets.UTF_8
+        .newDecoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+        .decode(ByteBuffer.wrap(bytes))
+        .toString()
+
+    internal fun isVaultUri(value: String): Boolean {
+      val uri = Uri.parse(value)
+      val segments = uri.pathSegments
+      return uri.scheme == "content" &&
         uri.authority == "com.android.externalstorage.documents" &&
         DocumentsContract.isTreeUri(uri) &&
         (segments.size == 2 ||
           (segments.size == 4 && segments[2] == "document" && segments[3].isNotEmpty())) &&
         segments[1].isNotEmpty()
-    ) { "Expected a local external storage tree or tree document content URI." }
-    return uri
+    }
   }
 }

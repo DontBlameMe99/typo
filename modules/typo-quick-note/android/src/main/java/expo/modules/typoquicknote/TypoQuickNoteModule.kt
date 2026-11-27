@@ -7,8 +7,8 @@ class TypoQuickNoteModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("TypoQuickNote")
 
-    Function("finish") {
-      QuickNoteActivity.finishCurrent()
+    Function("finish") { component: String? ->
+      QuickSheets.finish(component, appContext.currentActivity as? QuickNoteActivity)
     }
   }
 }
