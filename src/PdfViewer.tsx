@@ -1,5 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AccessibilityInfo,
   Alert,
@@ -62,16 +62,18 @@ function openLink(url: string) {
 type Props = {
   source: { uri: string } | null
   style?: StyleProp<ViewStyle>
+  // Increment to force a fresh viewer session for the same PDF source.
+  reloadEpoch?: number
   onError: (cause: Error) => void
 }
 
-export default function PdfViewer(props: Props) {
+function PdfViewer(props: Props) {
   const { colors, isDark, palette } = useTheme()
   const web = useRef<WebView<object>>(null)
   const latest = useRef(props)
   latest.current = props
   const [uri, setUri] = useState<string | null>(null)
-  const [ready, setReady] = useState(false)
+  const [ready, setReady] = useState<number | null>(null)
   const [displayed, setDisplayed] = useState<string | null>(null)
   const [session, setSession] = useState(0)
   const [waiting, setWaiting] = useState(false)
@@ -84,20 +86,24 @@ export default function PdfViewer(props: Props) {
   const shade = useRef(new Animated.Value(1)).current
   const morph = useRef(new Animated.Value(1)).current
   const growing = useRef(false)
-  // Animated.timing has no reduce-motion switch of its own.
-  const reducedMotion = useRef(false)
+  const [reducedMotion, setReducedMotion] = useState(false)
+  const appliedEpoch = useRef(props.reloadEpoch ?? 0)
   const requested = useRef<string | null>(null)
-  const theme = inlineJson({
-    background: palette.crust,
-    foreground: colors.ink,
-    accent: colors.accent,
-    surface: `${palette.surface0}E6`,
-    selection: selectionColor(colors.accent, isDark),
-  })
+  const theme = useMemo(
+    () =>
+      inlineJson({
+        background: palette.crust,
+        foreground: colors.ink,
+        accent: colors.accent,
+        surface: `${palette.surface0}E6`,
+        selection: selectionColor(colors.accent, isDark),
+      }),
+    [colors.accent, colors.ink, isDark, palette.crust, palette.surface0]
+  )
   const source = props.source?.uri ?? null
+  const active = ready === session
   const showing = !!source && displayed === source
   const loading = !showing && waiting
-
   useEffect(() => {
     let canceled = false
     const cancel = afterPaint(() => {
@@ -117,21 +123,30 @@ export default function PdfViewer(props: Props) {
       canceled = true
     }
   }, [])
+  useEffect(() => {
+    const epoch = props.reloadEpoch ?? 0
+    if (appliedEpoch.current === epoch) return
+    appliedEpoch.current = epoch
+    requested.current = null
+    setReady(null)
+    setDisplayed(null)
+    setSession((value) => value + 1)
+  }, [props.reloadEpoch])
   useWebViewForegroundReload(() => {
     requested.current = null
-    setReady(false)
+    setReady(null)
     setDisplayed(null)
     setSession((value) => value + 1)
   }, !!uri)
 
   useEffect(() => {
-    if (ready) return
+    if (active) return
     const timer = setTimeout(
       () => latest.current.onError(new Error('The offline PDF viewer took too long to start.')),
       30_000
     )
     return () => clearTimeout(timer)
-  }, [ready])
+  }, [active])
 
   useEffect(() => {
     if (showing) {
@@ -168,8 +183,10 @@ export default function PdfViewer(props: Props) {
   }, [loading, morph])
 
   useEffect(() => {
-    if (!loading) return
-    spin.setValue(0)
+    if (!loading || reducedMotion) {
+      spin.setValue(0)
+      return
+    }
     const loop = Animated.loop(
       Animated.timing(spin, {
         toValue: 1,
@@ -180,15 +197,15 @@ export default function PdfViewer(props: Props) {
     )
     loop.start()
     return () => loop.stop()
-  }, [loading, spin])
+  }, [loading, reducedMotion, spin])
 
   useEffect(() => {
     let alive = true
     void AccessibilityInfo.isReduceMotionEnabled().then((on) => {
-      if (alive) reducedMotion.current = on
+      if (alive) setReducedMotion(on)
     })
     const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', (on) => {
-      reducedMotion.current = on
+      setReducedMotion(on)
     })
     return () => {
       alive = false
@@ -210,25 +227,29 @@ export default function PdfViewer(props: Props) {
   useEffect(() => {
     Animated.timing(shade, {
       toValue: showing ? 0 : 1,
-      duration: showing && !reducedMotion.current ? 180 : 0,
+      duration: showing && !reducedMotion ? 180 : 0,
       useNativeDriver: true,
     }).start()
-  }, [shade, showing])
+  }, [shade, showing, reducedMotion])
 
   // The headline swaps every few seconds while compiling: the old line squashes
   // flat, the text swaps, and the new line grows back letter by letter.
   const headlineText = trouble ? SLOW_MESSAGE : LOADING_MESSAGES[message]
   const squashing = shown !== headlineText
   const wave = shown.length > 1 ? MORPH_LAG / (shown.length - 1) : 0
-  const chars = Array.from(shown, (char, index) => ({
-    slot: index,
-    char,
-    from: squashing ? 0 : index * wave,
-    span: squashing ? 1 : MORPH_SPAN,
-  }))
+  const chars = useMemo(
+    () =>
+      Array.from(shown, (char, index) => ({
+        slot: index,
+        char,
+        from: squashing ? 0 : index * wave,
+        span: squashing ? 1 : MORPH_SPAN,
+      })),
+    [shown, squashing, wave]
+  )
   useEffect(() => {
     if (shown !== headlineText) {
-      if (reducedMotion.current) {
+      if (reducedMotion) {
         growing.current = false
         morph.stopAnimation()
         morph.setValue(1)
@@ -249,7 +270,7 @@ export default function PdfViewer(props: Props) {
     // The grow waits for the new letters, so it never animates the old line.
     if (!growing.current) return
     growing.current = false
-    if (reducedMotion.current) {
+    if (reducedMotion) {
       morph.setValue(1)
       return
     }
@@ -259,10 +280,10 @@ export default function PdfViewer(props: Props) {
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start()
-  }, [headlineText, morph, shown])
+  }, [headlineText, morph, shown, reducedMotion])
 
   useEffect(() => {
-    if (!ready || !source || showing) return
+    if (!active || !source || showing) return
     const timer = setTimeout(
       () =>
         latest.current.onError(
@@ -271,18 +292,18 @@ export default function PdfViewer(props: Props) {
       60_000
     )
     return () => clearTimeout(timer)
-  }, [ready, source, showing])
+  }, [active, source, showing])
 
   useEffect(() => {
-    if (ready) web.current?.injectJavaScript(`window.typoPdf?.theme(${theme});true;`)
-  }, [ready, theme])
+    if (active) web.current?.injectJavaScript(`window.typoPdf?.theme(${theme});true;`)
+  }, [active, theme])
 
   useEffect(() => {
-    if (!ready || !source || requested.current === source) return
+    if (!active || !source || requested.current === source) return
     requested.current = source
     setDisplayed(null)
     web.current?.injectJavaScript(`window.typoPdf?.load(${inlineJson(source)});true;`)
-  }, [ready, source])
+  }, [active, source])
 
   return (
     <View style={[{ flex: 1 }, props.style, { backgroundColor: palette.crust }]}>
@@ -305,14 +326,16 @@ export default function PdfViewer(props: Props) {
             request.url === uri || request.url === 'about:blank'
           }
           onLoadStart={() => {
-            setReady(false)
+            setReady(null)
           }}
-          onError={() => props.onError(new Error('The offline PDF viewer could not load.'))}
+          onError={() =>
+            latest.current.onError(new Error('The offline PDF viewer could not load.'))
+          }
           onRenderProcessGone={() =>
-            props.onError(new Error('The PDF viewer stopped. Try reopening the PDF.'))
+            latest.current.onError(new Error('The PDF viewer stopped. Try reopening the PDF.'))
           }
           onContentProcessDidTerminate={() =>
-            props.onError(new Error('The PDF viewer stopped. Try reopening the PDF.'))
+            latest.current.onError(new Error('The PDF viewer stopped. Try reopening the PDF.'))
           }
           onMessage={(event) => {
             try {
@@ -325,7 +348,7 @@ export default function PdfViewer(props: Props) {
                   web.current?.injectJavaScript(
                     `window.typoPdf.theme(${theme});window.typoPdf.load(${inlineJson(target)});true;`
                   )
-                setReady(true)
+                setReady(session)
               } else if (
                 message.type === 'rendered' &&
                 message.uri === (latest.current.source?.uri ?? requested.current)
@@ -434,6 +457,16 @@ export default function PdfViewer(props: Props) {
     </View>
   )
 }
+
+// NoteDetail recreates the source object and error arrow on every keystroke.
+// Compare the URI; native handlers read the latest props through a ref.
+export default memo(
+  PdfViewer,
+  (previous, next) =>
+    previous.source?.uri === next.source?.uri &&
+    previous.style === next.style &&
+    (previous.reloadEpoch ?? 0) === (next.reloadEpoch ?? 0)
+)
 
 const s = StyleSheet.create({
   loading: {

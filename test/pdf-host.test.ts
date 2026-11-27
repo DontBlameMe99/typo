@@ -2,18 +2,16 @@ import { expect, test } from 'bun:test'
 import { runInNewContext } from 'node:vm'
 
 const modules: Record<string, string> = {
-  react: 'export const {useEffect,useRef,useState}=globalThis.hooks',
+  react: 'export const {memo,useEffect,useMemo,useRef,useState}=globalThis.hooks',
   'react/jsx-runtime': 'export const jsx=globalThis.jsx,jsxs=globalThis.jsx',
   'expo-file-system/legacy': 'export const cacheDirectory="file:///cache/"',
-  'react-native': `export const View="View",Text="Text",Pressable="Pressable",AccessibilityInfo={
-      isReduceMotionEnabled:async()=>false,
-      addEventListener:()=>({remove(){}})};
+  'react-native': `export const View="View",Text="Text",Pressable="Pressable",AccessibilityInfo=globalThis.accessibilityInfo;
     export const StyleSheet={create:styles=>styles,hairlineWidth:1};
     export const Linking={openURL:async()=>{}};export const Alert={alert:()=>{}};
     export const Easing={linear:value=>value,cubic:value=>value,in:value=>value,out:value=>value};
     class Value{constructor(value){this.value=value}setValue(value){this.value=value}stopAnimation(){}interpolate(){return 0}}
     const animation={start(callback){callback?.({finished:true})},stop(){}};
-    export const Animated={Value,View:"AnimatedView",Text:"AnimatedText",loop:()=>animation,timing:()=>animation}`,
+    export const Animated={Value,View:"AnimatedView",Text:"AnimatedText",loop:()=>{globalThis.animationLoops++;return animation},timing:()=>animation}`,
   'react-native-svg': 'export const Svg="Svg",Circle="Circle",Path="Path"',
   'react-native-webview': 'export const WebView="WebView"',
   './about': 'export const issuesUrl="https://example.com/issues"',
@@ -47,7 +45,11 @@ if (!build.success) throw new AggregateError(build.logs, 'Cannot build the PDF h
 const code = await build.outputs[0].text()
 
 type Slot = { value?: unknown; deps?: unknown[]; cleanup?: () => void }
-type Props = { source: { uri: string } | null; onError: (cause: Error) => void }
+type Props = {
+  source: { uri: string } | null
+  reloadEpoch?: number
+  onError: (cause: Error) => void
+}
 
 async function host() {
   const slots: Slot[] = []
@@ -60,15 +62,18 @@ async function host() {
   let dirty = true
   let props: Props = { source: { uri: 'file:///a.pdf' }, onError: (cause) => errors.push(cause) }
   let web: { onMessage: (event: { nativeEvent: { data: string } }) => void } | undefined
+  let webKey: unknown
   const slot = () => {
     const index = cursor++
     slots[index] ??= {}
     return slots[index]
   }
   const module = { exports: {} }
-  runInNewContext(code, {
+  const motion = { reduced: false, changed: (_on: boolean) => {} }
+  const sandbox = {
     module,
     hooks: {
+      memo: (component: unknown) => ({ type: component }),
       useRef(initial: unknown) {
         const current = slot()
         current.value ??= { current: initial }
@@ -87,6 +92,14 @@ async function host() {
           },
         ]
       },
+      useMemo(factory: () => unknown, deps: unknown[]) {
+        const current = slot()
+        if (current.deps?.every((value, index) => Object.is(value, deps[index])))
+          return current.value
+        current.deps = deps
+        current.value = factory()
+        return current.value
+      },
       useEffect(effect: () => (() => void) | undefined, deps: unknown[]) {
         const current = slot()
         if (current.deps?.every((value, index) => Object.is(value, deps[index]))) return
@@ -97,9 +110,18 @@ async function host() {
         })
       },
     },
-    jsx(type: string, properties: Record<string, unknown>) {
+    animationLoops: 0,
+    accessibilityInfo: {
+      isReduceMotionEnabled: async () => motion.reduced,
+      addEventListener: (_type: string, callback: (on: boolean) => void) => {
+        motion.changed = callback
+        return { remove() {} }
+      },
+    },
+    jsx(type: string, properties: Record<string, unknown>, key?: unknown) {
       if (type === 'WebView') {
         web = properties as typeof web
+        webKey = key ?? properties.key
         const ref = properties.ref as { current: unknown }
         ref.current = { injectJavaScript: (script: string) => injections.push(script) }
       }
@@ -124,8 +146,14 @@ async function host() {
     clearInterval(id: number) {
       timers.delete(id)
     },
-  })
-  const render = (module.exports as { default: (props: Props) => unknown }).default
+  }
+  runInNewContext(code, sandbox)
+  const exported = (module.exports as { default: unknown }).default
+  const render = (
+    typeof exported === 'function'
+      ? exported
+      : (exported as { type: (props: Props) => unknown }).type
+  ) as (props: Props) => unknown
   let tree: unknown
   const types = () => {
     const found: string[] = []
@@ -211,6 +239,18 @@ async function host() {
       dirty = true
       flush()
     },
+    reload(epoch: number) {
+      props = { ...props, reloadEpoch: epoch }
+      dirty = true
+      flush()
+    },
+    setReduceMotion(on: boolean) {
+      motion.reduced = on
+      motion.changed(on)
+      flush()
+    },
+    loops: () => sandbox.animationLoops,
+    webKey: () => webKey,
   }
 }
 
@@ -321,4 +361,29 @@ test('a render acknowledgement is kept while the source is pending', async () =>
   viewer.source('file:///a.pdf')
   expect(viewer.spinner()).toBe(false)
   expect(viewer.webOpacity()).toBe(1)
+})
+
+test('a reload epoch remounts the viewer and reloads the same source', async () => {
+  const viewer = await host()
+  viewer.message({ type: 'boot' })
+  viewer.message({ type: 'rendered', uri: 'file:///a.pdf' })
+  const before = viewer.webKey()
+  viewer.reload(1)
+  expect(viewer.webKey()).not.toBe(before)
+  viewer.message({ type: 'boot' })
+  viewer.message({ type: 'rendered', uri: 'file:///a.pdf' })
+  expect(viewer.waitingForPage()).toBe(false)
+  expect(viewer.injections.filter((script) => script.includes('.load('))).toHaveLength(2)
+})
+
+test('reduced motion keeps the spinner still and follows setting changes', async () => {
+  const viewer = await host()
+  viewer.message({ type: 'boot' })
+  viewer.runTimers(120)
+  expect(viewer.spinner()).toBe(true)
+  expect(viewer.loops()).toBe(1)
+  viewer.setReduceMotion(true)
+  expect(viewer.loops()).toBe(1)
+  viewer.setReduceMotion(false)
+  expect(viewer.loops()).toBe(2)
 })
