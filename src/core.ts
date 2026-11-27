@@ -708,6 +708,25 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   // query keeps reuse cheap without allocating state for every note on the first
   // search after launch.
   const hitCache = new Map<string, Map<string, { text: string; hit: ContentHit | null }>>()
+  const preparedQueries = new Map<
+    string,
+    { terms: string[]; folded: string[]; mode: SearchMode | undefined; folder: string | undefined }
+  >()
+  const prepareQuery = (query: string) => {
+    let prepared = preparedQueries.get(query)
+    if (!prepared) {
+      const parsed = parseSearchQuery(query)
+      prepared = {
+        terms: parsed.terms,
+        folded: parsed.terms.map((term) => foldSearchText(term)).filter(Boolean),
+        mode: parsed.mode,
+        folder: parsed.folder,
+      }
+      if (preparedQueries.size === HIT_CACHE_LIMIT) dropOldest(preparedQueries)
+      preparedQueries.set(query, prepared)
+    }
+    return prepared
+  }
   const cachedHit = (
     key: string,
     entry: ContentEntry,
@@ -813,15 +832,14 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
   ): Promise<SearchResult[]> => {
     const current = ++request
     const budget = uiBudget()
-    const parsed = parseSearchQuery(query)
-    const terms = parsed.terms.map((term) => foldSearchText(term)).filter(Boolean)
-    const folder = parsed.folder ?? scope?.folder
+    const prepared = prepareQuery(query)
+    const terms = prepared.folded
+    const folder = prepared.folder ?? scope?.folder
     const favorites = scope?.favorites?.length ? new Set(scope.favorites) : null
     const inScope = (note: Note) => folder === undefined || noteFolder(note.path) === folder
-    const boost = (note: Note) => (favorites?.has(note.path) ? 500 : 0)
     const visible = (results: SearchResult[]) =>
       folder === undefined ? results : results.filter((result) => inScope(result.note))
-    if (!parsed.terms.length) {
+    if (!prepared.terms.length) {
       all ??= notes.map((note) => ({ note }))
       if (folder === undefined && !favorites) return all
       const list = all.filter(({ note }) => inScope(note)).map(({ note }) => note)
@@ -832,7 +850,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
       ].map((note) => ({ note }))
     }
     if (!terms.length) return []
-    const effectiveMode = parsed.mode ?? mode
+    const effectiveMode = prepared.mode ?? mode
 
     const searchTerms = async (terms: string[]): Promise<SearchResult[]> => {
       if (!content) content = indexContent(notes, version)
@@ -850,7 +868,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
         const foldedText = namesOnly ? '' : foldedOf(entry)
         let matched = 0
         let titleHits = 0
-        let score = boost(note)
+        let score = favorites?.has(note.path) ? 500 : 0
         let snippetTerm = ''
         for (const term of terms) {
           const inTitle = !contentOnly && title.includes(term)
@@ -888,7 +906,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
 
     if (terms.length > 1) return searchTerms(terms)
 
-    const raw = parsed.terms[0]
+    const raw = prepared.terms[0]
     const folded = terms[0]
     const lower = folded
     const found = new Map<string, RankedResult>()
@@ -925,7 +943,14 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
       for (const { item, score } of names.find(raw)) {
         const literal = item.folded.includes(folded)
         if (phrase && !literal) continue
-        add(item.note, item.text, undefined, literal ? 0 : 2, score + boost(item.note), 0)
+        add(
+          item.note,
+          item.text,
+          undefined,
+          literal ? 0 : 2,
+          score + (favorites?.has(item.note.path) ? 500 : 0),
+          0
+        )
       }
     }
     if (effectiveMode !== 'names') {
@@ -946,7 +971,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
                 literal.text,
                 literal.line,
                 1,
-                literal.score + boost(entry.note),
+                literal.score + (favorites?.has(entry.note.path) ? 500 : 0),
                 literal.offset
               )
             else if (!phrase && containsAll(foldedText, folded)) {
@@ -957,7 +982,7 @@ export function createNoteSearch(initial: readonly Note[]): NoteSearch {
                   fuzzy.text,
                   fuzzy.line,
                   3,
-                  fuzzy.score + boost(entry.note),
+                  fuzzy.score + (favorites?.has(entry.note.path) ? 500 : 0),
                   fuzzy.offset
                 )
             }
