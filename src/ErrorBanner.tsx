@@ -9,14 +9,18 @@ import Reanimated, {
 import { Icon } from './icons'
 import { useTheme } from './theme'
 
+type BannerAction = { label: string; onPress: () => void }
+
 export function ErrorBanner({
   message,
   title,
   onDismiss,
+  actions,
 }: {
   message: string
   title?: string
   onDismiss?: () => void
+  actions?: BannerAction[]
 }) {
   const { colors } = useTheme()
   const s = useMemo(() => styles(colors), [colors])
@@ -38,6 +42,21 @@ export function ErrorBanner({
             {message}
           </Text>
         </ScrollView>
+        {actions?.length ? (
+          <View style={s.actions}>
+            {actions.map((action) => (
+              <Pressable
+                key={action.label}
+                accessibilityRole="button"
+                accessibilityLabel={action.label}
+                onPress={action.onPress}
+                style={({ pressed }) => [s.action, pressed && s.pressed]}
+              >
+                <Text style={s.actionText}>{action.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
       </View>
       {onDismiss && (
         <Pressable
@@ -78,6 +97,23 @@ function styles(colors: ReturnType<typeof useTheme>['colors']) {
       fontSize: 14,
       lineHeight: 20,
       fontFamily: 'DMSans_400Regular',
+    },
+    actions: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginTop: 9,
+    },
+    action: {
+      backgroundColor: colors.accent,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+    actionText: {
+      color: colors.onAccent,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 13,
     },
     dismiss: {
       width: 44,
