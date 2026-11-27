@@ -55,6 +55,8 @@ const MAX_FILENAME_BYTES = 120
 const PDF_CACHE_MAX_COPIES = 24
 const PDF_CACHE_MAX_AGE = 86_400_000
 const excludedDirectories = new Set(['style', 'assets', 'packages', 'out', '.direnv', '.git'])
+const COMPILE_CONTENT_CHECK_MAX = 256 * 1024
+const REPLACE_BACKUP_DIRECTORY = 'typo-backups/'
 const compileExcludedDirectories = new Set(['out', '.direnv', '.git'])
 const noteExcludedDirectories = new Set([...excludedDirectories, 'fonts'])
 const compileExtensions = new Set([
@@ -284,6 +286,21 @@ function pdfOutput(path: string): { directories: string[]; filename: string; pat
   return { directories, filename, path: ['out', ...directories, filename].join('/') }
 }
 
+function assertUniquePdfOutputs(paths: Iterable<string>): void {
+  const outputs = new Map<string, string>()
+  for (const path of paths) {
+    if (!/\.typ$/iu.test(path)) continue
+    const stem = path.slice(0, -4).toLowerCase()
+    const previous = outputs.get(stem)
+    if (previous && previous !== path) {
+      throw new Error(
+        `Cannot compile "${previous}" and "${path}": both use the PDF output "out/${stem}.pdf". Rename one note.`
+      )
+    }
+    outputs.set(stem, path)
+  }
+}
+
 async function listedEntries(
   uri: string,
   context: string,
@@ -346,6 +363,9 @@ function checkCreated(
   caseInsensitive = false
 ): { ok: boolean; actual: string } {
   const actual = documentName(created)
+  if (/\p{Cf}/u.test(actual) && !/\p{Cf}/u.test(requested)) {
+    throw new Error('The document provider returned an unsupported document name.')
+  }
   const matches = caseInsensitive
     ? actual.toLowerCase() === requested.toLowerCase()
     : actual === requested
@@ -835,19 +855,65 @@ export async function refreshVaultLibrary(
   return scanVaultLibrary(vault, onProgress, cancelled, onBatch, known)
 }
 
+async function replaceWithStaged(
+  staging: string,
+  bytes: Uint8Array,
+  destination: string,
+  context: string
+): Promise<void> {
+  if (!FileSystem.cacheDirectory) throw new Error('Private cache storage is unavailable.')
+  const backup = `${FileSystem.cacheDirectory}${REPLACE_BACKUP_DIRECTORY}${sha256(destination)}.bak`
+  await FileSystem.makeDirectoryAsync(`${FileSystem.cacheDirectory}${REPLACE_BACKUP_DIRECTORY}`, {
+    intermediates: true,
+  })
+  let backedUp = false
+  let keepBackup = false
+  try {
+    if (new File(destination).exists) {
+      await new File(destination).copy(new File(backup), { overwrite: true })
+      backedUp = true
+    }
+  } catch (error) {
+    throw new Error(`${context}: cannot keep a backup of the existing file: ${message(error)}`)
+  }
+  try {
+    try {
+      await new File(staging).move(new File(destination), { overwrite: true })
+    } catch {
+      // Some providers refuse replacement. The backup makes the streaming
+      // fallback recoverable if this write is interrupted.
+      const handle = new File(destination).open(FileMode.Truncate)
+      try {
+        await handle.writeBytes(bytes)
+      } finally {
+        handle.close()
+      }
+    }
+  } catch (error) {
+    if (backedUp) {
+      try {
+        await new File(backup).copy(new File(destination), { overwrite: true })
+      } catch (restoreError) {
+        keepBackup = true
+        throw new Error(
+          `${context}: the write failed and the backup "${backup}" could not be restored: ${message(restoreError)}`
+        )
+      }
+    }
+    throw error
+  } finally {
+    if (backedUp && !keepBackup)
+      await FileSystem.deleteAsync(backup, { idempotent: true }).catch(() => {})
+  }
+}
+
 async function writeSource(uri: string, source: string): Promise<void> {
   if (!FileSystem.cacheDirectory) throw new Error('Private cache storage is unavailable.')
   const staging = `${FileSystem.cacheDirectory}typo-save-${Date.now()}-${++pdfSequence}.tmp`
   try {
     await FileSystem.writeAsStringAsync(staging, source)
     const bytes = await new File(staging).bytes()
-    // SAF's ordinary write mode can leave old trailing bytes when a note gets shorter.
-    const handle = new File(uri).open(FileMode.Truncate)
-    try {
-      await handle.writeBytes(bytes)
-    } finally {
-      handle.close()
-    }
+    await replaceWithStaged(staging, bytes, uri, `Cannot write "${uri}"`)
   } finally {
     await FileSystem.deleteAsync(staging, { idempotent: true }).catch(() => {})
   }
@@ -877,7 +943,7 @@ function newFolderName(value: string): string {
   if (!name) throw new Error('Give the folder a name.')
   if (
     name.startsWith('.') ||
-    /[/\\:*?"<>|\p{Cc}]/u.test(name) ||
+    /[/\\:*?"<>|\p{Cc}\p{Cf}]/u.test(name) ||
     name.endsWith('.') ||
     encodeURIComponent(name).replace(/%[A-F\d]{2}/gu, '_').length > MAX_FILENAME_BYTES
   ) {
@@ -913,7 +979,7 @@ export async function createFolder(
     )
   }
   const uri = await SAF.makeDirectoryAsync(parent.uri, name)
-  const { ok, actual } = checkCreated(parent.uri, uri, name, [])
+  const { ok, actual } = checkCreated(parent.uri, uri, name, [], true)
   if (!ok) {
     throw new Error(
       `The document provider created "${actual}" instead of "${name}". Choose a different name.`
@@ -955,17 +1021,31 @@ export async function moveNoteToFolder(vault: Vault, note: Note, directory: stri
   }
   const source = await FileSystem.readAsStringAsync(note.uri)
   const uri = await SAF.createFileAsync(parent.uri, filename, 'application/octet-stream')
-  if (!checkCreated(parent.uri, uri, filename, existing).ok) {
+  if (!checkCreated(parent.uri, uri, filename, existing, true).ok) {
     throw new Error('The document provider did not create the requested moved filename.')
   }
+  let keepCopy = false
   try {
     await writeSource(uri, source)
     if ((await FileSystem.readAsStringAsync(uri)) !== source) {
       throw new Error('The moved copy could not be verified.')
     }
-    await FileSystem.deleteAsync(note.uri, { idempotent: false })
+    try {
+      await FileSystem.deleteAsync(note.uri, { idempotent: false })
+    } catch (cause) {
+      const exists = await FileSystem.getInfoAsync(note.uri)
+        .then((info) => info.exists)
+        .catch(() => undefined)
+      if (exists !== false) {
+        if (exists) throw cause
+        keepCopy = true
+        throw new Error(
+          `the source could not be confirmed deleted; the copy at "${uri}" was kept. ${message(cause)}`
+        )
+      }
+    }
   } catch (cause) {
-    await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {})
+    if (!keepCopy) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {})
     throw new Error(`Cannot move "${note.path}": ${message(cause)}`)
   }
   return {
@@ -997,7 +1077,7 @@ export async function createNote(
   if (
     filename.startsWith('.') ||
     filename !== filename.trim() ||
-    /[/\\:*?"<>|\p{Cc}]/u.test(filename) ||
+    /[/\\:*?"<>|\p{Cc}\p{Cf}]/u.test(filename) ||
     !/\.typ$/u.test(filename)
   ) {
     throw new Error(
@@ -1018,12 +1098,17 @@ export async function createNote(
   }
   // A text/plain MIME type can cause Android providers to append an unwanted .txt extension.
   const uri = await SAF.createFileAsync(parent.uri, filename, 'application/octet-stream')
-  if (!checkCreated(parent.uri, uri, filename, existing).ok) {
+  if (!checkCreated(parent.uri, uri, filename, existing, true).ok) {
     throw new Error(
       'The document provider did not create the requested new filename. Nothing was written.'
     )
   }
-  await writeSource(uri, source)
+  try {
+    await writeSource(uri, source)
+  } catch (cause) {
+    await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {})
+    throw cause
+  }
   return {
     uri,
     path: parent.path ? `${parent.path}/${filename}` : filename,
@@ -1240,10 +1325,12 @@ function folderPathSegments(path: string): string[] {
 }
 
 async function copyVaultFile(source: string, destination: string): Promise<void> {
-  const base64 = await FileSystem.readAsStringAsync(source, { encoding: 'base64' })
-  await FileSystem.writeAsStringAsync(destination, base64, { encoding: 'base64' })
-  const written = await FileSystem.readAsStringAsync(destination, { encoding: 'base64' })
-  if (written !== base64) throw new Error('The copied file could not be verified.')
+  await new File(source).copy(new File(destination), { overwrite: true })
+  const original = new File(source).size
+  const copied = new File(destination).size
+  if (original !== null && copied !== original) {
+    throw new Error('The copied file could not be verified.')
+  }
 }
 
 async function copyVaultTree(
@@ -1261,14 +1348,14 @@ async function copyVaultTree(
     const path = relative ? `${relative}/${entry.name}` : entry.name
     if (entry.info.isDirectory) {
       const created = await SAF.makeDirectoryAsync(destination, entry.name)
-      if (!checkCreated(destination, created, entry.name, []).ok) {
+      if (!checkCreated(destination, created, entry.name, [], true).ok) {
         throw new Error(`The document provider did not create "${entry.name}" during the copy.`)
       }
       await copyVaultTree(entry.uri, created, `${context}/${entry.name}`, path, copied)
       continue
     }
     const created = await SAF.createFileAsync(destination, entry.name, 'application/octet-stream')
-    if (!checkCreated(destination, created, entry.name, []).ok) {
+    if (!checkCreated(destination, created, entry.name, [], true).ok) {
       throw new Error(`The document provider did not create "${entry.name}" during the copy.`)
     }
     await copyVaultFile(entry.uri, created)
@@ -1289,7 +1376,7 @@ async function newFolderAt(parent: { uri: string; path: string }, name: string):
     )
   }
   const created = await SAF.makeDirectoryAsync(parent.uri, name)
-  const { ok, actual } = checkCreated(parent.uri, created, name, [])
+  const { ok, actual } = checkCreated(parent.uri, created, name, [], true)
   if (!ok) {
     throw new Error(`The document provider created "${actual}" instead of "${name}".`)
   }
@@ -1365,6 +1452,21 @@ export async function trashFolder(vault: Vault, path: string): Promise<TrashedNo
   return { uri: created, path: `${trashPath}/${destination}` }
 }
 
+async function removeRestoredTrash(trashed: TrashedNote, restoredPath: string): Promise<void> {
+  try {
+    await FileSystem.deleteAsync(trashed.uri, { idempotent: false })
+  } catch (cause) {
+    const exists = await FileSystem.getInfoAsync(trashed.uri)
+      .then((info) => info.exists)
+      .catch(() => undefined)
+    if (exists !== false) {
+      throw new Error(
+        `Restored "${restoredPath}", but the trash copy at "${trashed.path}" could not be removed. Remove it manually. ${message(cause)}`
+      )
+    }
+  }
+}
+
 export async function restoreNote(
   vault: Vault,
   trashed: TrashedNote,
@@ -1385,7 +1487,7 @@ export async function restoreNote(
   }
   const source = await FileSystem.readAsStringAsync(trashed.uri)
   const uri = await SAF.createFileAsync(parent.uri, filename, 'application/octet-stream')
-  if (!checkCreated(parent.uri, uri, filename, existing).ok) {
+  if (!checkCreated(parent.uri, uri, filename, existing, true).ok) {
     throw new Error(
       `Cannot restore "${originalPath}": the document provider did not create the requested filename.`
     )
@@ -1399,7 +1501,7 @@ export async function restoreNote(
     await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {})
     throw new Error(`Cannot restore "${originalPath}": ${message(cause)}`)
   }
-  await FileSystem.deleteAsync(trashed.uri, { idempotent: true }).catch(() => {})
+  await removeRestoredTrash(trashed, originalPath)
   return {
     path: originalPath,
     uri,
@@ -1440,7 +1542,7 @@ export async function restoreFolder(
     await FileSystem.deleteAsync(created, { idempotent: true }).catch(() => {})
     throw new Error(`Cannot restore "${originalPath}": ${message(cause)}`)
   }
-  await FileSystem.deleteAsync(trashed.uri, { idempotent: true }).catch(() => {})
+  await removeRestoredTrash(trashed, originalPath)
 }
 
 export async function readNote(note: Note): Promise<Note> {
@@ -1555,7 +1657,7 @@ export async function saveTemplate(vault: Vault, source: string, expected?: stri
   const entry = await rootTemplate(vault)
   if (!entry) {
     const uri = await SAF.createFileAsync(vault.uri, 'template.typ', 'application/octet-stream')
-    if (!checkCreated(vault.uri, uri, 'template.typ', []).ok) {
+    if (!checkCreated(vault.uri, uri, 'template.typ', [], true).ok) {
       throw new Error('The document provider did not create template.typ. Nothing was written.')
     }
     try {
@@ -1618,6 +1720,7 @@ export async function loadCompileFiles(
       })
     }
   }
+  assertUniquePdfOutputs(collected.map((file) => file.path))
   let knownTotal = 0
   for (const file of collected) {
     if (typeof file.size !== 'number') continue
@@ -1639,6 +1742,47 @@ export async function loadCompileFiles(
   const files = await boundedMap(
     collected,
     async (file) => {
+      const read = () => readVaultBase64(file.uri, MAX_COMPILE_FILE) ?? new File(file.uri).base64()
+      const limited = (error: unknown) =>
+        error !== null &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === 'ERR_TYPO_VAULT_FILE_LIMIT'
+      const readCurrent = async (): Promise<string> => {
+        try {
+          return await retryOnce(read, (error) => !limited(error))
+        } catch (error) {
+          if (limited(error)) {
+            throw new Error(
+              `Cannot collect compiler files: "${file.path}" exceeds the ${formatMiB(MAX_COMPILE_FILE)} MiB per-file limit.`
+            )
+          }
+          throw new Error(`Cannot read compiler input "${file.path}": ${message(error)}`)
+        }
+      }
+      const accept = (base64: string) => {
+        const size = decodedSize(base64)
+        if (size > MAX_COMPILE_FILE) {
+          throw new Error(
+            `Cannot collect compiler files: "${file.path}" is ${formatMiB(size)} MiB, above the ${formatMiB(MAX_COMPILE_FILE)} MiB per-file limit.`
+          )
+        }
+        actualTotal += size
+        if (actualTotal > MAX_COMPILE_TOTAL) {
+          throw new Error(
+            `Cannot collect compiler files: ${formatMiB(actualTotal)} MiB exceeds the ${formatMiB(MAX_COMPILE_TOTAL)} MiB total limit.`
+          )
+        }
+        const compiled = { path: file.path, base64 }
+        cache?.entries.set(file.path, {
+          uri: file.uri,
+          stamp: file.stamp ?? '',
+          size,
+          readAt: now,
+          file: compiled,
+        })
+        return compiled
+      }
       const known = cache?.entries.get(file.path)
       if (
         known &&
@@ -1647,48 +1791,25 @@ export async function loadCompileFiles(
         known.stamp === file.stamp &&
         now - known.readAt < COMPILE_STAMP_MAX_AGE
       ) {
-        actualTotal += known.size
-        return known.file
+        // Source notes are what a sync client rewrites in place. Assets keep the
+        // old stamp-only reuse, since reading every image again would be costly.
+        const syncedSource =
+          /\.typ$/iu.test(file.path) &&
+          (file.size === undefined || file.size <= COMPILE_CONTENT_CHECK_MAX)
+        if (!syncedSource) {
+          actualTotal += known.size
+          return known.file
+        }
+        const current = await readCurrent()
+        if (current === known.file.base64) {
+          actualTotal += known.size
+          return known.file
+        }
+        reused = false
+        return accept(current)
       }
       reused = false
-      const read = () => readVaultBase64(file.uri, MAX_COMPILE_FILE) ?? new File(file.uri).base64()
-      const limited = (error: unknown) =>
-        error !== null &&
-        typeof error === 'object' &&
-        'code' in error &&
-        error.code === 'ERR_TYPO_VAULT_FILE_LIMIT'
-      let base64: string
-      try {
-        base64 = await retryOnce(read, (error) => !limited(error))
-      } catch (error) {
-        if (limited(error)) {
-          throw new Error(
-            `Cannot collect compiler files: "${file.path}" exceeds the ${formatMiB(MAX_COMPILE_FILE)} MiB per-file limit.`
-          )
-        }
-        throw new Error(`Cannot read compiler input "${file.path}": ${message(error)}`)
-      }
-      const size = decodedSize(base64)
-      if (size > MAX_COMPILE_FILE) {
-        throw new Error(
-          `Cannot collect compiler files: "${file.path}" is ${formatMiB(size)} MiB, above the ${formatMiB(MAX_COMPILE_FILE)} MiB per-file limit.`
-        )
-      }
-      actualTotal += size
-      if (actualTotal > MAX_COMPILE_TOTAL) {
-        throw new Error(
-          `Cannot collect compiler files: ${formatMiB(actualTotal)} MiB exceeds the ${formatMiB(MAX_COMPILE_TOTAL)} MiB total limit.`
-        )
-      }
-      const compiled = { path: file.path, base64 }
-      cache?.entries.set(file.path, {
-        uri: file.uri,
-        stamp: file.stamp ?? '',
-        size,
-        readAt: now,
-        file: compiled,
-      })
-      return compiled
+      return accept(await readCurrent())
     },
     COMPILE_READ_CONCURRENCY
   )
@@ -1812,13 +1933,12 @@ export async function writeCompiledPdf(
     }
     const destination = await ensureVaultPdf(parent, output.filename, output.path, listings)
     try {
-      // SAF's ordinary write mode can leave old trailing bytes when a PDF gets shorter.
-      const handle = new File(destination).open(FileMode.Truncate)
-      try {
-        await handle.writeBytes(bytes)
-      } finally {
-        handle.close()
-      }
+      await replaceWithStaged(
+        staging,
+        bytes,
+        destination,
+        `Cannot write the compiled PDF to "${output.path}"`
+      )
     } catch (error) {
       throw new Error(`Cannot write the compiled PDF to "${output.path}": ${message(error)}`)
     }
