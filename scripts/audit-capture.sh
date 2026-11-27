@@ -47,8 +47,13 @@ emit() {
     "$@"
   fi
 }
-
-agent() { emit "$AGENT" "$@"; }
+agent() {
+  if [[ -n $DEVICE ]]; then
+    emit "$AGENT" "$@" --serial "$DEVICE"
+  else
+    emit "$AGENT" "$@"
+  fi
+}
 wait_text() { agent wait text "$1" "$2"; }
 
 parse() {
@@ -90,9 +95,9 @@ steps_picker() {
   agent press 'text="typo-audit-demo"' --settle
   wait_text 'USE THIS FOLDER' 30000
   agent press 'text="USE THIS FOLDER"' --settle
-  emit "$AGENT" alert accept || true
-  if [[ $MODE == plan ]] || agent is visible 'text="Allow"'; then
-    agent press 'text="Allow"' --settle
+  agent alert accept || true
+  if [[ $MODE == plan ]] || agent is visible 'text="ALLOW"'; then
+    agent press 'text="ALLOW"' --settle
   fi
   wait_text 'Folder Inbox' 90000
 }
@@ -152,6 +157,8 @@ steps_quick() {
 }
 
 steps_redaction() {
+  agent press 'label="Folder Inbox, 2 notes"' --settle
+  wait_text 'NIMBUS-DEMO-REDACTION-CHECK' 30000
   agent is absent 'text="REAL_USER_DATA_SENTINEL"'
   agent screenshot "$SHOTS/09-redaction.png"
 }
@@ -163,32 +170,49 @@ steps_setup() {
   agent settings clear-app-state "$PACKAGE"
   emit env ANDROID_SERIAL="$DEVICE" bun scripts/audit-demo-seed.ts --push
   agent open "$PACKAGE" --relaunch --foreground
-  emit "$AGENT" alert dismiss || true
+  agent alert dismiss || true
   steps_picker
 }
 
 cleanup() {
-  local state agent_path booted
+  local state agent_path booted status output old
+  local -a states=()
   shopt -s nullglob
-  for state in .tmp/audit-session-*.json; do
-    # shellcheck source=/dev/null
-    source "$state"
-    agent_path=${AGENT_PATH:-}
-    booted=${BOOTED:-0}
-    [[ -n $agent_path ]] || continue
-    if [[ $booted == 1 ]]; then
-      show "$agent_path" close --shutdown --force
-      if ! "$agent_path" close --shutdown --force; then
-        printf 'audit-capture: close --shutdown failed for %s\n' "$state" >&2
-      fi
-    else
-      show "$agent_path" close --force
-      if ! "$agent_path" close --force; then
-        printf 'audit-capture: session close failed for %s\n' "$state" >&2
-      fi
-    fi
-    command rm -f "$state"
+  for state in .tmp/audit-session-*.json; do states+=("$state"); done
+  if ((${#states[@]} == 0)); then
+    printf 'audit-capture: cleanup finished\n'
+    return
+  fi
+  state=${states[0]}
+  for candidate in "${states[@]}"; do
+    [[ $candidate -nt $state ]] && state=$candidate
   done
+  for old in "${states[@]}"; do
+    [[ $old == "$state" ]] || command rm -f "$old"
+  done
+  # shellcheck source=/dev/null
+  source "$state"
+  agent_path=${AGENT_PATH:-}
+  booted=${BOOTED:-0}
+  if [[ -z $agent_path ]]; then
+    command rm -f "$state"
+    printf 'audit-capture: cleanup finished\n'
+    return
+  fi
+  status=0
+  if [[ $booted == 1 ]]; then
+    show "$agent_path" close --shutdown --force
+    output=$("$agent_path" close --shutdown --force 2>&1) || status=$?
+  else
+    show "$agent_path" close --force
+    output=$("$agent_path" close --force 2>&1) || status=$?
+  fi
+  printf '%s\n' "$output"
+  if ((status == 0)) || [[ $output == *SESSION_NOT_FOUND* ]]; then
+    command rm -f "$state"
+  else
+    printf 'audit-capture: kept %s after close failure\n' "$state" >&2
+  fi
   printf 'audit-capture: cleanup finished\n'
 }
 
@@ -209,6 +233,7 @@ if [[ $MODE == run ]]; then
   [[ -n $APK ]] || die 'run needs --apk <path>'
   [[ -n $DEVICE ]] || die 'run needs --device <serial>'
   [[ -f $APK ]] || die "APK not found: $APK"
+  mkdir -p .tmp
   SHOTS=$(mktemp -d -p .tmp audit-shots-XXXXXX)
   STATE=$(mktemp -p .tmp audit-session-XXXXXX.json)
   printf 'AGENT_PATH=%q\nBOOTED=%q\n' "$AGENT" "$BOOT" >"$STATE"

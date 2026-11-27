@@ -70,7 +70,7 @@ const files: Record<string, string> = {
   'Inbox/Welcome to Nimbus.typ': `#title[Welcome to Nimbus]
 #set text(size: 11pt)
 
-NIMBUS-DEMO note created for repeatable emulator audits. Cloud Harbor is fictional.
+NIMBUS-DEMO note created for repeatable emulator audits. Cloud Harbor is fictional. NIMBUS-DEMO-REDACTION-CHECK.
 `,
   'Projects/Moon Relay.typ': `#title[Moon Relay]
 #set text(size: 11pt)
