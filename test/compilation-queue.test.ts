@@ -123,6 +123,50 @@ test('one compiler runs at a time and superseded results never publish', async (
   queue.dispose()
 })
 
+test('an input refresh for the running source does not compile it again', async () => {
+  const first = deferred<string>()
+  const calls: string[] = []
+  const { queue, published, discarded } = setup(async (source) => {
+    calls.push(source)
+    return first.promise
+  })
+  queue.request('same', 0)
+  const waiting = queue.current()
+  // The source-change compile is running when the input listener fires.
+  queue.request('same', 0)
+  first.resolve('same PDF')
+  expect(await waiting).toBe('same PDF')
+  expect(calls).toEqual(['same'])
+  expect(discarded).toEqual([])
+  expect(published).toEqual(['same PDF'])
+  queue.dispose()
+})
+
+test('an automatic retry for the failed source is not coalesced', async () => {
+  let queue!: CompilationQueue<string>
+  let runs = 0
+  const published: string[] = []
+  queue = new CompilationQueue<string>({
+    run: async (source) => {
+      if (++runs === 1) throw new Error('Compiler recycled')
+      return source
+    },
+    async success(value) {
+      published.push(value)
+    },
+    error() {
+      queue.request('same', 0)
+    },
+    discard() {},
+  })
+  queue.request('same', 0)
+  await expect(queue.current()).rejects.toThrow('Compiler recycled')
+  expect(await queue.current()).toBe('same')
+  expect(runs).toBe(2)
+  expect(published).toEqual(['same'])
+  queue.dispose()
+})
+
 test('an obsolete compile error does not replace a newer valid result', async () => {
   const first = deferred<string>()
   const { queue, published, errors } = setup((source) =>

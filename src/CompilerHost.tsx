@@ -16,7 +16,10 @@ import { inlineJson } from './editor/document'
 import { webRuntime } from './web-runtime'
 import { useWebViewForegroundReload } from './webview-resume'
 
-export type CompilerHandle = { compile: (input: CompileInput) => Promise<CompileResult> }
+export type CompilerHandle = {
+  compile: (input: CompileInput) => Promise<CompileResult>
+  retry: () => void
+}
 type Job = {
   id: number
   input: CompileInput
@@ -55,6 +58,24 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
     setBooted(false)
     setSession((value) => value + 1)
   }, [])
+  const expire = useCallback(() => {
+    fail('PDF generation took too long. Your source and previous PDF have not been changed.')
+    restart()
+  }, [fail, restart])
+  // A resumed WebView can lose an in-flight compile. Remount it and give the same
+  // job a fresh request id so messages from the old session cannot complete it.
+  const retry = useCallback(() => {
+    const current = job.current
+    restart()
+    if (!current) return
+    clearTimeout(current.timeout)
+    job.current = {
+      ...current,
+      id: ++sequence.current,
+      timeout: setTimeout(expire, 120_000),
+    }
+    setRevision((value) => value + 1)
+  }, [expire, restart])
   const loadRuntime = useCallback(() => {
     void webRuntime('compiler')
       .then((path) => setUri(path))
@@ -64,7 +85,7 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
       })
   }, [fail])
   useWebViewForegroundReload(() => {
-    if (booted && !job.current) restart()
+    if (booted) retry()
   }, !!uri)
   useImperativeHandle(ref, () => ({
     compile(input) {
@@ -87,16 +108,12 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
           rounds: 0,
           resolve,
           reject,
-          timeout: setTimeout(() => {
-            fail(
-              'PDF generation took too long. Your source and previous PDF have not been changed.'
-            )
-            restart()
-          }, 120000),
+          timeout: setTimeout(expire, 120000),
         }
         setRevision((value) => value + 1)
       })
     },
+    retry,
   }))
   useEffect(() => () => fail('The compiler was closed.'), [fail])
   useEffect(() => {
@@ -178,7 +195,11 @@ export const CompilerHost = forwardRef<CompilerHandle>(function CompilerHost(_pr
                 if (message.type === 'pdf') {
                   clearTimeout(current.timeout)
                   job.current = null
-                  current.resolve({ base64: message.base64, dependencies: message.dependencies })
+                  current.resolve({
+                    base64: message.base64,
+                    dependencies: message.dependencies,
+                    issues: message.issues,
+                  })
                 } else if (message.type === 'diagnostics')
                   fail(
                     typeof message.message === 'string'

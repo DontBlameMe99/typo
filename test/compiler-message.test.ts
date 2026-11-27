@@ -34,7 +34,13 @@ test('load errors are separated from compile errors by their id', () => {
 })
 
 test('a PDF must be a PDF with string dependencies and a numeric id', () => {
-  const pdf = { type: 'pdf', id: 2, base64: 'JVBERi0x', dependencies: ['a.typ', 'b.typ'] }
+  const pdf = {
+    type: 'pdf',
+    id: 2,
+    base64: 'JVBERi0x',
+    dependencies: ['a.typ', 'b.typ'],
+    issues: [],
+  }
   expect(compilerMessage(JSON.stringify(pdf)) as unknown).toEqual(pdf)
   for (const invalid of [
     { ...pdf, base64: 'not a PDF' },

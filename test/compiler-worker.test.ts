@@ -1,4 +1,6 @@
 import { beforeAll, expect, test } from 'bun:test'
+import type { CompileOutput } from '../src/compiler/engine'
+import { compilerMessage } from '../src/compiler/message'
 import type { CompileRequest } from '../src/compiler/protocol'
 import { fromBase64, toBase64 } from '../src/editor/local'
 
@@ -14,7 +16,7 @@ endpoint.postMessage = (value) => {
   messages.push(value)
   wake?.()
 }
-await import('../src/compiler/worker')
+const { compileMessage, storeArchives } = await import('../src/compiler/worker')
 
 const next = async () => {
   while (!messages.length) await new Promise<void>((resolve) => (wake = resolve))
@@ -57,4 +59,41 @@ test('base64 decoding preserves bytes across lengths', () => {
     const bytes = Uint8Array.from({ length }, (_, index) => index % 251)
     expect(fromBase64(toBase64(bytes))).toEqual(bytes)
   }
+})
+
+test('warnings stay on a successful PDF message', () => {
+  const warning = {
+    path: 'warn.typ',
+    line: 1,
+    column: 2,
+    severity: 'warning' as const,
+    message: 'unnecessary import rename to same name',
+  }
+  const output: CompileOutput = {
+    pdf: new TextEncoder().encode('%PDF-1.7'),
+    diagnostics: [],
+    issues: [warning],
+    missing: [],
+    dependencies: ['asset.svg'],
+  }
+  const message = compilerMessage(JSON.stringify(compileMessage(output, 7)))
+  expect(message?.type).toBe('pdf')
+  if (message?.type !== 'pdf') return
+  expect(message.issues).toEqual([warning])
+  expect(message.dependencies).toEqual(['asset.svg'])
+})
+
+test('session archives evict the least recently used entry past 100', () => {
+  const archives = new Map<string, Uint8Array>()
+  const incoming = Array.from({ length: 101 }, (_, index) => ({
+    key: `preview/pkg-${index}/1.0.0`,
+    base64: Buffer.from('H4sI').toString('base64'),
+  }))
+  storeArchives(archives, incoming)
+  expect(archives.size).toBe(100)
+  expect(archives.has(incoming[0].key)).toBe(false)
+  expect(archives.has(incoming[100].key)).toBe(true)
+  storeArchives(archives, [incoming[0]])
+  expect(archives.size).toBe(100)
+  expect(archives.has(incoming[1].key)).toBe(false)
 })

@@ -2,6 +2,7 @@ type Request = { version: number; source: string }
 
 export class CompilationQueue<T> {
   private version = 0
+  private requested: string | null = null
   private pending: Request | null = null
   private running = false
   private disposed = false
@@ -25,7 +26,16 @@ export class CompilationQueue<T> {
 
   request(source: string, delay = 450) {
     if (this.disposed) return
+    // A source change and an input refresh can ask for the same source. Bumping
+    // the version would discard the running result and compile the same PDF twice.
+    if (
+      source === this.requested &&
+      (this.running || this.pending?.source === source) &&
+      this.failure?.version !== this.version
+    )
+      return
     this.pending = { version: ++this.version, source }
+    this.requested = source
     this.failure = null
     if (this.timer) clearTimeout(this.timer)
     this.timer = setTimeout(() => {

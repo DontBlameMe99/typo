@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { fingerprint, fingerprintAsync } from '../src/compiler/fingerprint'
 import { type CompileInput, type CompileResult, compileFailure } from '../src/compiler/protocol'
+import { sharedStamp } from '../src/compiler/shared'
 import { type PdfRecord, PdfWorkspace } from '../src/compiler/workspace'
 import { sha256 } from '../src/hash'
 import type { Note } from '../src/types'
@@ -526,6 +527,62 @@ test('a changed shared stamp makes a current vault PDF compile again', async () 
   await idle(workspace)
   expect(f.calls.map((call) => call.path)).toEqual(['one.typ'])
   workspace.dispose()
+})
+
+test('root assets and fonts invalidate notes that are not open', async () => {
+  const f = fixture()
+  const files = (asset: string, font: string): CompileInput['files'] => [
+    { path: 'one.typ', base64: 'YQ==' },
+    { path: 'assets/logo.svg', base64: asset },
+    { path: 'fonts/custom.ttf', base64: font },
+  ]
+  const stamp = (asset: string, font: string) =>
+    sharedStamp(new Map(files(asset, font).map((file) => [file.path, fingerprint(file.base64)])))
+  const current = (sharedHash: string): Note => ({
+    ...note('one.typ'),
+    pdfUri: 'content://out/one.typ.pdf',
+    pdfHash: sha256(`${sharedHash}${sha256('= Test')}\n`),
+    sharedHash,
+  })
+  f.compile(async () => ({ base64: 'JVBERi0x', dependencies: [] }))
+  f.files(files('old asset', 'font one'))
+  const workspace = f.create()
+  workspace.setNotes([current(stamp('old asset', 'font one'))])
+  await idle(workspace)
+  expect(f.calls).toHaveLength(0)
+
+  f.files(files('new asset', 'font one'))
+  workspace.setNotes([current(stamp('new asset', 'font one'))])
+  await idle(workspace)
+  expect(f.calls.map((call) => call.path)).toEqual(['one.typ'])
+
+  f.files(files('new asset', 'font two'))
+  workspace.setNotes([current(stamp('new asset', 'font two'))])
+  await idle(workspace)
+  expect(f.calls.map((call) => call.path)).toEqual(['one.typ', 'one.typ'])
+  workspace.dispose()
+})
+
+test('compile warnings stay with the cached preview', async () => {
+  const f = fixture()
+  const warning = {
+    path: 'one.typ',
+    line: 2,
+    column: 3,
+    severity: 'warning' as const,
+    message: 'unnecessary import rename to same name',
+  }
+  f.compile(async () => ({ base64: 'JVBERi0x', dependencies: [], issues: [warning] }))
+  const workspace = f.create()
+  workspace.setNotes([note('one.typ')])
+  await idle(workspace)
+  expect((await workspace.render(note('one.typ'), '= Test')).issues).toEqual([warning])
+  workspace.dispose()
+
+  const reopened = f.create()
+  expect((await reopened.previous(note('one.typ')))?.issues).toEqual([warning])
+  expect(f.calls).toHaveLength(1)
+  reopened.dispose()
 })
 
 test('a valid cached PDF repairs a stale vault hash without compiling', async () => {

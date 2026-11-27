@@ -1,4 +1,5 @@
 import { hasCurrentPdf, type Note } from '../types'
+import type { Diagnostic } from './diagnostics'
 import { fingerprint, fingerprintAsync } from './fingerprint'
 import { CompilerInputs } from './inputs'
 import { type CompileInput, type CompileResult, isDiagnosticsFailure } from './protocol'
@@ -9,10 +10,17 @@ export type PdfRecord = {
   sharedHash: string
   fontsHash: string
   dependencies: Record<string, string | null>
+  issues?: Diagnostic[]
   uri: string
   output?: { uri: string; stamp: string }
 }
-export type PdfPreview = { source: string; record: PdfRecord; uri: string; stale?: boolean }
+export type PdfPreview = {
+  source: string
+  record: PdfRecord
+  uri: string
+  issues: Diagnostic[]
+  stale?: boolean
+}
 type Files = CompileInput['files']
 type Snapshot = {
   files: Files
@@ -241,7 +249,13 @@ export class PdfWorkspace {
     // Recorded dependencies can change while the app is running. Return the page anyway, so
     // it shows at once, and flag it so the caller revalidates it in the background.
     const stale = !!this.snapshot && !this.matches(record, sourceHash, this.snapshot)
-    return { source: note.source, record, uri: record.uri, stale }
+    return {
+      source: note.source,
+      record,
+      uri: record.uri,
+      issues: record.issues ?? [],
+      stale,
+    }
   }
 
   render(note: Note, source: string, priority = true): Promise<PdfPreview> {
@@ -289,7 +303,7 @@ export class PdfWorkspace {
       return null
     if (this.disposed) throw new Error('The workspace was closed.')
     this.records.set(note.path, record)
-    return { source, record, uri: record.uri }
+    return { source, record, uri: record.uri, issues: record.issues ?? [] }
   }
 
   private async readRecord(
@@ -342,6 +356,7 @@ export class PdfWorkspace {
       sharedHash: snapshot.sharedHash,
       fontsHash: snapshot.fontsHash,
       dependencies,
+      issues: result.issues ?? [],
       uri: await this.options.storage.cache(cacheKey, result.base64),
     }
   }
@@ -419,7 +434,7 @@ export class PdfWorkspace {
           if (!record) record = await this.compileRecord(note, source, sourceHash, snapshot)
           if (this.disposed) throw new Error('The workspace was closed.')
           this.records.set(note.path, record)
-          resolve({ source, record, uri: record.uri })
+          resolve({ source, record, uri: record.uri, issues: record.issues ?? [] })
           await this.persistRecord(note, source, snapshot, record)
         } catch (error) {
           if (!this.disposed && this.notes.get(note.uri)?.source === source)
