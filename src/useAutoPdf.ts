@@ -15,7 +15,7 @@ const RETRY_LIMIT = 3
 const message = (cause: unknown) =>
   cause instanceof Error ? cause.message : 'Cannot update the PDF.'
 
-type Preview = Pick<PdfPreview, 'source' | 'uri'>
+type Preview = Pick<PdfPreview, 'source' | 'uri' | 'issues'>
 
 export function useAutoPdf(input: {
   note: Note
@@ -84,7 +84,7 @@ export function useAutoPdf(input: {
         setPreview(value)
         setPhase('ready')
         setError(null)
-        setDiagnostics([])
+        setDiagnostics(value.issues)
       },
       error(cause) {
         setPhase('error')
@@ -110,7 +110,7 @@ export function useAutoPdf(input: {
       if (!note.pdfUri) return null
       try {
         copy = await preparePdf(note)
-        return { source: note.source, uri: copy }
+        return { source: note.source, uri: copy, issues: [] }
       } catch {
         return null
       }
@@ -126,6 +126,7 @@ export function useAutoPdf(input: {
           external.current = value
           setPhase('ready')
         }
+        setDiagnostics(value.issues)
         setPreview((current) => current ?? value)
       }
       // A record whose dependencies changed is recompiled behind the visible page.

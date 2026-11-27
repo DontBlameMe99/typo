@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { formatDiagnostic, parseDiagnostics } from '../src/compiler/diagnostics'
+import { failedCompile } from '../src/compiler/engine'
 
 test('compile errors show vault-relative file, line, column, message, and hint', () => {
   expect(
@@ -52,6 +53,23 @@ test('parsed diagnostics name the file, line, column, and message for underlinin
       column: 1,
       severity: 'hint',
       message: 'while calling heading',
+    },
+  ])
+})
+
+test('a thrown compiler message still yields located issues', () => {
+  const result = failedCompile(
+    '/vault/uni/notes.typ:4:7: error: failed to load file',
+    [],
+    ['uni/notes.typ']
+  )
+  expect(result.issues).toEqual([
+    {
+      path: 'uni/notes.typ',
+      line: 4,
+      column: 7,
+      severity: 'error',
+      message: 'failed to load file',
     },
   ])
 })

@@ -5,7 +5,7 @@ export type CompilerMessage =
   | { type: 'boot' }
   | { type: 'crash'; message?: string }
   | { type: 'error'; id?: number; message?: string }
-  | { type: 'pdf'; id: number; base64: string; dependencies: string[] }
+  | { type: 'pdf'; id: number; base64: string; dependencies: string[]; issues: Diagnostic[] }
   | { type: 'diagnostics'; id: number; message?: string; issues: Diagnostic[] }
   | { type: 'packages'; id: number; packages: PackageSpec[] }
 
@@ -13,7 +13,7 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-function readIssues(value: unknown): Diagnostic[] {
+export function readIssues(value: unknown): Diagnostic[] {
   if (!Array.isArray(value)) return []
   const issues: Diagnostic[] = []
   for (const item of value) {
@@ -66,6 +66,7 @@ export function compilerMessage(json: string): CompilerMessage | null {
         id: record.id,
         base64: record.base64,
         dependencies: record.dependencies as string[],
+        issues: readIssues(record.issues),
       }
     }
     case 'diagnostics': {

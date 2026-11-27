@@ -21,6 +21,19 @@ export type CompileOutput = {
   dependencies: string[]
 }
 
+export function failedCompile(
+  message: string,
+  missing: PackageSpec[],
+  dependencies: string[]
+): CompileOutput {
+  return {
+    diagnostics: [message],
+    issues: parseDiagnostics([message]),
+    missing,
+    dependencies,
+  }
+}
+
 export async function initializeCompiler(wasm: Uint8Array) {
   await init({ module_or_path: wasm as Uint8Array<ArrayBuffer> })
 }
@@ -140,12 +153,11 @@ export async function createCompiler(
             dependencies: [...dependencies],
           }
         } catch (cause) {
-          return {
-            diagnostics: [cause instanceof Error ? cause.message : String(cause)],
-            issues: [],
-            missing: [...missing.values()],
-            dependencies: [...dependencies],
-          }
+          return failedCompile(
+            cause instanceof Error ? cause.message : String(cause),
+            [...missing.values()],
+            [...dependencies]
+          )
         } finally {
           world.free()
         }

@@ -7,7 +7,11 @@ export type CompileInput = {
   files: { path: string; base64: string }[]
 }
 
-export type CompileResult = { base64: string; dependencies: string[] }
+export type CompileResult = {
+  base64: string
+  dependencies: string[]
+  issues?: Diagnostic[]
+}
 
 // Typst diagnostics describe the note itself, while every other failure (a package download,
 // a timeout, a recycled webview) can clear on its own.

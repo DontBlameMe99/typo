@@ -1,10 +1,11 @@
 import { File } from 'expo-file-system'
 import * as FileSystem from 'expo-file-system/legacy'
 import { fingerprint } from './fingerprint'
+import { readIssues } from './message'
 import type { PdfRecord } from './workspace'
 
 // Bump when compiler behavior, bundled fonts, or dependency tracking changes.
-const CACHE_VERSION = 'typst-0.8.0-rc3-3'
+export const CACHE_VERSION = 'typst-0.8.0-rc3-4'
 
 export function parsePdfRecord(value: unknown, directory: string): PdfRecord | null {
   if (!value || typeof value !== 'object') return null
@@ -27,21 +28,30 @@ export function parsePdfRecord(value: unknown, directory: string): PdfRecord | n
     (typeof record.output.uri !== 'string' || typeof record.output.stamp !== 'string')
   )
     return null
+  if (record.issues !== undefined) record.issues = readIssues(record.issues)
   return record
 }
 
 export function pdfStorage(vaultUri: string) {
   if (!FileSystem.cacheDirectory) throw new Error('Private cache storage is unavailable.')
-  const directory = `${FileSystem.cacheDirectory}typo-compiled/${CACHE_VERSION}/${fingerprint(vaultUri)}/`
+  const root = `${FileSystem.cacheDirectory}typo-compiled/`
+  const directory = `${root}${CACHE_VERSION}/${fingerprint(vaultUri)}/`
   const manifest = (path: string) => `${directory}${fingerprint(path)}.json`
   let directoryReady: Promise<void> | null = null
   const ready = () => {
-    directoryReady ??= FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(
-      (cause: unknown) => {
-        directoryReady = null
-        throw cause
+    directoryReady ??= (async () => {
+      await FileSystem.makeDirectoryAsync(directory, { intermediates: true })
+      try {
+        for (const name of await FileSystem.readDirectoryAsync(root))
+          if (name !== CACHE_VERSION)
+            await FileSystem.deleteAsync(`${root}${name}`, { idempotent: true })
+      } catch {
+        // Old private cache directories are best-effort cleanup.
       }
-    )
+    })().catch((cause: unknown) => {
+      directoryReady = null
+      throw cause
+    })
     return directoryReady
   }
   let pruned: Promise<void> | null = null

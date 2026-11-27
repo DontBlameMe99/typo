@@ -1,5 +1,5 @@
 import { fromBase64, toBase64 } from '../editor/local'
-import { createCompiler, initializeCompiler } from './engine'
+import { type CompileOutput, createCompiler, initializeCompiler } from './engine'
 import { type CompileRequest, packageKey, vaultPath } from './protocol'
 
 type Input =
@@ -9,10 +9,47 @@ const endpoint = globalThis as unknown as {
   postMessage(value: object): void
   onmessage: ((event: MessageEvent<Input>) => void) | null
 }
+
+export function compileMessage(result: CompileOutput, id: number): object {
+  if (result.missing.length)
+    return {
+      type: 'packages',
+      id,
+      packages: result.missing.map((spec) => ({ ...spec, key: packageKey(spec) })),
+    }
+  if (result.pdf)
+    return {
+      type: 'pdf',
+      id,
+      base64: toBase64(result.pdf),
+      dependencies: result.dependencies,
+      issues: result.issues,
+    }
+  if (result.diagnostics.length)
+    return {
+      type: 'diagnostics',
+      id,
+      message: result.diagnostics.join('\n'),
+      issues: result.issues,
+    }
+  return { type: 'error', id, message: 'Typst could not generate this PDF.' }
+}
+
+export function storeArchives(
+  archives: Map<string, Uint8Array>,
+  incoming: CompileRequest['archives']
+) {
+  for (const archive of incoming) {
+    archives.delete(archive.key)
+    archives.set(archive.key, fromBase64(archive.base64))
+    while (archives.size > ARCHIVE_LIMIT) archives.delete(archives.keys().next().value as string)
+  }
+}
 let fonts: Uint8Array[] = []
 let busy = false
 let files = new Map<string, Uint8Array>()
 const archives = new Map<string, Uint8Array>()
+const ARCHIVE_LIMIT = 100
 let compiler: Awaited<ReturnType<typeof createCompiler>> | null = null
 let previousMain: { path: string; bytes: Uint8Array | undefined } | null = null
 endpoint.onmessage = (event) => {
@@ -58,7 +95,7 @@ endpoint.onmessage = (event) => {
       const main = vaultPath(request.path)
       previousMain = { path: main, bytes: files.get(main) }
       files.set(main, new TextEncoder().encode(request.source))
-      for (const archive of request.archives) archives.set(archive.key, fromBase64(archive.base64))
+      storeArchives(archives, request.archives)
       if (!compiler) {
         const currentFonts = [...fonts]
         for (const [path, bytes] of files)
@@ -66,20 +103,7 @@ endpoint.onmessage = (event) => {
         compiler = await createCompiler(files, currentFonts, archives)
       }
       const result = compiler.compile(request.path)
-      if (result.missing.length)
-        send({
-          type: 'packages',
-          packages: result.missing.map((spec) => ({ ...spec, key: packageKey(spec) })),
-        })
-      else if (result.pdf)
-        send({ type: 'pdf', base64: toBase64(result.pdf), dependencies: result.dependencies })
-      else if (result.diagnostics.length)
-        send({
-          type: 'diagnostics',
-          message: result.diagnostics.join('\n'),
-          issues: result.issues,
-        })
-      else send({ type: 'error', message: 'Typst could not generate this PDF.' })
+      send(compileMessage(result, request.id))
     } catch (cause) {
       send({ type: 'error', message: cause instanceof Error ? cause.message : String(cause) })
     } finally {

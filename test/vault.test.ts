@@ -40,6 +40,7 @@ let handleWriteError: Error | undefined
 let writeFailure: ((uri: string) => boolean) | undefined
 let writeFailureError: Error | undefined
 let downloadStatus = 200
+let downloadDelay = 0
 // Paths read through the synchronous startup API, in call order.
 const syncReads: string[] = []
 const downloadedBytes = Bun.gzipSync('archive')
@@ -202,6 +203,7 @@ const copyAsync = mock(async ({ from, to }: { from: string; to: string }) => {
   files.set(to, { ...file })
 })
 const downloadAsync = mock(async (_url: string, uri: string) => {
+  if (downloadDelay) await new Promise((resolve) => setTimeout(resolve, downloadDelay))
   files.set(uri, { source: '', bytes: downloadedBytes })
   return { status: downloadStatus, uri }
 })
@@ -375,8 +377,8 @@ const {
   restoreFolder,
   moveFolderToFolder,
 } = await import('../src/vault')
-const { packageArchive } = await import('../src/compiler/packages')
-const { pdfStorage } = await import('../src/compiler/pdf-storage')
+const { packageArchive, PACKAGE_DOWNLOAD_TIMEOUT_MS } = await import('../src/compiler/packages')
+const { pdfStorage, CACHE_VERSION } = await import('../src/compiler/pdf-storage')
 const {
   flushVaultIndexWrites,
   loadVaultIndex,
@@ -415,6 +417,7 @@ beforeEach(() => {
   writeFailure = undefined
   writeFailureError = undefined
   downloadStatus = 200
+  downloadDelay = 0
   syncReads.length = 0
   for (const fn of [
     listVaultEntries,
@@ -1576,6 +1579,7 @@ test('package downloads are staged before caching and subsequent reads work offl
   const destination = 'file:///private/documents/typo-packages/test-1.0.0.tar.gz'
   expect(result).toBe(Buffer.from(downloadedBytes).toString('base64'))
   expect(files.has(destination)).toBe(true)
+  expect(files.has(`${destination}.json`)).toBe(true)
   expect(downloadAsync.mock.calls[0][1]).not.toBe(destination)
   expect(moveAsync).toHaveBeenCalledTimes(1)
   expect(await packageArchive(spec)).toBe(result)
@@ -1593,14 +1597,44 @@ test('failed package downloads clean partial files and permit a retry', async ()
   expect(downloadAsync).toHaveBeenCalledTimes(2)
 })
 
-test('invalid cached archives are removed and non-preview packages never use the network', async () => {
+test('invalid archives and mismatched metadata are replaced by a fresh download', async () => {
   const spec = { namespace: 'preview', name: 'test', version: '1.0.0' }
   const uri = 'file:///private/documents/typo-packages/test-1.0.0.tar.gz'
   files.set(uri, { source: 'invalid' })
-  await expect(packageArchive(spec)).rejects.toThrow('invalid archive')
-  expect(files.has(uri)).toBe(false)
+  await expect(packageArchive(spec)).resolves.toBe(Buffer.from(downloadedBytes).toString('base64'))
+  expect(files.get(uri)?.source).not.toBe('invalid')
+
+  files.set(`${uri}.json`, {
+    source: JSON.stringify({
+      key: 'preview/test/1.0.0',
+      digest: 'wrong',
+      size: downloadedBytes.length,
+    }),
+  })
+  await expect(packageArchive(spec)).resolves.toBe(Buffer.from(downloadedBytes).toString('base64'))
+  expect(downloadAsync).toHaveBeenCalledTimes(2)
   await expect(packageArchive({ ...spec, namespace: 'local' })).rejects.toThrow('Place @local')
-  expect(downloadAsync).not.toHaveBeenCalled()
+  expect(downloadAsync).toHaveBeenCalledTimes(2)
+})
+
+test('a stalled package download times out and leaves no staged file', async () => {
+  const spec = { namespace: 'preview', name: 'test', version: '1.0.0' }
+  const realTimeout = globalThis.setTimeout
+  globalThis.setTimeout = ((callback: () => void, delay?: number, ...args: unknown[]) =>
+    realTimeout(
+      callback,
+      delay === PACKAGE_DOWNLOAD_TIMEOUT_MS ? 1 : delay,
+      ...args
+    )) as typeof setTimeout
+  try {
+    downloadDelay = 100
+    await expect(packageArchive(spec)).rejects.toThrow('timed out after 30s')
+  } finally {
+    globalThis.setTimeout = realTimeout
+  }
+  await new Promise((resolve) => realTimeout(resolve, 150))
+  expect([...files.keys()].some((uri) => uri.endsWith('.tmp'))).toBe(false)
+  expect(files.has('file:///private/documents/typo-packages/test-1.0.0.tar.gz')).toBe(false)
 })
 
 test('source sharing writes the complete unsaved buffer to a private cache copy', async () => {
@@ -2314,4 +2348,21 @@ test('PDF cache prunes orphan drafts before writes without delaying cache reads'
   expect(files.has(draft)).toBe(false)
   expect(files.has(source)).toBe(true)
   expect(files.has(output)).toBe(true)
+})
+
+test('the PDF cache version names the bundled Typst compiler version', async () => {
+  const packageJson = JSON.parse(await Bun.file('package.json').text())
+  const version = packageJson.dependencies['@myriaddreamin/typst-ts-web-compiler'] as string
+  expect(CACHE_VERSION).toMatch(new RegExp(`^typst-${version.replaceAll('.', '\\.')}-\\d+$`))
+})
+
+test('old compiled cache versions are pruned when the cache opens', async () => {
+  const cacheRoot = 'file:///private/cache/typo-compiled/'
+  directories.set(cacheRoot, [])
+  directories.set(`${cacheRoot}typst-old`, [])
+  directories.set(`${cacheRoot}${CACHE_VERSION}`, [])
+  const cache = pdfStorage(root)
+  await cache.read('note.typ')
+  expect(directories.has(`${cacheRoot}typst-old`)).toBe(false)
+  expect(directories.has(`${cacheRoot}${CACHE_VERSION}`)).toBe(true)
 })
