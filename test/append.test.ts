@@ -112,4 +112,40 @@ describe('quick append insertion', () => {
       'Write something to append first.'
     )
   })
+
+  test('selects a same-name section by its heading level', () => {
+    const duplicate = `= Work
+- Alpha
+
+== Work
+- Beta
+
+= Personal
+- Keep
+`
+
+    expect(appendToSection(duplicate, { level: 2, text: 'Work' }, 'New')).toBe(`= Work
+- Alpha
+
+== Work
+- Beta
+- New
+
+= Personal
+- Keep
+`)
+    expect(appendToSection(duplicate, { level: 1, text: 'Work' }, 'New')).toBe(`= Work
+- Alpha
+
+== Work
+- Beta
+- New
+
+= Personal
+- Keep
+`)
+    expect(() => appendToSection(duplicate, { level: 3, text: 'Work' }, 'New')).toThrow(
+      'The section "Work" was not found. The note was left unchanged.'
+    )
+  })
 })

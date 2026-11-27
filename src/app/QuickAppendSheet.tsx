@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Keyboard, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { listHeadings } from '../append'
+import { headingKey, headingMatches, listHeadings } from '../append'
 import { isRootTemplate } from '../core'
 import { Icon } from '../icons'
 import type { QuickAppendTarget } from '../quick-append-config'
@@ -47,10 +47,13 @@ export function QuickAppendSheet({
     if (!note) return { headings: [] as ReturnType<typeof listHeadings>, duplicates: false }
     const all = listHeadings(note.source)
     const counts = new Map<string, number>()
-    for (const heading of all) counts.set(heading.text, (counts.get(heading.text) ?? 0) + 1)
+    for (const heading of all) {
+      const key = headingKey(heading)
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
     return {
       headings: all
-        .filter((heading) => counts.get(heading.text) === 1)
+        .filter((heading) => counts.get(headingKey(heading)) === 1)
         .filter((heading) => !needle || heading.text.toLocaleLowerCase().includes(needle))
         .slice(0, 60),
       duplicates: [...counts.values()].some((count) => count > 1),
@@ -113,7 +116,12 @@ export function QuickAppendSheet({
               </Text>
             ) : (
               headings.map((heading) => {
-                const selected = note.path === current?.notePath && heading.text === current.section
+                const selected =
+                  note.path === current?.notePath &&
+                  headingMatches(heading, {
+                    level: current?.sectionLevel ?? 0,
+                    text: current?.section ?? '',
+                  })
                 return (
                   <Pressable
                     key={`${note.path}:${heading.line}`}
@@ -122,8 +130,10 @@ export function QuickAppendSheet({
                     onPress={() => {
                       onSave({
                         vaultUri: vault.uri,
+                        noteUri: note.uri,
                         notePath: note.path,
                         section: heading.text,
+                        sectionLevel: heading.level,
                       })
                       onClose()
                     }}

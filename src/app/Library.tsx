@@ -35,6 +35,7 @@ import { TypoMark } from '../Mark'
 import { NoteSearch } from '../NoteSearch'
 import {
   clearQuickAppendTarget,
+  followQuickAppendTarget,
   type QuickAppendTarget,
   readQuickAppendTarget,
   storeQuickAppendTarget,
@@ -145,6 +146,8 @@ export function Library({
       return null
     }
   })
+  const quickTargetRef = useRef(quickTarget)
+  quickTargetRef.current = quickTarget
   const [notes, setNotes] = useState<Note[]>(launch.index?.notes ?? EMPTY_NOTES)
   const [folders, setFolders] = useState<string[]>(launch.index?.folders ?? [''])
   const notesRef = useRef(notes)
@@ -417,7 +420,16 @@ export function Library({
     foreground.current = AppState.currentState === 'active'
     const listener = AppState.addEventListener('change', (state) => {
       foreground.current = state === 'active'
-      if (state === 'active') void quietScan()
+      if (state === 'active') {
+        try {
+          const next = readQuickAppendTarget()
+          quickTargetRef.current = next
+          setQuickTarget(next)
+        } catch {
+          // Keep the last target the library could read.
+        }
+        void quietScan()
+      }
     })
     return () => listener.remove()
   }, [quietScan])
@@ -948,6 +960,18 @@ export function Library({
     },
     [backGate]
   )
+  const moveQuickTarget = useCallback(
+    (from: { uri: string; path: string }, to: { uri: string; path: string }) => {
+      const current = quickTargetRef.current
+      if (!current) return
+      const next = followQuickAppendTarget(current, from, to)
+      if (!next) return
+      quickTargetRef.current = next
+      setQuickTarget(next)
+      void storeQuickAppendTarget(next).catch((cause: unknown) => setError(errorText(cause)))
+    },
+    []
+  )
   const moveTo = useCallback(
     async (destination: string) => {
       const item = moving
@@ -976,6 +1000,7 @@ export function Library({
         openingScreen.current = null
         setMoving(null)
         showNotice('folderOpen', 'Note moved', moved.path)
+        moveQuickTarget(result.note, moved)
         return
       }
       const entry = item.entry
@@ -985,6 +1010,10 @@ export function Library({
       const inside = (path: string) => path === entry.path || path.startsWith(prefix)
       const shifted = (path: string) => `${moved.path}${path.slice(entry.path.length)}`
       const renamed = new Map(moved.notes.map((note) => [note.uri, note.nextUri]))
+      for (const changed of moved.notes) {
+        const before = notesRef.current.find((note) => note.uri === changed.uri)
+        if (before) moveQuickTarget(before, { uri: changed.nextUri, path: shifted(before.path) })
+      }
       setNotes((previous) =>
         previous
           .map((note) =>
@@ -1013,7 +1042,7 @@ export function Library({
       setMoving(null)
       showNotice('folderOpen', 'Folder moved', moved.path)
     },
-    [moving, showNotice, stopIndex]
+    [moveQuickTarget, moving, showNotice, stopIndex]
   )
   const folderCreated = useCallback((created: NoteFolder) => {
     setFolders((previous) =>

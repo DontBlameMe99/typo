@@ -3,34 +3,63 @@ import * as FileSystem from 'expo-file-system/legacy'
 
 export type QuickAppendTarget = {
   vaultUri: string
+  noteUri: string
   notePath: string
   section: string
+  sectionLevel: number
 }
+
+type TargetFile = Partial<QuickAppendTarget> & { [key: string]: unknown }
 
 function configPath(): string {
   if (!FileSystem.documentDirectory) throw new Error('Private document storage is unavailable.')
   return `${FileSystem.documentDirectory}typo-quick-append.json`
 }
 
+function safeNotePath(path: unknown): path is string {
+  return (
+    typeof path === 'string' &&
+    !path.startsWith('/') &&
+    !path.includes('\\') &&
+    path.split('/').every((part) => part && part !== '.' && part !== '..') &&
+    /\.typ$/iu.test(path)
+  )
+}
+
+// Targets saved before notes carried a URI or a heading level get empty
+// markers. The sheet fills them in from the note it resolves and writes the
+// upgraded target back.
 function validate(value: unknown): QuickAppendTarget {
   if (!value || typeof value !== 'object') throw new Error('The quick append target is invalid.')
-  const target = value as Partial<QuickAppendTarget>
+  const target = value as TargetFile
+  const section = typeof target.section === 'string' ? target.section.trim() : ''
   if (
     typeof target.vaultUri !== 'string' ||
     !target.vaultUri.startsWith('content://') ||
     !target.vaultUri.includes('/tree/') ||
-    typeof target.notePath !== 'string' ||
-    target.notePath.startsWith('/') ||
-    target.notePath.includes('\\') ||
-    target.notePath.split('/').some((part) => !part || part === '.' || part === '..') ||
-    !/\.typ$/iu.test(target.notePath) ||
-    typeof target.section !== 'string' ||
-    !target.section.trim() ||
-    /[\r\n]/u.test(target.section)
+    (typeof target.noteUri !== 'undefined' &&
+      (typeof target.noteUri !== 'string' ||
+        (!!target.noteUri &&
+          (!target.noteUri.startsWith(`${target.vaultUri}/document/`) ||
+            target.noteUri === target.vaultUri)) ||
+        /[\r\n]/u.test(target.noteUri))) ||
+    !safeNotePath(target.notePath) ||
+    !section ||
+    /[\r\n]/u.test(section) ||
+    (typeof target.sectionLevel !== 'undefined' &&
+      (!Number.isInteger(target.sectionLevel) ||
+        target.sectionLevel < 0 ||
+        target.sectionLevel > 6))
   ) {
     throw new Error('The quick append target is invalid. Choose it again in Typo.')
   }
-  return { vaultUri: target.vaultUri, notePath: target.notePath, section: target.section.trim() }
+  return {
+    vaultUri: target.vaultUri,
+    noteUri: target.noteUri ?? '',
+    notePath: target.notePath,
+    section,
+    sectionLevel: target.sectionLevel ?? 0,
+  }
 }
 
 export function readQuickAppendTarget(): QuickAppendTarget | null {
@@ -57,5 +86,17 @@ export async function clearQuickAppendTarget(): Promise<void> {
 }
 
 export function quickAppendLabel(target: QuickAppendTarget): string {
-  return `${target.notePath} › ${target.section}`
+  const level = target.sectionLevel > 0 ? `${'='.repeat(target.sectionLevel)} ` : ''
+  return `${target.notePath} › ${level}${target.section}`
+}
+
+export function followQuickAppendTarget(
+  target: QuickAppendTarget,
+  from: { uri: string; path: string },
+  to: { uri: string; path: string }
+): QuickAppendTarget | null {
+  const matches = target.noteUri
+    ? target.noteUri === from.uri || target.notePath === from.path
+    : target.notePath === from.path
+  return matches ? { ...target, noteUri: to.uri, notePath: to.path } : null
 }
