@@ -59,7 +59,7 @@ function decorations(doc: Text, issues: EditorIssue[]): DecorationSet {
     ranges.push(
       Decoration.mark({
         class: 'cm-issue',
-        attributes: { 'data-issue': String(index) },
+        attributes: { 'data-issue': String(index), 'aria-label': issue.message },
       }).range(range.from, range.to)
     )
   })
