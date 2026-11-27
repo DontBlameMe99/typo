@@ -1,7 +1,8 @@
 # Typo
 
 Typo is an Android app for [Typst](https://typst.app) notes in a plain folder.
-Open the folder, search your notes, write, and take the compiled PDF with you.
+You choose that folder in Typo and work with the `.typ` notes inside it. Typo
+does not register as an Android handler for `.typ` files opened from other apps.
 Your `.typ` files are the source of truth. There is no account, server, or
 app-specific sync layer.
 
@@ -55,18 +56,20 @@ and third-party document providers are not supported.
 </p>
 
 Search every note's name and text as you type. Tap a folder to browse, swipe a
-note right to favorite it or left to move it to `.trash`, and long-press to
-move it. The theme, accent color, and appearance live under the logo.
+note right to pin it or left to move it to `.trash`, and long-press to
+move it. Only the last move to trash can be undone in the app. Tap the logo to
+open Settings, where the theme, accent color, and appearance live on the
+Interface tab.
 
 Source and PDF share one screen. Tap **Source** or **PDF** and the views slide
 across. Type `#` to complete Typst commands, names defined with `#let`, and
 imported names. Tap the ghost text or press Tab to accept. PDF text can be
-selected, and URL links open in the browser.
+selected, and web links open in the browser.
 
-Typo compiles with bundled fonts and fetches missing public packages from
+Typo compiles with bundled fonts and fetches missing `@preview` packages from
 `packages.typst.org`. Add the Quick Settings tiles to start a note from
-anywhere or append to a chosen note section. Set the append target in Settings,
-under Quick append.
+anywhere or append to a chosen note section. Set the append target in Settings
+on the Library tab under Quick append.
 
 ## Template
 
@@ -82,9 +85,10 @@ the Template note, or tap **Template** on the New note screen, to change it. Use
 
 ## Privacy
 
-Notes stay on the device. Typo only connects to `packages.typst.org` to fetch
-missing public packages. If you sync the vault, Syncthing or the file sync tool
-you choose handles it.
+Notes stay on the device. Typo sends no telemetry. Typo only connects to
+`packages.typst.org` to fetch missing public packages. **Report an issue** opens
+your browser on GitHub and never attaches note content. If you sync the folder,
+Syncthing or the file sync tool you choose handles it.
 
 ## License
 

@@ -3,6 +3,12 @@
 The performance is a CI job which makes sure the app follows our performance
 standards.
 
+The CI audit measures search, library rows, editor changes and highlighting,
+compiler work, PDF pages, and cached startup. The native script times vault
+scans, compile inputs, and searches on the disposable vault you choose. CI does
+not run a fixed large-vault scan on a device or type into a very long note on a
+phone, so those paths are outside the audit.
+
 ## Reproduce
 
 If you want to create the benchmarks locally, use:
