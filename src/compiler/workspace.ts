@@ -119,24 +119,48 @@ export class PdfWorkspace {
 
   setNotes(notes: Note[]) {
     const previous = this.notes
-    const changedNotes = notes.filter((note) => {
-      const previousNote = previous.get(note.uri)
-      return (
-        previousNote?.source !== note.source ||
-        previousNote?.pdfHash !== note.pdfHash ||
-        previousNote?.sharedHash !== note.sharedHash
-      )
-    })
-    const structural = notes.some(
-      (note) => !previous.has(note.uri) || previous.get(note.uri)?.path !== note.path
-    )
-    const changed = structural || notes.length !== previous.size || changedNotes.length > 0
-    this.notes = new Map(notes.map((note) => [note.uri, note]))
+    let changedNotes: Note[] = []
+    let structural = notes.length !== previous.size
+    if (!structural) {
+      const seen = new Set<string>()
+      const updates: Note[] = []
+      for (const note of notes) {
+        const saved = previous.get(note.uri)
+        if (
+          !saved ||
+          seen.has(note.uri) ||
+          saved.path !== note.path ||
+          saved.pdfUri !== note.pdfUri ||
+          saved.pdfHash !== note.pdfHash ||
+          saved.sharedHash !== note.sharedHash
+        ) {
+          structural = true
+          break
+        }
+        seen.add(note.uri)
+        if (saved.source !== note.source) updates.push(note)
+      }
+      if (!structural) {
+        for (const note of updates) previous.set(note.uri, note)
+        changedNotes = updates
+      }
+    }
+    if (structural) {
+      this.notes = new Map(notes.map((note) => [note.uri, note]))
+      changedNotes = notes.filter((note) => {
+        const saved = previous.get(note.uri)
+        return (
+          saved?.source !== note.source ||
+          saved?.pdfHash !== note.pdfHash ||
+          saved?.sharedHash !== note.sharedHash
+        )
+      })
+    }
     const paths = new Set(notes.map((note) => note.path))
     for (const path of this.errors.keys())
       if (path !== 'inputs' && !paths.has(path)) this.errors.delete(path)
     for (const note of this.notes.values()) if (this.current(note)) this.errors.delete(note.path)
-    if (changed) {
+    if (structural || changedNotes.length > 0) {
       if (this.snapshot)
         for (const note of changedNotes)
           if (!this.current(note)) void this.render(note, note.source, false).catch(() => {})
@@ -144,6 +168,7 @@ export class PdfWorkspace {
       // so a full vault read can wait for the periodic refresh.
       if (structural) void this.refresh()
     }
+    return structural
   }
 
   async refresh() {

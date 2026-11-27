@@ -586,3 +586,44 @@ test('closing a workspace rejects queued requests and never publishes late outpu
   expect(f.writes).toEqual([])
   expect(f.published).toEqual([])
 })
+
+test('source-only note updates reuse the map while structural changes rebuild it', () => {
+  const f = fixture()
+  const workspace = f.create()
+  workspace.setActive(false)
+  const notes = Array.from({ length: 10_000 }, (_, index) =>
+    note(`note-${index}.typ`, `= ${index}`)
+  )
+  expect(workspace.setNotes(notes)).toBe(true)
+
+  const edited = notes.slice()
+  edited[5000] = { ...edited[5000], source: '= edited' }
+  expect(workspace.setNotes(edited)).toBe(false)
+
+  const moved = edited.slice()
+  moved[5000] = { ...moved[5000], path: 'moved.typ' }
+  expect(workspace.setNotes(moved)).toBe(true)
+  workspace.dispose()
+})
+
+test('PDF metadata changes rebuild the note map', () => {
+  const f = fixture()
+  const workspace = f.create()
+  workspace.setActive(false)
+  const base = note('one.typ')
+  expect(workspace.setNotes([base])).toBe(true)
+  expect(workspace.setNotes([note('one.typ')])).toBe(false)
+
+  const changes: Note[][] = [
+    [{ ...base, uri: 'content://renamed' }],
+    [{ ...base, path: 'two.typ' }],
+    [{ ...base, pdfUri: 'content://out/one.typ.pdf' }],
+    [{ ...base, pdfHash: sha256('= Test') }],
+    [{ ...base, sharedHash: sha256('') }],
+  ]
+  for (const notes of changes) {
+    workspace.setNotes([base])
+    expect(workspace.setNotes(notes)).toBe(true)
+  }
+  workspace.dispose()
+})

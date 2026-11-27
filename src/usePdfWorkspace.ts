@@ -6,6 +6,16 @@ import { PdfWorkspace } from './compiler/workspace'
 import type { Note, Vault } from './types'
 import { type CompileFileCache, createPdfWriter, loadCompileFiles } from './vault'
 
+const sameNoteMetadata = (previous: Note, note: Note) =>
+  previous === note ||
+  (previous.uri === note.uri &&
+    previous.path === note.path &&
+    previous.title === note.title &&
+    previous.modifiedAt === note.modifiedAt &&
+    previous.pdfUri === note.pdfUri &&
+    previous.pdfHash === note.pdfHash &&
+    previous.sharedHash === note.sharedHash)
+
 export function usePdfWorkspace(input: {
   vault: Vault | null
   notes: Note[]
@@ -34,7 +44,20 @@ export function usePdfWorkspace(input: {
     })
   }, [vault])
   const [errors, setErrors] = useState(0)
-
+  const noteMetadata = useRef({ notes: input.notes, revision: 0 })
+  if (noteMetadata.current.notes !== input.notes) {
+    const previous = noteMetadata.current.notes
+    if (
+      previous.length !== input.notes.length ||
+      input.notes.some((note, index) => {
+        const old = previous[index]
+        return !old || !sameNoteMetadata(old, note)
+      })
+    )
+      noteMetadata.current.revision++
+    noteMetadata.current.notes = input.notes
+  }
+  const notesRevision = noteMetadata.current.revision
   useEffect(() => {
     if (!workspace) {
       setErrors(0)
@@ -65,5 +88,5 @@ export function usePdfWorkspace(input: {
     workspace?.setNotes(input.notes)
   }, [workspace, input.notes])
 
-  return { workspace, errors }
+  return { workspace, errors, notesRevision }
 }
