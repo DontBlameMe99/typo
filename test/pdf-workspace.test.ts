@@ -621,6 +621,9 @@ test('PDF metadata changes rebuild the note map', () => {
     [{ ...base, pdfHash: sha256('= Test') }],
     [{ ...base, sharedHash: sha256('') }],
   ]
-  for (const notes of changes) expect(workspace.setNotes(notes)).toBe(true)
+  for (const notes of changes) {
+    workspace.setNotes([base])
+    expect(workspace.setNotes(notes)).toBe(true)
+  }
   workspace.dispose()
 })
