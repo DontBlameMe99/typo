@@ -3,6 +3,12 @@ import { describe, expect, mock, test } from 'bun:test'
 const files = new Map<string, string>()
 
 mock.module('expo-file-system', () => ({
+  FileMode: { Truncate: 'wt' },
+  Directory: class {
+    get exists() {
+      return false
+    }
+  },
   File: class {
     constructor(private uri: string) {}
     get exists() {
