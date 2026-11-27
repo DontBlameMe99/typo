@@ -1,7 +1,9 @@
+export const WEBVIEW_RUNTIME_ERROR = 'WEBVIEW_RUNTIME_ERROR'
+
 export function runtimeErrorScript(component: string): string {
   return `(${String.raw`function reportRuntimeErrors(component) {
   const LIMIT = 200
-  const CODE = 'WEBVIEW_RUNTIME_ERROR'
+  const CODE = ${JSON.stringify(WEBVIEW_RUNTIME_ERROR)}
   const basename = (path) => {
     const parts = path.split(/[\\/]/u).filter(Boolean)
     return parts[parts.length - 1] || ''

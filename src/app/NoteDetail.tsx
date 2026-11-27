@@ -15,17 +15,25 @@ import {
 } from 'react-native'
 import Reanimated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { ERROR_CODES } from '../compiler/message'
 import type { PdfWorkspace } from '../compiler/workspace'
 import { isRootTemplate } from '../core'
 import { ErrorBanner } from '../ErrorBanner'
 import { Icon } from '../icons'
 import Pdf from '../PdfViewer'
+import { WEBVIEW_RUNTIME_ERROR } from '../runtime-errors'
 import { SourceEditor, type SourceEditorHandle } from '../SourceEditor'
 import { useTheme } from '../theme'
 import type { Note } from '../types'
 import { useAutoPdf } from '../useAutoPdf'
 import { preparePdf, prepareSource, readNote, saveNote } from '../vault'
-import { findFirst, findMatches, initialFindSelection } from './find'
+import {
+  findFirst,
+  findMatches,
+  initialFindSelection,
+  replaceAllMatches,
+  replaceMatches,
+} from './find'
 import { Fade, IconFade, PillTabs, SLIDE_TIMING, Ticker, timing } from './motion'
 import { errorText, keyboardBehavior } from './shared'
 import { useStyles } from './styles'
@@ -86,6 +94,8 @@ function NoteDetailScreen({
   const [source, setSource] = useState(note.source)
   const [mode, setMode] = useState<'source' | 'pdf'>('source')
   const [find, setFind] = useState(initialQuery)
+  const [replacement, setReplacement] = useState('')
+  const [replaceOpen, setReplaceOpen] = useState(false)
   const [findOpen, setFindOpen] = useState(!!initialQuery || !!initialLine)
   const [focusFind, setFocusFind] = useState(false)
   const findInput = useRef<React.ComponentRef<typeof TextInput>>(null)
@@ -353,6 +363,7 @@ function NoteDetailScreen({
     setSelection(undefined)
     setFindOpen(false)
     setFocusFind(false)
+    setReplaceOpen(false)
     Keyboard.dismiss()
     editor.current?.blur()
   }
@@ -361,6 +372,19 @@ function NoteDetailScreen({
     setMatchIndex(0)
     const selection = findFirst(source, value)
     setSelection(selection)
+  }
+
+  function replaceFind(all: boolean) {
+    if (!matches.length) return
+    const next = all
+      ? replaceAllMatches(source, find, replacement)
+      : replaceMatches(source, find, replacement, Math.min(matchIndex, matches.length - 1))
+    if (next === source) return
+    editState.current.source = next
+    setSource(next)
+    setMatchIndex(0)
+    setSelection(undefined)
+    scheduleSave()
   }
   function moveMatch(direction: number) {
     if (!matches.length) return
@@ -390,6 +414,7 @@ function NoteDetailScreen({
   const pdfSource = useMemo(() => (pdfUri ? { uri: pdfUri } : null), [pdfUri])
   const compileError = autoPdf.error
   const issues = autoPdf.diagnostics
+  const compileCode = issues.length ? ERROR_CODES.diagnostics : ERROR_CODES.error
   const bannerMessage = error || openError || autoPdf.storageError || ''
   const bannerConflict = isSyncConflict(bannerMessage)
   const conflictActions = bannerConflict
@@ -484,6 +509,7 @@ function NoteDetailScreen({
                 message={bannerMessage}
                 onDismiss={error ? () => setError(null) : undefined}
                 actions={conflictActions}
+                code={autoPdf.storageError ? ERROR_CODES.error : undefined}
               />
             </View>
           )}
@@ -534,7 +560,11 @@ function NoteDetailScreen({
             >
               {pdfError && (
                 <View style={s.errorInset}>
-                  <ErrorBanner title="PDF viewer failed" message={pdfError} />
+                  <ErrorBanner
+                    title="PDF viewer failed"
+                    message={pdfError}
+                    code={WEBVIEW_RUNTIME_ERROR}
+                  />
                   <Action
                     label="Retry PDF"
                     onPress={() => {
@@ -561,6 +591,12 @@ function NoteDetailScreen({
                 >
                   <Icon name="alert" size={30} color={colors.coral} />
                   <Text style={s.pdfFailureTitle}>PDF compilation failed</Text>
+                  <Text
+                    selectable={false}
+                    style={[s.pdfFailureText, { fontSize: 11, marginBottom: 0, marginTop: -2 }]}
+                  >
+                    {compileCode}
+                  </Text>
                   <Text numberOfLines={8} style={s.pdfFailureText}>
                     {failureHint}
                   </Text>
@@ -710,19 +746,63 @@ function NoteDetailScreen({
                         returnKeyType="search"
                         onSubmitEditing={() => moveMatch(1)}
                       />
-                      <Ticker current={matchCurrent} total={matchCount} style={s.findDockCount} />
-                      <IconButton
-                        name="chevronUp"
-                        label="Previous match"
-                        onPress={() => moveMatch(-1)}
-                        disabled={!matches.length}
-                      />
-                      <IconButton
-                        name="chevronDown"
-                        label="Next match"
-                        onPress={() => moveMatch(1)}
-                        disabled={!matches.length}
-                      />
+                      {replaceOpen ? (
+                        <>
+                          <TextInput
+                            accessibilityLabel="Replace with"
+                            placeholder="Replace with"
+                            placeholderTextColor={colors.muted}
+                            value={replacement}
+                            onChangeText={setReplacement}
+                            style={s.findDockInput}
+                            autoCorrect={false}
+                            autoCapitalize="none"
+                          />
+                          <IconButton
+                            name="edit"
+                            label="Replace this match"
+                            onPress={() => replaceFind(false)}
+                            disabled={!matches.length}
+                          />
+                          <IconButton
+                            name="swap"
+                            label="Replace all matches"
+                            onPress={() => replaceFind(true)}
+                            disabled={!matches.length}
+                          />
+                          <IconButton
+                            name="close"
+                            label="Close replace"
+                            onPress={() => setReplaceOpen(false)}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <Ticker
+                            current={matchCurrent}
+                            total={matchCount}
+                            style={s.findDockCount}
+                          />
+                          <IconButton
+                            name="chevronUp"
+                            label="Previous match"
+                            onPress={() => moveMatch(-1)}
+                            disabled={!matches.length}
+                          />
+                          <IconButton
+                            name="chevronDown"
+                            label="Next match"
+                            onPress={() => moveMatch(1)}
+                            disabled={!matches.length}
+                          />
+                          <IconButton
+                            name="edit"
+                            label="Replace"
+                            onPress={() => setReplaceOpen(true)}
+                            disabled={!matches.length}
+                          />
+                        </>
+                      )}
                     </View>
                   </View>
                 </Reanimated.View>

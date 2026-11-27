@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Reanimated, {
   ReduceMotion,
@@ -9,21 +9,34 @@ import Reanimated, {
 import { Icon } from './icons'
 import { useTheme } from './theme'
 
+const LONG_URI = /(?:content|file):\/\/\S+/gu
+
+function boundDetail(message: string): string {
+  if (message.length <= 200) return message
+  const shortened = message.replace(LONG_URI, (uri) =>
+    uri.length > 48 ? `${uri.slice(0, 32)}…${uri.slice(-12)}` : uri
+  )
+  return shortened.length > 200 ? `${shortened.slice(0, 199)}…` : shortened
+}
+
 type BannerAction = { label: string; onPress: () => void }
 
 export function ErrorBanner({
   message,
   title,
+  code,
   onDismiss,
   actions,
 }: {
   message: string
   title?: string
+  code?: string
   onDismiss?: () => void
   actions?: BannerAction[]
 }) {
   const { colors } = useTheme()
   const s = useMemo(() => styles(colors), [colors])
+  const [expanded, setExpanded] = useState(false)
   const reveal = useSharedValue(0)
   useEffect(() => {
     reveal.value = withTiming(1, { duration: 200, reduceMotion: ReduceMotion.System })
@@ -37,11 +50,28 @@ export function ErrorBanner({
       <Icon name="alert" color={colors.coral} />
       <View style={s.body}>
         {title && <Text style={s.title}>{title}</Text>}
+        {code && (
+          <Text selectable={false} style={s.code}>
+            {code}
+          </Text>
+        )}
         <ScrollView style={s.details} nestedScrollEnabled>
-          <Text selectable style={s.message}>
-            {message}
+          <Text selectable={false} style={s.message}>
+            {expanded ? message : boundDetail(message)}
           </Text>
         </ScrollView>
+        {message.length > 200 && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={expanded ? 'Hide full details' : 'Show full details'}
+            onPress={() => setExpanded((value) => !value)}
+            style={s.detailToggle}
+          >
+            <Text style={s.detailToggleText}>
+              {expanded ? 'Hide details' : 'Show full details'}
+            </Text>
+          </Pressable>
+        )}
         {actions?.length ? (
           <View style={s.actions}>
             {actions.map((action) => (
@@ -97,6 +127,22 @@ function styles(colors: ReturnType<typeof useTheme>['colors']) {
       fontSize: 14,
       lineHeight: 20,
       fontFamily: 'DMSans_400Regular',
+    },
+    detailToggle: {
+      alignSelf: 'flex-start',
+      marginTop: 2,
+      paddingVertical: 2,
+    },
+    detailToggleText: {
+      color: colors.accent,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 12,
+    },
+    code: {
+      color: colors.muted,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 11,
+      marginBottom: 4,
     },
     actions: {
       flexDirection: 'row',
