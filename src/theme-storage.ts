@@ -28,7 +28,10 @@ export function readTheme(): ThemeSnapshot {
 
 async function persist(settings: ThemeSettings): Promise<void> {
   if (!path) throw new Error('Appearance storage is unavailable.')
-  await FileSystem.writeAsStringAsync(path, JSON.stringify(settings))
+  // Keep the last good settings readable until the new file is fully written.
+  const pending = new File(`${path}.writing`)
+  await pending.write(JSON.stringify(settings))
+  await pending.move(new File(path), { overwrite: true })
 }
 
 let pendingWrite: Promise<void> = Promise.resolve()

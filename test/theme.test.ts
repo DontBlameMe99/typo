@@ -30,6 +30,7 @@ const colorKeys = [
   'crust',
   'sage',
   'accent',
+  'accentInk',
   'onAccent',
   'soft',
   'white',
@@ -188,7 +189,7 @@ describe('custom accent', () => {
         false
       )
       expect(palette).toBe(palettes[flavor])
-      expect(colors.muted).toBe(palette.subtext0)
+      expect(colors.muted).toBe(isDark ? palette.subtext0 : palette.subtext1)
       expect(colors.subtle).toBe(palette.subtext1)
       expect(colors.surface).toBe(palette.surface0)
       expect(colors.surfaceHi).toBe(palette.surface1)
@@ -326,5 +327,65 @@ describe('resolved theme', () => {
     }
     expect(luminance('#000000')).toBe(0)
     expect(luminance('#ffffff')).toBeCloseTo(1)
+  })
+})
+describe('accent ink', () => {
+  test('every Latte accent is readable on paper and soft surfaces', () => {
+    for (const accent of accentNames) {
+      const { colors } = resolveTheme({ ...defaultThemeSettings, mode: 'light', accent }, false)
+      expect(contrastRatio(colors.accentInk, colors.paper)).toBeGreaterThanOrEqual(4.5)
+      expect(contrastRatio(colors.accentInk, colors.soft)).toBeGreaterThanOrEqual(4.5)
+      expect(contrastRatio(colors.accentInk, colors.surface)).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+
+  test('keeps the raw accent for fills and darkens only the ink', () => {
+    const { colors } = resolveTheme(
+      { ...defaultThemeSettings, mode: 'light', accent: 'yellow' },
+      false
+    )
+    expect(colors.accent).toBe(palettes.latte.yellow)
+    expect(contrastRatio(colors.accent, colors.paper)).toBeLessThan(4.5)
+    expect(colors.accentInk).not.toBe(colors.accent)
+  })
+
+  test('is readable for every flavor, accent and AMOLED surface', () => {
+    for (const flavor of flavorNames) {
+      const dark = flavor !== 'latte'
+      for (const accent of accentNames) {
+        for (const amoled of [false, true]) {
+          const { colors } = resolveTheme(
+            {
+              ...defaultThemeSettings,
+              mode: dark ? 'dark' : 'light',
+              darkFlavor: dark ? flavor : 'mocha',
+              accent,
+              amoled,
+            },
+            false
+          )
+          expect(contrastRatio(colors.accentInk, colors.paper)).toBeGreaterThanOrEqual(4.5)
+          expect(contrastRatio(colors.accentInk, colors.soft)).toBeGreaterThanOrEqual(4.5)
+          expect(contrastRatio(colors.accentInk, colors.surface)).toBeGreaterThanOrEqual(4.5)
+        }
+      }
+    }
+  })
+
+  test('is readable for a low-contrast custom accent', () => {
+    const { colors } = resolveTheme(
+      { ...defaultThemeSettings, mode: 'light', customAccent: '#FFE066' },
+      false
+    )
+    expect(contrastRatio(colors.accentInk, colors.paper)).toBeGreaterThanOrEqual(4.5)
+    expect(contrastRatio(colors.accentInk, colors.soft)).toBeGreaterThanOrEqual(4.5)
+    expect(contrastRatio(colors.accentInk, colors.surface)).toBeGreaterThanOrEqual(4.5)
+  })
+
+  test('small light text meets AA on paper and soft surfaces', () => {
+    const { colors } = resolveTheme({ ...defaultThemeSettings, mode: 'light' }, false)
+    expect(contrastRatio(colors.muted, colors.paper)).toBeGreaterThanOrEqual(4.5)
+    expect(contrastRatio(colors.muted, colors.soft)).toBeGreaterThanOrEqual(4.5)
+    expect(colors.muted).toBe(palettes.latte.subtext1)
   })
 })
