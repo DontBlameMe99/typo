@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import { parseVaultIndex, serializeVaultIndex } from '../src/library-index'
+import {
+  migrateLegacyVaultIndex,
+  parseSource,
+  parseVaultIndex,
+  parseVaultMetadata,
+  serializeVaultIndex,
+  serializeVaultMetadata,
+  vaultSources,
+} from '../src/library-index'
 import type { Note, Vault } from '../src/types'
 
 const vault: Vault = {
@@ -115,5 +123,49 @@ describe('vault index', () => {
     expect(
       parseVaultIndex(serializeVaultIndex(vault, { notes: [], folders: [''] }), vault)
     ).toEqual({ notes: [], folders: [''] })
+  })
+})
+
+describe('split launch metadata', () => {
+  const library = { notes: [note('a.typ', '#title[A]\n')], folders: [''] }
+
+  test('keeps source text out of metadata and loads it from a separate file', () => {
+    const text = serializeVaultMetadata(vault, library)
+    expect(text).not.toContain('#title[A]')
+    const metadata = parseVaultMetadata(text, vault)
+    expect(metadata?.notes).toEqual([note('a.typ', '')])
+    expect(metadata?.folders).toEqual([''])
+    const keys = [...vaultSources(library).keys()]
+    expect(keys).toHaveLength(1)
+    expect(parseSource('#title[A]\n', metadata?.sourceLengths[0] ?? -1)).toBe('#title[A]\n')
+    expect(parseSource('short', metadata?.sourceLengths[0] ?? -1)).toBeNull()
+  })
+
+  test('rejects an old cache and metadata that carries source text', () => {
+    const legacy = serializeVaultIndex(vault, library)
+    expect(parseVaultMetadata(legacy, vault)).toBeNull()
+    const text = serializeVaultMetadata(vault, library)
+    expect(parseVaultMetadata(text.replace('"version":5', '"version":4'), vault)).toBeNull()
+    expect(parseVaultMetadata(text, { ...vault, uri: `${vault.uri}/other` })).toBeNull()
+    expect(
+      parseVaultMetadata(
+        JSON.stringify({
+          version: 5,
+          vault: vault.uri,
+          folders: [''],
+          notes: [{ ...note('a.typ', ''), source: '#title[A]' }],
+          stamps: [null],
+          sourceKeys: ['key'],
+          sourceLengths: [0],
+        }),
+        vault
+      )
+    ).toBeNull()
+  })
+
+  test('migrates the old single-file cache with source stamps', () => {
+    const migrated = migrateLegacyVaultIndex(serializeVaultIndex(vault, library), vault)
+    expect(migrated?.notes).toEqual(library.notes)
+    expect(migrated?.stamps).toEqual(['1:10'])
   })
 })

@@ -1,6 +1,7 @@
 import { beforeEach, expect, mock, setSystemTime, test } from 'bun:test'
 import { DEFAULT_TEMPLATE } from '../src/core'
 import { sha256 } from '../src/hash'
+import { serializeVaultIndex } from '../src/library-index'
 import type { Note } from '../src/types'
 import { hasCurrentPdf } from '../src/types'
 import type { CompileFileCache, VaultScanProgress } from '../src/vault'
@@ -351,6 +352,7 @@ const {
   readSavedVault,
   readSavedVaultSync,
   forgetVault,
+  refreshVaultLibrary,
   scanVault,
   scanVaultLibrary,
   createNote,
@@ -375,7 +377,14 @@ const {
 } = await import('../src/vault')
 const { packageArchive } = await import('../src/compiler/packages')
 const { pdfStorage } = await import('../src/compiler/pdf-storage')
-const { loadVaultIndex, loadVaultIndexSync, storeVaultIndex } = await import('../src/library-cache')
+const {
+  flushVaultIndexWrites,
+  loadVaultIndex,
+  loadVaultIndexSync,
+  loadVaultIndexSources,
+  scheduleVaultIndexWrite,
+  storeVaultIndex,
+} = await import('../src/library-cache')
 const { loadFavorites, loadFavoritesSync, storeFavorites } = await import('../src/favorites')
 const { loadSortSync, storeSort } = await import('../src/sort')
 
@@ -721,26 +730,48 @@ test('scan cancellation during a batch drains reads without visiting more folder
   expect(readDirectoryAsync.mock.calls.map(([uri]) => uri)).toEqual([root, folder])
 })
 
-test('library snapshots reopen without reading source files and remain isolated by vault', async () => {
+test('launch metadata keeps sources out of the synchronous read', async () => {
   const uri = addFile('note.typ')
   const note = noteFor(uri)
   await storeVaultIndex(vault, { notes: [note], folders: ['', 'data'] })
   const reads = syncReads.length
-  expect(loadVaultIndexSync(vault)).toEqual({ notes: [note], folders: ['', 'data'] })
-  expect(await loadVaultIndex(vault)).toEqual({ notes: [note], folders: ['', 'data'] })
-  expect(syncReads.length - reads).toBe(2)
-  expect(syncReads.some((path) => path === uri)).toBe(false)
+  expect(loadVaultIndexSync(vault)).toEqual({
+    notes: [{ ...note, source: '' }],
+    folders: ['', 'data'],
+    stamps: [null],
+  })
+  expect(syncReads.length - reads).toBe(1)
+  expect(syncReads.at(-1)).toContain('typo-library/')
+  expect(syncReads).not.toContain(uri)
+  expect(await loadVaultIndex(vault)).toEqual({
+    notes: [note],
+    folders: ['', 'data'],
+    stamps: [null],
+  })
+  const synced = loadVaultIndexSync(vault)
+  if (!synced) throw new Error('The split cache did not parse')
+  expect(await loadVaultIndexSources(vault, synced)).toEqual({
+    notes: [note],
+    folders: ['', 'data'],
+    stamps: [null],
+  })
   expect(await loadVaultIndex({ ...vault, uri: `${root}-other` })).toBeNull()
 })
 
-test('an interrupted cache write keeps the previous library readable', async () => {
-  const uri = addFile('note.typ')
-  const note = noteFor(uri)
+test('a single-file cache is rejected by the launch read and migrated on the async path', async () => {
+  const note = noteFor(addFile('note.typ'))
   await storeVaultIndex(vault, { notes: [note], folders: [''] })
-  writeFailure = (path) => path.endsWith('.writing')
-  writeFailureError = new Error('Disk full')
-  await expect(storeVaultIndex(vault, { notes: [], folders: [''] })).rejects.toThrow('Disk full')
-  expect(await loadVaultIndex(vault)).toEqual({ notes: [note], folders: [''] })
+  const metadataUri =
+    [...files.keys()].find((path) => path.includes('typo-library/') && path.endsWith('.json')) ?? ''
+  expect(metadataUri).not.toBe('')
+  files.set(metadataUri, { source: serializeVaultIndex(vault, { notes: [note], folders: [''] }) })
+  expect(loadVaultIndexSync(vault)).toBeNull()
+  expect(await loadVaultIndex(vault)).toEqual({ notes: [note], folders: [''], stamps: [null] })
+  const migrated = await loadVaultIndex(vault)
+  if (!migrated) throw new Error('The legacy cache was not migrated')
+  await storeVaultIndex(vault, migrated)
+  expect(loadVaultIndexSync(vault)?.notes[0].source).toBe('')
+  expect(await loadVaultIndex(vault)).toEqual({ notes: [note], folders: [''], stamps: [null] })
 })
 
 test('corrupt and foreign library snapshots are ignored', async () => {
@@ -752,6 +783,84 @@ test('corrupt and foreign library snapshots are ignored', async () => {
   const uri = [...files.keys()].find((path) => path.includes('typo-library/')) ?? ''
   files.set(uri, { source: '{broken' })
   expect(await loadVaultIndex(vault)).toBeNull()
+})
+
+test('an interrupted cache write keeps the previous library readable', async () => {
+  const uri = addFile('note.typ')
+  const note = noteFor(uri)
+  await storeVaultIndex(vault, { notes: [note], folders: [''] })
+  writeFailure = (path) => path.endsWith('.writing')
+  writeFailureError = new Error('Disk full')
+  await expect(storeVaultIndex(vault, { notes: [], folders: [''] })).rejects.toThrow('Disk full')
+  expect(await loadVaultIndex(vault)).toEqual({ notes: [note], folders: [''], stamps: [null] })
+})
+
+test('a stat-only refresh reads only notes whose size or modification stamp changed', async () => {
+  bulkMetadata = true
+  const changed = addFile('b.typ', '= B')
+  addFile('a.typ', '= A')
+  const first = await scanVaultLibrary(vault)
+  expect(first.notes.map((note) => note.source)).toEqual(['= A', '= B'])
+  const firstFile = files.get(changed)
+  if (!firstFile) throw new Error('Missing changed file')
+  files.set(changed, { ...firstFile, modificationTime: 124 })
+  readVaultText.mockClear()
+  const second = await refreshVaultLibrary(vault, first)
+  expect(readVaultText.mock.calls.map(([uri]) => uri)).toEqual([changed])
+  expect(second.notes.map((note) => note.source)).toEqual(['= A', '= B'])
+  expect(second.stamps[1]).not.toBe(first.stamps[1])
+
+  // A same-stamp rewrite still reads when its byte size changes.
+  const secondFile = files.get(changed)
+  if (!secondFile) throw new Error('Missing changed file')
+  files.set(changed, { ...secondFile, modificationTime: 123, source: '= B long' })
+  readVaultText.mockClear()
+  const third = await refreshVaultLibrary(vault, second)
+  expect(readVaultText.mock.calls.map(([uri]) => uri)).toEqual([changed])
+  expect(third.notes[1].source).toBe('= B long')
+})
+
+test('a stat-only refresh keeps scan cancellation and folder conflict checks', async () => {
+  bulkMetadata = true
+  const uri = addFile('note.typ')
+  const first = await scanVaultLibrary(vault)
+  readText.mockClear()
+  await expect(refreshVaultLibrary(vault, first, undefined, () => true)).rejects.toThrow(
+    'cancelled'
+  )
+  expect(readText).not.toHaveBeenCalled()
+  expect(files.get(uri)?.source).toBe('#title[Test]\n')
+})
+
+test('source-only cache edits debounce separately from structural edits', async () => {
+  const note = noteFor(addFile('note.typ'))
+  await storeVaultIndex(vault, { notes: [note], folders: [''] })
+  const metadataUri =
+    [...files.keys()].find((path) => path.includes('typo-library/') && path.endsWith('.json')) ?? ''
+  const metadataBefore = files.get(metadataUri)?.source
+  const edited = { ...note, source: '#title[New]\n' }
+  const first = scheduleVaultIndexWrite(
+    vault,
+    { notes: [edited], folders: [''] },
+    { structural: false }
+  )
+  const second = scheduleVaultIndexWrite(
+    vault,
+    { notes: [{ ...edited, source: '#title[End]\n' }], folders: [''] },
+    { structural: false }
+  )
+  await flushVaultIndexWrites()
+  await Promise.all([first, second])
+  expect(files.get(metadataUri)?.source).toBe(metadataBefore)
+  expect((await loadVaultIndex(vault))?.notes[0].source).toBe('#title[End]\n')
+  const structural = scheduleVaultIndexWrite(
+    vault,
+    { notes: [{ ...edited, source: '#title[End]\n' }], folders: ['', 'new'] },
+    { structural: true }
+  )
+  await flushVaultIndexWrites()
+  await structural
+  expect(files.get(metadataUri)?.source).not.toBe(metadataBefore)
 })
 
 test('favorites persist per vault in private documents', async () => {
