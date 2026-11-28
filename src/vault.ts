@@ -855,6 +855,19 @@ export async function refreshVaultLibrary(
   return scanVaultLibrary(vault, onProgress, cancelled, onBatch, known)
 }
 
+function isSafDocument(uri: string): boolean {
+  return uri.startsWith('content://')
+}
+
+async function streamBytes(destination: string, bytes: Uint8Array): Promise<void> {
+  const handle = new File(destination).open(FileMode.Truncate)
+  try {
+    await handle.writeBytes(bytes)
+  } finally {
+    handle.close()
+  }
+}
+
 async function replaceWithStaged(
   staging: string,
   bytes: Uint8Array,
@@ -877,22 +890,19 @@ async function replaceWithStaged(
     throw new Error(`${context}: cannot keep a backup of the existing file: ${message(error)}`)
   }
   try {
-    try {
-      await new File(staging).move(new File(destination), { overwrite: true })
-    } catch {
-      // Some providers refuse replacement. The backup makes the streaming
-      // fallback recoverable if this write is interrupted.
-      const handle = new File(destination).open(FileMode.Truncate)
-      try {
-        await handle.writeBytes(bytes)
-      } finally {
-        handle.close()
-      }
-    }
+    // SAF File.move deletes the existing document before copying, and a failed
+    // copy then leaves the destination URI invalid. Stream the staged bytes into
+    // the document instead; private cache destinations can still move atomically.
+    if (isSafDocument(destination)) await streamBytes(destination, bytes)
+    else await new File(staging).move(new File(destination), { overwrite: true })
   } catch (error) {
     if (backedUp) {
       try {
-        await new File(backup).copy(new File(destination), { overwrite: true })
+        if (isSafDocument(destination)) {
+          await streamBytes(destination, await new File(backup).bytes())
+        } else {
+          await new File(backup).copy(new File(destination), { overwrite: true })
+        }
       } catch (restoreError) {
         keepBackup = true
         throw new Error(
@@ -1325,7 +1335,10 @@ function folderPathSegments(path: string): string[] {
 }
 
 async function copyVaultFile(source: string, destination: string): Promise<void> {
-  await new File(source).copy(new File(destination), { overwrite: true })
+  // SAF providers can reject copy between documents. Read and stream the
+  // bytes through the same document handle used for note writes.
+  const bytes = await new File(source).bytes()
+  await streamBytes(destination, bytes)
   const original = new File(source).size
   const copied = new File(destination).size
   if (original !== null && copied !== original) {

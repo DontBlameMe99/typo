@@ -40,6 +40,7 @@ let handleWriteError: Error | undefined
 let fileMoveError: Error | undefined
 let fileMoveErrorFor: ((uri: string) => boolean) | undefined
 let handleWriteErrorFor: ((uri: string) => boolean) | undefined
+let safReplacementFails = false
 const fileMoves: { from: string; to: string; overwrite?: boolean }[] = []
 const fileCopies: { from: string; to: string; overwrite?: boolean }[] = []
 let writeFailure: ((uri: string) => boolean) | undefined
@@ -279,6 +280,20 @@ mock.module('expo-file-system', () => ({
     }
     async copy(destination: { uri: string }, options?: { overwrite?: boolean }) {
       fileCopies.push({ from: this.uri, to: destination.uri, overwrite: options?.overwrite })
+      if (
+        safReplacementFails &&
+        this.uri.startsWith('content://') &&
+        destination.uri.startsWith('content://')
+      ) {
+        throw new Error('Provider refused copy')
+      }
+      if (
+        safReplacementFails &&
+        destination.uri.startsWith('content://') &&
+        !files.has(destination.uri)
+      ) {
+        throw new Error('No such document')
+      }
       if (writeFailure?.(destination.uri)) {
         files.set(destination.uri, { source: 'partial copy' })
         throw writeFailureError ?? new Error('Write failed')
@@ -290,6 +305,10 @@ mock.module('expo-file-system', () => ({
     }
     async move(destination: { uri: string }, options?: { overwrite?: boolean }) {
       fileMoves.push({ from: this.uri, to: destination.uri, overwrite: options?.overwrite })
+      if (safReplacementFails && destination.uri.startsWith('content://')) {
+        files.delete(destination.uri)
+        throw new Error('Provider refused replacement')
+      }
       const failure =
         fileMoveError ??
         (fileMoveErrorFor?.(destination.uri)
@@ -303,6 +322,9 @@ mock.module('expo-file-system', () => ({
       files.delete(this.uri)
     }
     open(mode: string) {
+      if (safReplacementFails && this.uri.startsWith('content://') && !files.has(this.uri)) {
+        throw new Error('No such document')
+      }
       expect(mode).toBe('wt')
       files.set(this.uri, { source: '' })
       return {
@@ -310,7 +332,11 @@ mock.module('expo-file-system', () => ({
           const failure =
             handleWriteError ??
             (handleWriteErrorFor?.(this.uri) ? new Error('Storage full') : undefined)
-          if (failure) throw failure
+          if (failure) {
+            handleWriteError = undefined
+            handleWriteErrorFor = undefined
+            throw failure
+          }
           files.set(this.uri, { source: new TextDecoder().decode(bytes), bytes })
         },
         close: () => {
@@ -391,6 +417,7 @@ const {
   createFolder,
   moveNoteToFolder,
   saveNote,
+  appendToNoteAtPath,
   readNote,
   preparePdf,
   releasePdf,
@@ -447,6 +474,7 @@ beforeEach(() => {
   fileMoveError = undefined
   fileMoveErrorFor = undefined
   handleWriteErrorFor = undefined
+  safReplacementFails = false
   fileMoves.length = 0
   fileCopies.length = 0
   writeFailure = undefined
@@ -1363,11 +1391,7 @@ test('folder copies use filesystem copy without marshaling file bytes through ba
   await moveFolderToFolder(vault, 'notes', 'archive')
 
   expect(readAsStringAsync).not.toHaveBeenCalled()
-  expect(fileCopies).toContainEqual({
-    from: uriFor('notes/one.typ'),
-    to: uriFor('archive/notes/one.typ'),
-    overwrite: true,
-  })
+  expect(handlesClosed).toBe(2)
   expect(copiedText('archive/notes/image.png')).toBe('image bytes')
 })
 
@@ -1392,8 +1416,7 @@ test('failed folder moves keep the source and clean the destination copy', async
   const notes = addDirectory('notes')
   addFile('notes/one.typ', '#title[Keep me]\n', notes)
   addDirectory('archive')
-  writeFailure = (target) => decodeURIComponent(target).includes('/archive/notes/')
-  writeFailureError = new Error('Storage full')
+  handleWriteErrorFor = (target) => decodeURIComponent(target).includes('/archive/notes/')
 
   await expect(moveFolderToFolder(vault, 'notes', 'archive')).rejects.toThrow('Storage full')
   expect(files.get(uriFor('notes/one.typ'))?.source).toBe('#title[Keep me]\n')
@@ -1531,6 +1554,22 @@ test('restoring a folder copies its tree back and removes the trashed folder', a
   ])
 })
 
+test('SAF folder move, trash, and restore stream files instead of copying documents', async () => {
+  safReplacementFails = true
+  const notes = addDirectory('notes')
+  addFile('notes/one.typ', '#title[One]\n', notes)
+  addDirectory('archive')
+
+  await moveFolderToFolder(vault, 'notes', 'archive')
+  expect(copiedText('archive/notes/one.typ')).toBe('#title[One]\n')
+
+  const trashed = await trashFolder(vault, 'archive/notes')
+  expect(copiedText('.trash/archive/notes/one.typ')).toBe('#title[One]\n')
+
+  await restoreFolder(vault, trashed, 'archive/notes')
+  expect(copiedText('archive/notes/one.typ')).toBe('#title[One]\n')
+})
+
 test('restoring a folder rejects an existing destination name case-insensitively', async () => {
   const notes = addDirectory('notes')
   addFile('notes/one.typ', '#title[One]\n', notes)
@@ -1549,9 +1588,8 @@ test('a failed folder restore removes the partial folder and keeps the trash cop
   const drafts = addDirectory('notes/drafts', notes)
   addFile('notes/drafts/one.typ', '#title[Keep me]\n', drafts)
   const trashed = await trashFolder(vault, 'notes')
-  writeFailure = (target) =>
+  handleWriteErrorFor = (target) =>
     decodeURIComponent(target).includes('primary:Vault/notes/drafts/one.typ')
-  writeFailureError = new Error('Storage full')
 
   await expect(restoreFolder(vault, trashed, 'notes')).rejects.toThrow(
     'Cannot restore "notes": Storage full'
@@ -1585,8 +1623,8 @@ test('shorter Unicode saves replace the whole file and clean staging files', asy
   const uri = addFile('note.typ', original)
   await saveNote(noteFor(uri, original), 'Über 📝\n')
   expect(files.get(uri)?.source).toBe('Über 📝\n')
-  expect(handlesClosed).toBe(0)
-  expect(fileMoves.some((move) => move.to === uri && move.overwrite === true)).toBe(true)
+  expect(handlesClosed).toBe(1)
+  expect(fileMoves.some((move) => move.to === uri)).toBe(false)
   expect([...files.keys()].filter((path) => path.includes('typo-save-'))).toHaveLength(0)
   expect([...files.keys()].filter((path) => path.includes('typo-backups/'))).toHaveLength(0)
 })
@@ -1598,9 +1636,41 @@ test('a simulated mid-write failure restores the previous note and cleans stagin
   handleWriteError = new Error('Storage full')
   await expect(saveNote(noteFor(uri, original), 'Replacement')).rejects.toThrow('Storage full')
   expect(files.get(uri)?.source).toBe(original)
-  expect(handlesClosed).toBe(1)
+  expect(handlesClosed).toBe(2)
   expect([...files.keys()].filter((path) => path.includes('typo-save-'))).toHaveLength(0)
   expect([...files.keys()].filter((path) => path.includes('typo-backups/'))).toHaveLength(0)
+})
+
+test('SAF note edits stream staged bytes instead of replacing the document', async () => {
+  safReplacementFails = true
+  const original = '#title[Old]\nOriginal body'
+  const uri = addFile('note.typ', original)
+  const saved = await saveNote(noteFor(uri, original), '#title[New]\nUpdated body')
+  expect(saved.source).toBe('#title[New]\nUpdated body')
+  expect(files.get(uri)?.source).toBe(saved.source)
+  expect(fileMoves.some((move) => move.to === uri)).toBe(false)
+  expect(handlesClosed).toBe(1)
+})
+
+test('a failed SAF edit restores the original from its backup', async () => {
+  safReplacementFails = true
+  const original = '#title[Old]\nKeep these bytes'
+  const uri = addFile('note.typ', original)
+  handleWriteError = new Error('Storage full')
+  await expect(saveNote(noteFor(uri, original), 'Replacement')).rejects.toThrow('Storage full')
+  expect(files.get(uri)?.source).toBe(original)
+  expect(handlesClosed).toBe(2)
+})
+
+test('SAF note create and quick append use the document stream', async () => {
+  safReplacementFails = true
+  const note = await createNote(vault, 'Quick Note', '= Inbox\nBody')
+  expect(files.get(note.uri)?.source).toBe(note.source)
+
+  const appended = await appendToNoteAtPath(vault, note.path, 'Inbox', 'appended text')
+  expect(appended.source).toContain('appended text')
+  expect(files.get(note.uri)?.source).toBe(appended.source)
+  expect(fileMoves.some((move) => move.to === note.uri)).toBe(false)
 })
 
 test('save rejects external changes and missing files without writing anything', async () => {
@@ -2241,7 +2311,7 @@ test('compiled PDFs replace output files with exact bytes and no stale trailing 
   expect(second).toBe(first)
   expect(storedBytes(first).toString('utf8')).toBe(shortPdf)
   expect(files.get(uriFor('out/hashes/note.sha256'))?.source).toBe(`${sha256(source)}\n`)
-  expect(handlesClosed).toBe(0)
+  expect(handlesClosed).toBe(5)
 })
 
 test('a simulated PDF mid-write failure preserves the previous PDF bytes', async () => {
@@ -2363,7 +2433,7 @@ test('PDF creation rejects a provider URI outside the requested parent', async (
   const note: Note = { uri, path: 'note.typ', title: 'Note', source, modifiedAt: null }
   createResult = uriFor('elsewhere/note.pdf')
   await expect(writeCompiledPdf(vault, note, pdfBase64())).rejects.toThrow('requested PDF filename')
-  expect(handlesClosed).toBe(0)
+  expect(handlesClosed).toBe(1)
   expect(files.get(uri)?.source).toBe(source)
 })
 
